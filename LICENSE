@@ -1,0 +1,9 @@
+PLACEHOLDER — replace with the verbatim text of the chosen FOSS license
+once Phase 0 legal review confirms the choice.
+
+Recommended: AGPL-3.0-or-later (https://www.gnu.org/licenses/agpl-3.0.txt).
+The Nextcloud App Store accepts: AGPL-3.0-only, AGPL-3.0-or-later,
+Apache-2.0, GPL-3.0-only, GPL-3.0-or-later, MIT, MPL-2.0.
+
+Until this file holds a real license, this directory MUST NOT be published
+to a public repository or to the App Store.

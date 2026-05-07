@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<!--
+  Bee Flow Nextcloud connector — ExApp manifest.
+
+  Schema: https://apps.nextcloud.com/schema/apps/info.xsd
+  ExApp <external-app> spec: https://docs.nextcloud.com/server/latest/developer_manual/exapp_development/tech_details/Deployment.html
+
+  Pre-publish checklist (Phase 0 in plan/make-a-plan-to-reactive-spark.md):
+    - <licence> currently 'agpl' — confirm after legal review
+    - <author> mail / homepage placeholders — replace with the publisher GitHub-org email
+    - <repository> placeholder — replace with the public repo URL once extracted
+    - <screenshot> URLs are placeholders; the GitHub release assets must exist before submission
+    - <scopes> values below are educated guesses; verify against
+      https://github.com/nextcloud/app_api/blob/main/lib/Db/ExAppScope.php
+-->
+<info xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
+    <id>bee_flow</id>
+    <name>Bee Flow</name>
+    <summary>AI-native workspace for chat, automation, and your Nextcloud apps</summary>
+    <description><![CDATA[
+Bee Flow is an AI workspace that connects your Nextcloud account to a hosted assistant capable of working across Files, Mail, Calendar, Deck, Notes, Tasks, Contacts, and Talk.
+
+**What this app does**
+- Adds a Bee Flow icon to your Nextcloud top bar.
+- Authenticates you against your existing Nextcloud user — no second login.
+- Proxies UI requests to the hosted Bee Flow service so you can chat with an AI agent that has access to your Nextcloud data.
+
+**Data flow disclosure**
+This connector forwards the following information to the hosted Bee Flow service at beeflow.ai:
+- Your Nextcloud account ID, email, and display name (used to identify your Bee Flow tenant).
+- The contents of any Nextcloud item you explicitly ask Bee Flow to act on (e.g. an email you ask the assistant to summarise).
+
+The connector does **not** bulk-export file contents, contacts, or calendars. Privacy policy: https://beeflow.ai/privacy
+
+**Requirements**
+- A Bee Flow account provisioned by your organisation's Bee Flow administrator.
+- A tenant key (issued by Bee Flow) configured in the AppAPI app settings.
+        ]]></description>
+    <version>0.1.0</version>
+    <licence>agpl</licence>
+    <author mail="dev@beeflow.ai" homepage="https://beeflow.ai">Bee Flow B.V.</author>
+    <namespace>BeeFlow</namespace>
+    <category>integration</category>
+    <category>tools</category>
+    <website>https://beeflow.ai</website>
+    <bugs>https://github.com/beeflow-ai/bee-flow-connector/issues</bugs>
+    <repository type="git">https://github.com/beeflow-ai/bee-flow-connector</repository>
+    <documentation>
+        <user>https://beeflow.ai/docs/user</user>
+        <admin>https://beeflow.ai/docs/admin</admin>
+    </documentation>
+    <screenshot>https://github.com/beeflow-ai/bee-flow-connector/raw/main/img/screenshots/01-chat.png</screenshot>
+    <screenshot>https://github.com/beeflow-ai/bee-flow-connector/raw/main/img/screenshots/02-routines.png</screenshot>
+    <dependencies>
+        <nextcloud min-version="31" max-version="34"/>
+    </dependencies>
+    <external-app>
+        <docker-install>
+            <registry>ghcr.io</registry>
+            <image>beeflow-ai/bee-flow-connector</image>
+            <image-tag>latest</image-tag>
+        </docker-install>
+        <scopes>
+            <value>USER_INFO</value>
+            <value>NOTIFICATIONS</value>
+        </scopes>
+    </external-app>
+</info>

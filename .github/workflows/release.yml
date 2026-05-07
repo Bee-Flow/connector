@@ -1,0 +1,120 @@
+name: release
+
+# Triggered by tags shaped like v0.1.0. Runs only after the connector has
+# been extracted to its own public repo and the Nextcloud signing cert has
+# been merged into github.com/nextcloud/app-certificate-requests.
+#
+# Required GitHub Actions secrets (configure on the `release` environment):
+#   NC_APP_SIGNING_KEY  — RSA private key matching the merged cert
+#   NCAPPSTORE_TOKEN    — apps.nextcloud.com API token (Settings → API tokens)
+#   GITHUB_TOKEN        — provided automatically; used for the GHCR push and
+#                         the GitHub release upload
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  APP_ID: bee_flow
+  IMAGE: ghcr.io/${{ github.repository_owner }}/bee-flow-connector
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify info.xml version matches tag
+        run: |
+          xml_ver=$(grep -oPm1 '(?<=<version>)[^<]+' appinfo/info.xml)
+          if [ "$xml_ver" != "${{ steps.ver.outputs.version }}" ]; then
+            echo "::error::info.xml version ($xml_ver) does not match tag (${{ steps.ver.outputs.version }})"
+            exit 1
+          fi
+
+      - name: Verify CHANGELOG has matching heading
+        run: |
+          if ! grep -qE "^## \[?${{ steps.ver.outputs.version }}\]?" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md is missing a heading for ${{ steps.ver.outputs.version }}"
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.ver.outputs.version }}
+            ${{ env.IMAGE }}:latest
+          # Reproducible builds matter for App Store audits.
+          provenance: true
+          sbom: true
+
+      - name: Build app tarball
+        run: |
+          mkdir -p dist staging/${{ env.APP_ID }}
+          cp -r appinfo img CHANGELOG.md README.md LICENSE staging/${{ env.APP_ID }}/
+          tar -czf dist/${{ env.APP_ID }}.tar.gz -C staging ${{ env.APP_ID }}
+
+      - name: Sign tarball
+        env:
+          SIGNING_KEY: ${{ secrets.NC_APP_SIGNING_KEY }}
+        run: |
+          keyfile=$(mktemp)
+          # The secret is stored as PEM; mktemp+chmod prevents it leaking via
+          # /proc/<pid>/environ during the openssl call.
+          printf '%s' "$SIGNING_KEY" > "$keyfile"
+          chmod 600 "$keyfile"
+          openssl dgst -sha512 -sign "$keyfile" dist/${{ env.APP_ID }}.tar.gz \
+            | openssl base64 -A > dist/${{ env.APP_ID }}.tar.gz.sig
+          shred -u "$keyfile"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/${{ env.APP_ID }}.tar.gz
+            dist/${{ env.APP_ID }}.tar.gz.sig
+
+      - name: Register release on apps.nextcloud.com
+        env:
+          NCAPPSTORE_TOKEN: ${{ secrets.NCAPPSTORE_TOKEN }}
+          # First production release should set this secret to '0'. While
+          # iterating on the listing, leave it '1' to publish to the nightly
+          # channel where only admins who explicitly opt in see it.
+          NIGHTLY: ${{ vars.NCAPPSTORE_NIGHTLY || '1' }}
+        run: |
+          download_url="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ env.APP_ID }}.tar.gz"
+          signature=$(cat dist/${{ env.APP_ID }}.tar.gz.sig)
+          payload=$(jq -nc \
+            --arg url "$download_url" \
+            --arg sig "$signature" \
+            --argjson nightly $([ "$NIGHTLY" = "1" ] && echo true || echo false) \
+            '{download:$url, signature:$sig, nightly:$nightly}')
+          curl --fail-with-body -X POST https://apps.nextcloud.com/api/v1/apps/releases \
+            -H "Authorization: Token $NCAPPSTORE_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$payload"

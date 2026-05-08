@@ -33,6 +33,12 @@ function registerLifecycle(app) {
         } catch (err) {
             console.warn(`[Init] SaaS health probe failed (non-fatal): ${err.message}`);
         }
+        await registerTopMenu().catch(err => {
+            console.warn(`[Init] TopMenu registration failed (non-fatal): ${err.message}`);
+        });
+        await registerEmbedScript().catch(err => {
+            console.warn(`[Init] Embed script registration failed (non-fatal): ${err.message}`);
+        });
         await reportInitProgress(100).catch(err => {
             console.warn(`[Init] Progress report failed (non-fatal): ${err.message}`);
         });
@@ -46,6 +52,60 @@ function registerLifecycle(app) {
         // For v0.1.0 the navigation entry is declared statically in info.xml.
         res.json({ status: 'ok' });
     });
+}
+
+function appApiHeaders() {
+    return {
+        'Content-Type': 'application/json',
+        'OCS-APIRequest': 'true',
+        'Accept': 'application/json',
+        'EX-APP-ID': config.appId,
+        'EX-APP-VERSION': config.appVersion,
+        'AUTHORIZATION-APP-API': Buffer.from(`:${config.appSecret}`).toString('base64'),
+    };
+}
+
+async function registerTopMenu() {
+    const url = `${config.nextcloudUrl}/ocs/v1.php/apps/app_api/api/v1/ui/top-menu`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: appApiHeaders(),
+        body: JSON.stringify({
+            name: 'main',
+            displayName: 'Bee Flow',
+            icon: 'img/app.svg',
+            adminRequired: 0,
+        }),
+        signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`TopMenu register HTTP ${res.status}: ${body.slice(0, 200)}`);
+    }
+    console.log('[Init] TopMenu entry registered');
+}
+
+// Registers a JS file that NC will inject into the embedded template. The
+// script renders an iframe that targets NC's signed proxy back to us, so
+// the SPA loads inside the Nextcloud chrome.
+async function registerEmbedScript() {
+    const url = `${config.nextcloudUrl}/ocs/v1.php/apps/app_api/api/v1/ui/script`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: appApiHeaders(),
+        body: JSON.stringify({
+            type: 'top_menu',
+            name: 'main',
+            path: 'js/embed',
+            afterAppId: '',
+        }),
+        signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Script register HTTP ${res.status}: ${body.slice(0, 200)}`);
+    }
+    console.log('[Init] Embed script registered');
 }
 
 async function reportInitProgress(percent) {

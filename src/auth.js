@@ -143,6 +143,10 @@ const LIFECYCLE_PATHS = new Set(['/heartbeat', '/init', '/enabled']);
 
 function appApiAuthMiddleware(req, res, next) {
     if (LIFECYCLE_PATHS.has(req.path)) return next();
+    // Public assets fetched server-to-server by NC (menu icon, embed JS) —
+    // no user data, no API access. NC fetches these unsigned to inject into
+    // its own chrome.
+    if (req.path.startsWith('/img/') || req.path.startsWith('/js/')) return next();
     Promise.resolve()
         .then(() => verifyAppApiSignature(req))
         .then(() => {

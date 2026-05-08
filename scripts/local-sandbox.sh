@@ -1,25 +1,14 @@
 #!/usr/bin/env bash
-# Local sandbox for the Bee Flow Nextcloud connector.
+# Local sandbox using AppAPI's `manual-install` daemon (works without
+# pushing the image to a public registry).
 #
-# Spins up a fresh Nextcloud container with AppAPI installed, registers a
-# local Docker deploy daemon, builds the connector image, and side-loads it.
-# All against your real local Docker — no certs, no App Store account needed.
-#
-# Subcommands:
-#   up       Build image, start NC, install AppAPI, register connector
-#   down     Stop and remove the NC container (keeps the image)
-#   clean    down + remove image + remove the connector container if any
-#   logs     Tail Nextcloud + connector logs
-#   shell    Open an occ shell inside the NC container
-#   status   Show what's running and connector heartbeat
+# Subcommands: up | down | clean | logs | status
 #
 # Env overrides:
-#   NC_VERSION       Nextcloud image tag (default: 31)
-#   NC_PORT          Host port for Nextcloud UI (default: 8080)
-#   APP_ID           App ID (default: bee_flow_ai)
-#   IMAGE            Connector image name (default: bee-flow-connector:dev)
-#   TENANT_KEY       BEEFLOW_TENANT_KEY value (default: dev-tenant-key)
-#   API_BASE_URL     BEEFLOW_API_BASE_URL (default: http://host.docker.internal:3101)
+#   NC_VERSION=31  NC_PORT=8080  APP_ID=bee_flow_ai
+#   IMAGE=bee-flow-connector:dev
+#   TENANT_KEY=dev-tenant-key
+#   API_BASE_URL=http://host.docker.internal:3101
 
 set -euo pipefail
 
@@ -30,159 +19,117 @@ IMAGE="${IMAGE:-bee-flow-connector:dev}"
 TENANT_KEY="${TENANT_KEY:-dev-tenant-key}"
 API_BASE_URL="${API_BASE_URL:-http://host.docker.internal:3101}"
 NC_NAME="bee-flow-nc-sandbox"
-DAEMON_NAME="docker_local"
-ADMIN_USER="admin"
-ADMIN_PASS="admin"
+CONN_NAME="bee-flow-connector-instance"
+DAEMON="manual_dev"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CONNECTOR_DIR="$REPO_ROOT/nextcloud-connector"
+DB=/var/www/html/data/owncloud.db
 
-c_blue()  { printf '\033[1;34m%s\033[0m\n' "$*"; }
-c_green() { printf '\033[1;32m%s\033[0m\n' "$*"; }
-c_red()   { printf '\033[1;31m%s\033[0m\n' "$*" >&2; }
+g() { printf '\033[1;32m%s\033[0m\n' "$*"; }
+b() { printf '\033[1;34m%s\033[0m\n' "$*"; }
+r() { printf '\033[1;31m%s\033[0m\n' "$*" >&2; }
 
-require_docker() {
-    command -v docker >/dev/null || { c_red "docker not found in PATH"; exit 1; }
-    docker info >/dev/null 2>&1 || { c_red "Docker daemon is not reachable"; exit 1; }
-}
-
-nc_exec() {
-    docker exec -u www-data "$NC_NAME" php occ "$@"
-}
-
-wait_for_nc() {
-    c_blue "[wait] Nextcloud install (this is slow on first boot)…"
-    for i in {1..120}; do
-        if docker exec -u www-data "$NC_NAME" php occ status 2>/dev/null | grep -q 'installed: true'; then
-            c_green "[wait] Nextcloud ready"
-            return 0
-        fi
-        sleep 2
-    done
-    c_red "[wait] Nextcloud did not become ready in 240s"
-    docker logs --tail 50 "$NC_NAME" >&2
-    exit 1
-}
+nc_occ() { docker exec -u www-data "$NC_NAME" php occ "$@"; }
+nc_sql() { docker exec "$NC_NAME" sqlite3 "$DB" "$1"; }
 
 cmd_up() {
-    require_docker
+    docker info >/dev/null 2>&1 || { r "Docker daemon is not reachable"; exit 1; }
 
-    c_blue "[1/6] Building connector image $IMAGE from $REPO_ROOT"
-    docker build -f "$CONNECTOR_DIR/Dockerfile" -t "$IMAGE" "$REPO_ROOT"
-
-    if docker ps -a --format '{{.Names}}' | grep -qx "$NC_NAME"; then
-        c_blue "[2/6] Reusing existing $NC_NAME container"
-        docker start "$NC_NAME" >/dev/null
+    if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        b "[1/7] Building $IMAGE (one-time, ~1-3 min)"
+        docker build -f "$REPO_ROOT/nextcloud-connector/Dockerfile" -t "$IMAGE" "$REPO_ROOT"
     else
-        c_blue "[2/6] Starting Nextcloud $NC_VERSION on :$NC_PORT"
-        docker run -d --name "$NC_NAME" \
-            -p "$NC_PORT:80" \
-            -e NEXTCLOUD_ADMIN_USER="$ADMIN_USER" \
-            -e NEXTCLOUD_ADMIN_PASSWORD="$ADMIN_PASS" \
-            -e NEXTCLOUD_TRUSTED_DOMAINS="localhost host.docker.internal" \
-            --add-host=host.docker.internal:host-gateway \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            "nextcloud:$NC_VERSION" >/dev/null
-    fi
-    wait_for_nc
-
-    c_blue "[3/6] Installing app_api"
-    nc_exec app:install app_api 2>/dev/null || nc_exec app:enable app_api
-
-    c_blue "[4/6] Registering local Docker deploy daemon: $DAEMON_NAME"
-    if nc_exec app_api:daemon:list 2>/dev/null | grep -q "\"name\": \"$DAEMON_NAME\""; then
-        echo "      (already registered)"
-    else
-        nc_exec app_api:daemon:register \
-            --net host \
-            "$DAEMON_NAME" "Local Docker" docker-install \
-            http host.docker.internal "http://host.docker.internal:$NC_PORT" \
-            || c_red "(daemon register failed — see error above)"
+        b "[1/7] Reusing existing $IMAGE"
     fi
 
-    c_blue "[5/6] Side-loading $APP_ID from $CONNECTOR_DIR/appinfo/info.xml"
-    docker cp "$CONNECTOR_DIR/appinfo/info.xml" "$NC_NAME:/tmp/info.xml"
-    if nc_exec app_api:app:list 2>/dev/null | grep -q "\"$APP_ID\""; then
-        echo "      already registered — unregister first to reload manifest"
+    if ! docker ps --format '{{.Names}}' | grep -qx "$NC_NAME"; then
+        if docker ps -a --format '{{.Names}}' | grep -qx "$NC_NAME"; then
+            b "[2/7] Starting existing $NC_NAME"
+            docker start "$NC_NAME" >/dev/null
+        else
+            b "[2/7] Launching Nextcloud $NC_VERSION on :$NC_PORT"
+            docker run -d --name "$NC_NAME" -p "$NC_PORT:80" \
+                --add-host=host.docker.internal:host-gateway \
+                "nextcloud:$NC_VERSION" >/dev/null
+        fi
     else
-        nc_exec app_api:app:register "$APP_ID" "$DAEMON_NAME" \
+        b "[2/7] $NC_NAME already running"
+    fi
+
+    b "[3/7] Waiting for apache"
+    until docker exec "$NC_NAME" curl -sf http://127.0.0.1/status.php >/dev/null 2>&1; do sleep 2; done
+
+    if ! nc_occ status 2>/dev/null | grep -q 'installed: true'; then
+        b "[4/7] Installing Nextcloud (admin/admin)"
+        nc_occ maintenance:install --database=sqlite --admin-user=admin --admin-pass=admin >/dev/null
+        nc_occ config:system:set trusted_domains 1 --value=host.docker.internal >/dev/null
+    else
+        b "[4/7] Nextcloud already installed"
+    fi
+
+    nc_occ app:install app_api 2>&1 | tail -1 || true
+    docker exec "$NC_NAME" bash -c "command -v sqlite3 >/dev/null || (apt-get update -qq >/dev/null && apt-get install -y -qq sqlite3 >/dev/null)" || true
+
+    if ! nc_occ app_api:daemon:list 2>/dev/null | grep -qw "$DAEMON"; then
+        b "[5/7] Registering $DAEMON daemon"
+        nc_occ app_api:daemon:register \
+            "$DAEMON" "Manual Local" manual-install http host.docker.internal "http://host.docker.internal:$NC_PORT" 2>&1 | tail -1
+    else
+        b "[5/7] Daemon $DAEMON already registered"
+    fi
+
+    if ! nc_sql "SELECT 1 FROM oc_ex_apps WHERE appid='$APP_ID';" | grep -q 1; then
+        b "[6/7] Registering ExApp $APP_ID"
+        docker cp "$REPO_ROOT/nextcloud-connector/appinfo/info.xml" "$NC_NAME:/tmp/info.xml"
+        nc_occ app_api:app:register "$APP_ID" "$DAEMON" \
             --info-xml /tmp/info.xml \
             --env "BEEFLOW_TENANT_KEY=$TENANT_KEY" \
-            --env "BEEFLOW_API_BASE_URL=$API_BASE_URL" \
-            || c_red "(register failed — check 'docker logs $NC_NAME')"
+            --env "BEEFLOW_API_BASE_URL=$API_BASE_URL" 2>&1 | tail -1
+    else
+        b "[6/7] ExApp $APP_ID already registered"
     fi
 
-    c_blue "[6/6] Setting tenant config"
-    nc_exec app_api:app:setenv "$APP_ID" BEEFLOW_TENANT_KEY "$TENANT_KEY" || true
-    nc_exec app_api:app:setenv "$APP_ID" BEEFLOW_API_BASE_URL "$API_BASE_URL" || true
+    SECRET=$(nc_sql "SELECT secret FROM oc_ex_apps WHERE appid='$APP_ID';")
+    PORT=$(nc_sql "SELECT port FROM oc_ex_apps WHERE appid='$APP_ID';")
 
-    c_green "✔ Sandbox ready"
-    echo
-    echo "  Nextcloud:  http://localhost:$NC_PORT  ($ADMIN_USER / $ADMIN_PASS)"
-    echo "  App ID:     $APP_ID"
-    echo "  SaaS target: $API_BASE_URL"
-    echo
-    echo "  Logs:    $0 logs"
-    echo "  Stop:    $0 down"
-    echo "  Reset:   $0 clean"
+    docker rm -f "$CONN_NAME" >/dev/null 2>&1 || true
+    b "[7/7] Starting connector on :$PORT"
+    docker run -d --name "$CONN_NAME" \
+        -p "$PORT:$PORT" --add-host=host.docker.internal:host-gateway \
+        -e APP_ID="$APP_ID" -e APP_VERSION=0.1.0 \
+        -e APP_HOST=0.0.0.0 -e APP_PORT="$PORT" \
+        -e APP_SECRET="$SECRET" \
+        -e NEXTCLOUD_URL="http://host.docker.internal:$NC_PORT" \
+        -e BEEFLOW_TENANT_KEY="$TENANT_KEY" \
+        -e BEEFLOW_API_BASE_URL="$API_BASE_URL" \
+        "$IMAGE" >/dev/null
+
+    nc_sql "UPDATE oc_ex_apps SET status='{\"deploy\":100,\"init\":100,\"action\":\"\",\"type\":\"install\",\"error\":\"\"}' WHERE appid='$APP_ID';"
+    nc_occ app_api:app:enable "$APP_ID" 2>&1 | tail -1
+
+    g "✔ Sandbox up — http://localhost:$NC_PORT  (admin / admin)"
+    echo "  Connector logs:  docker logs -f $CONN_NAME"
 }
 
 cmd_down() {
-    require_docker
-    docker rm -f "$NC_NAME" >/dev/null 2>&1 && c_green "✔ Removed $NC_NAME" || echo "(no $NC_NAME to remove)"
-    # AppAPI spawns the connector as its own container with a generated name.
-    docker ps -a --filter "label=AppAPI=$APP_ID" -q | xargs -r docker rm -f >/dev/null 2>&1 || true
+    docker rm -f "$NC_NAME" "$CONN_NAME" 2>/dev/null && g "✔ stopped" || echo "(nothing to stop)"
 }
-
 cmd_clean() {
     cmd_down
-    docker rmi "$IMAGE" >/dev/null 2>&1 && c_green "✔ Removed image $IMAGE" || echo "(no image to remove)"
+    docker rmi "$IMAGE" 2>/dev/null && g "✔ image removed" || true
 }
-
-cmd_logs() {
-    require_docker
-    docker logs -f --tail 50 "$NC_NAME"
-}
-
-cmd_shell() {
-    require_docker
-    docker exec -it -u www-data "$NC_NAME" bash
-}
-
+cmd_logs()   { docker logs -f --tail 50 "$CONN_NAME"; }
 cmd_status() {
-    require_docker
-    echo "── containers ──"
-    docker ps --filter "name=$NC_NAME" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
-    docker ps --filter "label=AppAPI" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+    docker ps --filter "name=$NC_NAME" --filter "name=$CONN_NAME" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
     echo
-    echo "── connector heartbeat ──"
-    if connector=$(docker ps --filter "label=AppAPI=$APP_ID" --format '{{.Names}}' | head -1); then
-        if [ -n "$connector" ]; then
-            docker exec "$connector" wget -qO- http://127.0.0.1:8080/heartbeat || echo "(no response)"
-        else
-            echo "(connector container not running)"
-        fi
-    fi
+    curl -s "http://localhost:$NC_PORT/status.php" | head -c 200; echo
 }
 
-case "${1:-}" in
-    up)     cmd_up ;;
-    down)   cmd_down ;;
-    clean)  cmd_clean ;;
-    logs)   cmd_logs ;;
-    shell)  cmd_shell ;;
+case "${1:-up}" in
+    up) cmd_up ;;
+    down) cmd_down ;;
+    clean) cmd_clean ;;
+    logs) cmd_logs ;;
     status) cmd_status ;;
-    *)
-        cat <<EOF
-Usage: $0 {up|down|clean|logs|shell|status}
-
-  up      Build + start NC + install AppAPI + register connector
-  down    Stop and remove the NC sandbox container
-  clean   down + remove the connector image
-  logs    Tail Nextcloud logs
-  shell   Open a shell inside the NC container
-  status  Show running containers and connector heartbeat
-EOF
-        exit 1
-        ;;
+    *) echo "Usage: $0 {up|down|clean|logs|status}"; exit 1 ;;
 esac

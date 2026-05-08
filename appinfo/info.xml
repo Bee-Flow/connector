@@ -52,5 +52,32 @@ The connector does **not** bulk-export file contents, contacts, or calendars. Pr
             <image>beeflow-ai/bee-flow-connector</image>
             <image-tag>latest</image-tag>
         </docker-install>
+        <routes>
+            <route>
+                <url>^img\/.*</url>
+                <verb>GET</verb>
+                <access_level>PUBLIC</access_level>
+            </route>
+            <route>
+                <url>^js\/.*</url>
+                <verb>GET</verb>
+                <access_level>USER</access_level>
+            </route>
+            <route>
+                <url>^assets\/.*</url>
+                <verb>GET</verb>
+                <access_level>USER</access_level>
+            </route>
+            <route>
+                <url>^api\/.*</url>
+                <verb>GET,POST,PUT,DELETE</verb>
+                <access_level>USER</access_level>
+            </route>
+            <route>
+                <url>^.*</url>
+                <verb>GET</verb>
+                <access_level>USER</access_level>
+            </route>
+        </routes>
     </external-app>
 </info>

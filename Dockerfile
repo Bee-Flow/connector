@@ -12,6 +12,10 @@
 # is the customer's, not ours.
 
 # ── Stage 1: build the React SPA ──────────────────────────────
+# Build context must be the monorepo root so `agent-hub/` is reachable.
+# When extracting this connector to its own repo, replace this stage with
+# either a git submodule pointing at agent-hub or a pre-built tarball
+# downloaded in CI.
 FROM node:20-alpine AS spa-build
 WORKDIR /spa
 COPY agent-hub/package.json agent-hub/package-lock.json* ./

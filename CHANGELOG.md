@@ -7,10 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
-## [Unreleased]
-
-## [0.1.0] - TBD
+## [0.1.0] - 2026-05-08
 
 ### Added
-- Initial scaffold: ExApp manifest, AppAPI signature verifier, /heartbeat /init /enabled lifecycle endpoints, JWT-bearer proxy to the hosted Bee Flow SaaS, embedded React SPA.
-- Compatibility: Nextcloud 31–34.
+- Initial release. ExApp manifest, AppAPI HMAC signature verifier, `/heartbeat` `/init` `/enabled` lifecycle endpoints, JWT-bearer forward proxy to the hosted Bee Flow SaaS, and embedded React SPA served from the connector container.
+- Compatibility: Nextcloud 31–34, AppAPI 3.2+.

@@ -15,31 +15,28 @@ function registerLifecycle(app) {
         res.json({ status: 'ok' });
     });
 
-    // /init runs once per install. We use it to verify the SaaS is reachable
-    // with the configured tenant key — fail fast at install time rather than
-    // on the user's first click. AppAPI expects progress reports to
+    // /init runs once per install. We do a best-effort SaaS probe so the
+    // admin sees a warning if upstream is unreachable, but install never
+    // fails on it — a transient SaaS outage shouldn't block the connector
+    // from coming up. AppAPI expects progress on
     // /ocs/v2.php/apps/app_api/ex-app/status; we report 100 immediately
-    // because there's no model download or migration to run.
+    // because there's no model download or migration to run on our side.
     app.post('/init', async (req, res) => {
         try {
-            const probeUrl = `${config.apiBaseUrl}/api/health`;
-            const probe = await fetch(probeUrl, {
+            const probe = await fetch(`${config.apiBaseUrl}/api/health`, {
                 method: 'GET',
-                signal: AbortSignal.timeout(15_000),
+                signal: AbortSignal.timeout(5_000),
             });
             if (!probe.ok) {
-                return res.status(502).json({
-                    error: `Bee Flow service unreachable: HTTP ${probe.status}`,
-                });
+                console.warn(`[Init] SaaS health probe returned HTTP ${probe.status} — continuing`);
             }
-            await reportInitProgress(100).catch(err => {
-                console.warn(`[Init] Progress report failed (non-fatal): ${err.message}`);
-            });
-            res.json({ status: 'ok' });
         } catch (err) {
-            console.error(`[Init] Failed: ${err.message}`);
-            res.status(502).json({ error: err.message });
+            console.warn(`[Init] SaaS health probe failed (non-fatal): ${err.message}`);
         }
+        await reportInitProgress(100).catch(err => {
+            console.warn(`[Init] Progress report failed (non-fatal): ${err.message}`);
+        });
+        res.json({ status: 'ok' });
     });
 
     app.put('/enabled', (req, res) => {

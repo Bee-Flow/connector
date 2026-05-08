@@ -1,0 +1,8 @@
+node_modules/
+dist/
+staging/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store

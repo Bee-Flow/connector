@@ -1,21 +1,12 @@
 <?xml version="1.0"?>
 <!--
   Bee Flow Nextcloud connector — ExApp manifest.
-
   Schema: https://apps.nextcloud.com/schema/apps/info.xsd
-  ExApp <external-app> spec: https://docs.nextcloud.com/server/latest/developer_manual/exapp_development/tech_details/Deployment.html
-
-  Pre-publish checklist (Phase 0 in plan/make-a-plan-to-reactive-spark.md):
-    - <licence> currently 'agpl' — confirm after legal review
-    - <author> mail / homepage placeholders — replace with the publisher GitHub-org email
-    - <repository> placeholder — replace with the public repo URL once extracted
-    - <screenshot> URLs are placeholders; the GitHub release assets must exist before submission
-    - <scopes> values below are educated guesses; verify against
-      https://github.com/nextcloud/app_api/blob/main/lib/Db/ExAppScope.php
+  ExApp deployment: https://docs.nextcloud.com/server/latest/developer_manual/exapp_development/tech_details/Deployment.html
 -->
 <info xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
       xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
-    <id>bee_flow</id>
+    <id>bee_flow_ai</id>
     <name>Bee Flow</name>
     <summary>AI-native workspace for chat, automation, and your Nextcloud apps</summary>
     <description><![CDATA[
@@ -38,18 +29,18 @@ The connector does **not** bulk-export file contents, contacts, or calendars. Pr
 - A tenant key (issued by Bee Flow) configured in the AppAPI app settings.
         ]]></description>
     <version>0.1.0</version>
-    <licence>agpl</licence>
+    <licence>AGPL-3.0-or-later</licence>
     <author mail="dev@beeflow.ai" homepage="https://beeflow.ai">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>
+    <documentation>
+        <user>https://beeflow.ai/docs/user</user>
+        <admin>https://beeflow.ai/docs/admin</admin>
+    </documentation>
     <category>integration</category>
     <category>tools</category>
     <website>https://beeflow.ai</website>
     <bugs>https://github.com/beeflow-ai/bee-flow-connector/issues</bugs>
     <repository type="git">https://github.com/beeflow-ai/bee-flow-connector</repository>
-    <documentation>
-        <user>https://beeflow.ai/docs/user</user>
-        <admin>https://beeflow.ai/docs/admin</admin>
-    </documentation>
     <screenshot>https://github.com/beeflow-ai/bee-flow-connector/raw/main/img/screenshots/01-chat.png</screenshot>
     <screenshot>https://github.com/beeflow-ai/bee-flow-connector/raw/main/img/screenshots/02-routines.png</screenshot>
     <dependencies>
@@ -61,9 +52,5 @@ The connector does **not** bulk-export file contents, contacts, or calendars. Pr
             <image>beeflow-ai/bee-flow-connector</image>
             <image-tag>latest</image-tag>
         </docker-install>
-        <scopes>
-            <value>USER_INFO</value>
-            <value>NOTIFICATIONS</value>
-        </scopes>
     </external-app>
 </info>

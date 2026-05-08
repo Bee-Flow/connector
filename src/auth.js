@@ -134,12 +134,15 @@ function mintSaasJwt(user) {
 
 /**
  * Express middleware: verifies AppAPI signature on every request, looks up
- * the user, attaches `req.beeflow = { user, jwt }`. Endpoints whose path
- * starts with `/heartbeat` are exempt — AppAPI calls /heartbeat without the
- * signature headers.
+ * the user, attaches `req.beeflow = { user, jwt }`. Lifecycle endpoints
+ * (/heartbeat, /init, /enabled) are exempt — AppAPI 5.x does not sign these
+ * lifecycle probes, and they only run AppAPI-internal logic (health check,
+ * status report) without touching user data.
  */
+const LIFECYCLE_PATHS = new Set(['/heartbeat', '/init', '/enabled']);
+
 function appApiAuthMiddleware(req, res, next) {
-    if (req.path === '/heartbeat') return next();
+    if (LIFECYCLE_PATHS.has(req.path)) return next();
     Promise.resolve()
         .then(() => verifyAppApiSignature(req))
         .then(() => {

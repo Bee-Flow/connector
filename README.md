@@ -1,10 +1,10 @@
 # Bee Flow Nextcloud connector
 
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
+
 ExApp / AppAPI connector that lets a Nextcloud instance host the Bee Flow workspace UI and forward authenticated requests to the Bee Flow SaaS.
 
-## Status
-
-**Pre-release scaffold.** Phase 0 gates (legal review, trademark check, publisher account, data-flow disclosure copy) are still open — see `plan/make-a-plan-to-reactive-spark.md` in the parent repo for the full plan.
+App ID: `bee_flow_ai` · Compatible with Nextcloud 31–34 · Requires AppAPI ≥ 3.2.
 
 ## Architecture
 
@@ -30,7 +30,7 @@ APP_PORT=9000 \
 npm start
 ```
 
-`APP_SECRET`, `NEXTCLOUD_URL`, `APP_ID`, `APP_PORT`, etc. are normally injected by AppAPI. For local dev, set them by hand. `BEEFLOW_TENANT_KEY` is configured per customer via `occ app_api:app:setenv bee_flow BEEFLOW_TENANT_KEY <key>` after install.
+`APP_SECRET`, `NEXTCLOUD_URL`, `APP_ID`, `APP_PORT`, etc. are normally injected by AppAPI. For local dev, set them by hand. `BEEFLOW_TENANT_KEY` is configured per customer via `occ app_api:app:setenv bee_flow_ai BEEFLOW_TENANT_KEY <key>` after install.
 
 ## Building the container
 
@@ -52,10 +52,18 @@ docker exec -u www-data nc-test php occ app_api:daemon:register \
     local-docker docker-install local docker http://host.docker.internal:8080
 
 # 3. Side-load this connector
-docker exec -u www-data nc-test php occ app_api:app:register bee_flow \
+docker exec -u www-data nc-test php occ app_api:app:register bee_flow_ai \
     local-docker --info-xml /path/to/nextcloud-connector/appinfo/info.xml
+```
+
+## Tests
+
+```bash
+cd nextcloud-connector
+npm install
+npm test
 ```
 
 ## License
 
-AGPL-3.0-or-later (pending Phase 0 legal review).
+[AGPL-3.0-or-later](LICENSE).

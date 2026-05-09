@@ -5,14 +5,15 @@
 # Subcommands: up | down | clean | logs | status
 #
 # Env overrides:
-#   NC_VERSION=31  NC_PORT=8080  APP_ID=bee_flow
+#   NC_VERSION=34  NC_PORT=8080  APP_ID=bee_flow
+#                  (info.xml supports 31–34; pick whatever you want to test)
 #   IMAGE=bee-flow-connector:dev
 #   TENANT_KEY=dev-tenant-key
 #   API_BASE_URL=http://host.docker.internal:3101
 
 set -euo pipefail
 
-NC_VERSION="${NC_VERSION:-31}"
+NC_VERSION="${NC_VERSION:-34}"
 NC_PORT="${NC_PORT:-8080}"
 APP_ID="${APP_ID:-bee_flow}"
 IMAGE="${IMAGE:-bee-flow-connector:dev}"
@@ -22,7 +23,10 @@ NC_NAME="bee-flow-nc-sandbox"
 CONN_NAME="bee-flow-connector-instance"
 DAEMON="manual_dev"
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Connector dir = parent of this script. Works in both layouts:
+#   monorepo:   <monorepo>/nextcloud-connector/scripts/local-sandbox.sh
+#   standalone: <connector-clone>/scripts/local-sandbox.sh
+CONNECTOR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB=/var/www/html/data/owncloud.db
 
 g() { printf '\033[1;32m%s\033[0m\n' "$*"; }
@@ -40,7 +44,7 @@ cmd_up() {
         # Self-contained build: Dockerfile clones Bee-Flow/hive anonymously
         # over HTTPS at build time. Context is the connector dir only — no
         # agent-hub/ sibling, no SSH key, no GitHub token required.
-        docker build -t "$IMAGE" "$REPO_ROOT/nextcloud-connector"
+        docker build -t "$IMAGE" "$CONNECTOR_DIR"
     else
         b "[1/7] Reusing existing $IMAGE"
     fi
@@ -85,14 +89,14 @@ cmd_up() {
     # the registered row (so route/menu changes pick up automatically) OR if
     # FORCE=1 was passed. Otherwise NC's stored routes drift from info.xml
     # silently.
-    info_mtime=$(stat -c %Y "$REPO_ROOT/nextcloud-connector/appinfo/info.xml" 2>/dev/null || echo 0)
+    info_mtime=$(stat -c %Y "$CONNECTOR_DIR/appinfo/info.xml" 2>/dev/null || echo 0)
     db_ctime=$(nc_sql "SELECT created_time FROM oc_ex_apps WHERE appid='$APP_ID';" 2>/dev/null || echo 0)
     if [ -z "$db_ctime" ] || [ "${FORCE:-0}" = "1" ] || [ "$info_mtime" -gt "$db_ctime" ]; then
         b "[6/7] (Re-)registering ExApp $APP_ID (info.xml mtime=$info_mtime, db ctime=$db_ctime)"
         nc_occ app_api:app:disable "$APP_ID" 2>/dev/null | tail -1 || true
         nc_occ app_api:app:unregister "$APP_ID" 2>/dev/null | tail -1 || true
         nc_sql "DELETE FROM oc_ex_apps WHERE appid='$APP_ID'; DELETE FROM oc_ex_apps_routes WHERE appid='$APP_ID'; DELETE FROM oc_ex_ui_top_menu WHERE appid='$APP_ID'; DELETE FROM oc_ex_ui_scripts WHERE appid='$APP_ID';" 2>/dev/null || true
-        docker cp "$REPO_ROOT/nextcloud-connector/appinfo/info.xml" "$NC_NAME:/tmp/info.xml"
+        docker cp "$CONNECTOR_DIR/appinfo/info.xml" "$NC_NAME:/tmp/info.xml"
         nc_occ app_api:app:register "$APP_ID" "$DAEMON" \
             --info-xml /tmp/info.xml \
             --env "BEEFLOW_TENANT_KEY=$TENANT_KEY" \

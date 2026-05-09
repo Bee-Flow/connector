@@ -15,20 +15,39 @@ function required(name) {
     return v;
 }
 
+// Auto-bootstrap mode: when BEEFLOW_TENANT_KEY is unset or set to literal
+// "auto", the connector calls /auth/connector/bootstrap on first boot to
+// auto-provision an org + mint a tenant key. The result is cached in
+// APP_PERSISTENT_STORAGE (survives container restarts but not disk wipe).
+// This is what enables one-click install from the Nextcloud App Store —
+// the customer admin doesn't need to mint or paste any keys.
+const rawTenantKey = process.env.BEEFLOW_TENANT_KEY || 'auto';
+const isAutoTenantKey = (rawTenantKey === 'auto' || rawTenantKey === '');
+
 const config = {
     // ── AppAPI-injected ────────────────────────────────────────
     appId: process.env.APP_ID || 'bee_flow_ai',
     appSecret: required('APP_SECRET'),
     appVersion: process.env.APP_VERSION || '0.0.0',
-    appHost: process.env.APP_HOST || '0.0.0.0',
+    // Always bind 0.0.0.0. AppAPI's manual-install daemon sets APP_HOST=127.0.0.1
+    // assuming the container's docker-proxy maps it; HaRP's docker-install
+    // daemon (harp_exapp_direct mode) needs to reach the container directly via
+    // the docker network, which requires binding all interfaces. Either way,
+    // the only inbound traffic is from the deploy-daemon (NC's signed-secret
+    // gate enforced upstream).
+    appHost: '0.0.0.0',
     appPort: parseInt(process.env.APP_PORT || '8080', 10),
     persistentStorage: process.env.APP_PERSISTENT_STORAGE || '/data',
     nextcloudUrl: required('NEXTCLOUD_URL').replace(/\/+$/, ''),
 
-    // ── Customer-configured (via occ app_api:app:setenv) ───────
-    // Issued by Bee Flow per tenant. Used to sign JWTs the SaaS validates
-    // against the matching tenant on its side.
-    tenantKey: required('BEEFLOW_TENANT_KEY'),
+    // ── Customer-configured / auto-provisioned ─────────────────
+    // tenantKey is filled in at runtime: either from env, or from the bootstrap
+    // cache file, or by calling the SaaS bootstrap endpoint. See bootstrap.js.
+    tenantKey: isAutoTenantKey ? null : rawTenantKey,
+    isAutoTenantKey,
+    // Cache for auto-provisioned tenant key + org id. Written by bootstrap.js.
+    organizationId: null,
+    ncInstanceId: null,
     // Override only for staging / on-prem. Production default points at our
     // public API.
     apiBaseUrl: (process.env.BEEFLOW_API_BASE_URL || 'https://api.beeflow.ai').replace(/\/+$/, ''),

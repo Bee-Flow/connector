@@ -28,11 +28,61 @@ app.use(express.json({
     verify: (req, _res, buf) => { req.rawBody = buf.toString('utf8'); },
 }));
 
+// CSP must allow the parent NC origin to embed proxied responses. Without
+// this, NC's default CSP wraps our response with `frame-ancestors 'none'`
+// and the browser blocks rendering. The connector knows NEXTCLOUD_URL but
+// the user's browser may reach NC via a different origin (localhost vs
+// host.docker.internal in dev, customer domain in prod). The forwarded
+// request's Origin/Referer tells us what the browser sees.
+app.use((req, res, next) => {
+    const ancestors = new Set(["'self'", new URL(config.nextcloudUrl).origin]);
+    for (const hdr of ['origin', 'referer']) {
+        const v = req.headers[hdr];
+        if (!v) continue;
+        try { ancestors.add(new URL(v).origin); } catch { /* ignore malformed */ }
+    }
+    res.setHeader('Content-Security-Policy', `frame-ancestors ${[...ancestors].join(' ')}`);
+    next();
+});
+
+// Mount /nc/* reverse-proxy before the AppAPI auth gate. Calls under /nc
+// originate from the Bee Flow SaaS (not from a browser via NC's signed
+// proxy), so they don't carry an AUTHORIZATION-APP-API header. They are
+// authenticated via HMAC-signed `X-Beeflow-Sig` against the tenant key —
+// see ncProxy.js verifyHmac.
+require('./ncProxy').mount(app);
+
 app.use(appApiAuthMiddleware);
+
+// /webhook/nc-events is hit by NC's AppAPI events_listener with an
+// AUTHORIZATION-APP-API header — appApiAuthMiddleware above has already
+// validated the shared secret by the time we reach this router.
+app.use('/', require('./eventsWebhook'));
+app.use('/', require('./automationEventsWebhook'));
 
 registerLifecycle(app);
 
-app.use('/api', buildApiProxy());
+// @nextcloud/l10n bundled into the SPA pings these endpoints on every page
+// load to fetch translations from a "real" NC instance. The Bee Flow server
+// doesn't host them — forwarding produces 404 spam in the console. Return
+// an empty translation table so the lib falls back to English silently.
+app.get(['/api/languages/user/locales', '/api/languages/user/strings/:lang',
+        '/api/languages/public/strings/:lang'], (_req, res) => {
+    res.json({ translations: {}, pluralForm: 'nplurals=2; plural=(n != 1);' });
+});
+
+// Forward to SaaS by default. The deny-list below covers everything the
+// connector serves itself (lifecycle, static assets, SPA shell). Anything
+// else lands on the SaaS — that includes >50 backend mounts (`/auth`,
+// `/agents`, `/automation`, `/integrations`, `/api/*` sub-routes, etc.).
+// A maintained allow-list drifted as new endpoints were added; the deny-
+// list captures the small, stable set of connector-owned paths instead.
+const CONNECTOR_OWNED = /^\/(assets\/|js\/|img\/|favicon|BeeFlow-logo|bee-flow-logo|index\.html$|$)/;
+const proxy = buildApiProxy();
+app.use((req, res, next) => {
+    if (CONNECTOR_OWNED.test(req.url.split('?')[0])) return next();
+    return proxy(req, res, next);
+});
 
 // JS that NC injects into the embedded ExApp page. It builds an iframe
 // pointing at NC's signed proxy back to this connector, which lets the
@@ -52,27 +102,96 @@ app.get(['/js/embed', '/js/embed.js'], (_req, res) => {
 `);
 });
 
-// Inline app icon for the Nextcloud top-menu entry. Tiny SVG so it embeds
-// cleanly in the navbar; replace with branded asset later.
-app.get('/img/app.svg', (_req, res) => {
-    res.type('image/svg+xml').send(
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">' +
-        '<path d="M12 2L3 7v6c0 5 3.8 9.7 9 11 5.2-1.3 9-6 9-11V7l-9-5zm0 4l6 3v4c0 3.3-2.5 6.6-6 7.5-3.5-.9-6-4.2-6-7.5V9l6-3z"/>' +
-        '</svg>'
-    );
-});
-
 // Static SPA — built by the agent-hub package and copied into /public at
 // container build time (see Dockerfile). Falls through to index.html for
 // client-side routing.
 const publicDir = path.join(__dirname, '..', 'public');
+
+// Bee Flow icon for the Nextcloud top-menu entry — same asset the SPA uses
+// in the folded sidebar (BeeFlow-logo-Icon-2026.svg) so users see one
+// consistent brand mark across NC chrome and the embedded app.
+app.get('/img/app.svg', (_req, res) => {
+    const logoPath = path.join(publicDir, 'BeeFlow-logo-Icon-2026.svg');
+    const fs3 = require('fs');
+    fs3.access(logoPath, fs3.constants.R_OK, (err) => {
+        if (err) {
+            // Fallback to an inline shield if the bundled logo is missing
+            // (shouldn't happen with a normal build, but keeps the navbar
+            // icon non-blank rather than 404).
+            res.type('image/svg+xml').send(
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">' +
+                '<path d="M12 2L3 7v6c0 5 3.8 9.7 9 11 5.2-1.3 9-6 9-11V7l-9-5zm0 4l6 3v4c0 3.3-2.5 6.6-6 7.5-3.5-.9-6-4.2-6-7.5V9l6-3z"/>' +
+                '</svg>'
+            );
+            return;
+        }
+        res.type('image/svg+xml');
+        fs3.createReadStream(logoPath).pipe(res);
+    });
+});
 app.use(express.static(publicDir, { index: false, fallthrough: true }));
+
+const indexHtmlPath = path.join(publicDir, 'index.html');
+// SPA is built with --base and VITE_API_URL pointing at the NC proxy path,
+// so all asset URLs (in index.html) and runtime API calls
+// (`${API_BASE}/auth/...`) already include the proxy prefix. No HTML
+// rewriting needed — just serve index.html for client-side routes.
+//
+// Force no-store on index.html: it carries the hashed asset reference,
+// so a stale copy in browser/NC-proxy disk cache pins users to an old
+// SPA bundle. Hashed assets under /assets/ keep their long-cache.
 app.get('*', (_req, res) => {
-    res.sendFile(path.join(publicDir, 'index.html'));
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    res.sendFile(indexHtmlPath);
 });
 
-app.listen(config.appPort, config.appHost, () => {
-    console.log(`[BeeFlowConnector] ${config.appId} v${config.appVersion} listening on ${config.appHost}:${config.appPort}`);
-    console.log(`[BeeFlowConnector] SaaS target: ${config.apiBaseUrl}`);
-    console.log(`[BeeFlowConnector] Nextcloud:   ${config.nextcloudUrl}`);
+// One-shot auto-bootstrap: provision a Bee Flow org + tenant key on first
+// boot. Runs in the background so the connector keeps serving heartbeats
+// even if the SaaS is briefly unreachable. Failures are logged and retried
+// on the next /init lifecycle hit.
+const { bootstrapIfNeeded } = require('./bootstrap');
+bootstrapIfNeeded().catch(err => {
+    console.error(`[Bootstrap] Failed: ${err.message}. Will retry on /init.`);
 });
+
+// HaRP-compatible: when HP_SHARED_KEY is set (HaRP daemon mode), bind to a
+// Unix domain socket that frpc tunnels back to HaRP. Otherwise bind TCP for
+// manual-install / direct access.
+const fs2 = require('fs');
+if (process.env.HP_SHARED_KEY) {
+    const sockPath = '/tmp/exapp.sock';
+    try { fs2.unlinkSync(sockPath); } catch (_) { /* socket may not exist yet */ }
+    app.listen(sockPath, () => {
+        try { fs2.chmodSync(sockPath, 0o660); } catch (_) {}
+        console.log(`[BeeFlowConnector] ${config.appId} v${config.appVersion} listening on unix:${sockPath} (HaRP mode)`);
+        console.log(`[BeeFlowConnector] SaaS target: ${config.apiBaseUrl}`);
+        console.log(`[BeeFlowConnector] Nextcloud:   ${config.nextcloudUrl}`);
+    });
+} else {
+    app.listen(config.appPort, config.appHost, () => {
+        console.log(`[BeeFlowConnector] ${config.appId} v${config.appVersion} listening on ${config.appHost}:${config.appPort}`);
+        console.log(`[BeeFlowConnector] SaaS target: ${config.apiBaseUrl}`);
+        console.log(`[BeeFlowConnector] Nextcloud:   ${config.nextcloudUrl}`);
+    });
+}
+
+// Best-effort unregister of NC event-listeners on shutdown so stale
+// subscriptions don't accumulate after restarts. Re-registered on next
+// /init by registerEventListeners().
+let _shuttingDown = false;
+async function gracefulShutdown(signal) {
+    if (_shuttingDown) return;
+    _shuttingDown = true;
+    console.log(`[BeeFlowConnector] ${signal} — unregistering NC event listeners`);
+    try {
+        const { unregisterEventListeners } = require('./heartbeat');
+        await unregisterEventListeners();
+    } catch (err) {
+        console.warn(`[BeeFlowConnector] Unregister failed: ${err.message}`);
+    }
+    process.exit(0);
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));

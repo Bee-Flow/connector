@@ -78,15 +78,24 @@ cmd_up() {
         b "[5/7] Daemon $DAEMON already registered"
     fi
 
-    if ! nc_sql "SELECT 1 FROM oc_ex_apps WHERE appid='$APP_ID';" | grep -q 1; then
-        b "[6/7] Registering ExApp $APP_ID"
+    # Re-register if the ExApp doesn't exist OR if `info.xml` is newer than
+    # the registered row (so route/menu changes pick up automatically) OR if
+    # FORCE=1 was passed. Otherwise NC's stored routes drift from info.xml
+    # silently.
+    info_mtime=$(stat -c %Y "$REPO_ROOT/nextcloud-connector/appinfo/info.xml" 2>/dev/null || echo 0)
+    db_ctime=$(nc_sql "SELECT created_time FROM oc_ex_apps WHERE appid='$APP_ID';" 2>/dev/null || echo 0)
+    if [ -z "$db_ctime" ] || [ "${FORCE:-0}" = "1" ] || [ "$info_mtime" -gt "$db_ctime" ]; then
+        b "[6/7] (Re-)registering ExApp $APP_ID (info.xml mtime=$info_mtime, db ctime=$db_ctime)"
+        nc_occ app_api:app:disable "$APP_ID" 2>/dev/null | tail -1 || true
+        nc_occ app_api:app:unregister "$APP_ID" 2>/dev/null | tail -1 || true
+        nc_sql "DELETE FROM oc_ex_apps WHERE appid='$APP_ID'; DELETE FROM oc_ex_apps_routes WHERE appid='$APP_ID'; DELETE FROM oc_ex_ui_top_menu WHERE appid='$APP_ID'; DELETE FROM oc_ex_ui_scripts WHERE appid='$APP_ID';" 2>/dev/null || true
         docker cp "$REPO_ROOT/nextcloud-connector/appinfo/info.xml" "$NC_NAME:/tmp/info.xml"
         nc_occ app_api:app:register "$APP_ID" "$DAEMON" \
             --info-xml /tmp/info.xml \
             --env "BEEFLOW_TENANT_KEY=$TENANT_KEY" \
             --env "BEEFLOW_API_BASE_URL=$API_BASE_URL" 2>&1 | tail -1
     else
-        b "[6/7] ExApp $APP_ID already registered"
+        b "[6/7] ExApp $APP_ID already registered (info.xml unchanged)"
     fi
 
     SECRET=$(nc_sql "SELECT secret FROM oc_ex_apps WHERE appid='$APP_ID';")

@@ -48,10 +48,23 @@ The connector does **not** bulk-export file contents, contacts, or calendars. Pr
     </dependencies>
     <external-app>
         <docker-install>
-            <registry>ghcr.io</registry>
+            <registry>localhost:5000</registry>
             <image>beeflow-ai/bee-flow-connector</image>
             <image-tag>latest</image-tag>
         </docker-install>
+        <environment-variables>
+            <variable>
+                <name>BEEFLOW_TENANT_KEY</name>
+                <display-name>Bee Flow tenant key</display-name>
+                <description>HS256 key minted by the Bee Flow admin API. The connector signs JWTs with this key; the SaaS verifies them against the matching tenant.</description>
+            </variable>
+            <variable>
+                <name>BEEFLOW_API_BASE_URL</name>
+                <display-name>Bee Flow API base URL</display-name>
+                <description>Base URL of the hosted Bee Flow service (default: https://api.beeflow.ai). Override only for staging or on-prem.</description>
+                <default>https://api.beeflow.ai</default>
+            </variable>
+        </environment-variables>
         <routes>
             <route>
                 <url>^img\/.*</url>
@@ -61,22 +74,22 @@ The connector does **not** bulk-export file contents, contacts, or calendars. Pr
             <route>
                 <url>^js\/.*</url>
                 <verb>GET</verb>
-                <access_level>USER</access_level>
+                <access_level>PUBLIC</access_level>
             </route>
             <route>
                 <url>^assets\/.*</url>
                 <verb>GET</verb>
-                <access_level>USER</access_level>
+                <access_level>PUBLIC</access_level>
             </route>
             <route>
                 <url>^api\/.*</url>
-                <verb>GET,POST,PUT,DELETE</verb>
-                <access_level>USER</access_level>
+                <verb>GET,POST,PUT,DELETE,PATCH</verb>
+                <access_level>PUBLIC</access_level>
             </route>
             <route>
                 <url>^.*</url>
-                <verb>GET</verb>
-                <access_level>USER</access_level>
+                <verb>GET,POST,PUT,DELETE,PATCH</verb>
+                <access_level>PUBLIC</access_level>
             </route>
         </routes>
     </external-app>

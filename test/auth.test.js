@@ -1,44 +1,30 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const crypto = require('node:crypto');
 
 process.env.APP_SECRET = 'test-secret';
 process.env.NEXTCLOUD_URL = 'http://nc.test';
 process.env.BEEFLOW_TENANT_KEY = 'tenant-key';
 
-const { verifyAppApiSignature, mintSaasJwt, HDR } = require('../src/auth');
+const { decodeAuthHeader, mintSaasJwt } = require('../src/auth');
 const config = require('../src/config');
 
-function signedReq({ method = 'POST', url = '/api/x', body = '{}', skewSec = 0 } = {}) {
-    const ts = Math.floor(Date.now() / 1000) + skewSec;
-    const bodyHash = crypto.createHash('sha256').update(body).digest('hex');
-    const canonical = [method, url, bodyHash, String(ts)].join('\n');
-    const sig = crypto.createHmac('sha256', config.appSecret).update(canonical).digest('base64');
-    return {
-        method, url, originalUrl: url, rawBody: body,
-        headers: { [HDR.sig]: sig, [HDR.sigTime]: String(ts) },
-    };
-}
-
-test('valid signature passes', () => {
-    assert.doesNotThrow(() => verifyAppApiSignature(signedReq()));
+test('decode shared-secret header with user', () => {
+    const header = Buffer.from('alice:test-secret').toString('base64');
+    const decoded = decodeAuthHeader(header);
+    assert.equal(decoded.userId, 'alice');
+    assert.equal(decoded.secret, 'test-secret');
 });
 
-test('missing headers → 401', () => {
-    const req = signedReq();
-    delete req.headers[HDR.sig];
-    assert.throws(() => verifyAppApiSignature(req), /Missing AppAPI signature headers/);
+test('decode service-level header (empty userId)', () => {
+    const header = Buffer.from(':test-secret').toString('base64');
+    const decoded = decodeAuthHeader(header);
+    assert.equal(decoded.userId, '');
+    assert.equal(decoded.secret, 'test-secret');
 });
 
-test('tampered body → 401', () => {
-    const req = signedReq({ body: '{"a":1}' });
-    req.rawBody = '{"a":2}';
-    assert.throws(() => verifyAppApiSignature(req), /Invalid AppAPI signature/);
-});
-
-test('skew beyond tolerance → 401', () => {
-    const req = signedReq({ skewSec: config.sigSkewSeconds + 60 });
-    assert.throws(() => verifyAppApiSignature(req), /skew/);
+test('decode garbage returns null', () => {
+    assert.equal(decodeAuthHeader('not-base64-with-no-colon'), null);
+    assert.equal(decodeAuthHeader(undefined), null);
 });
 
 test('mintSaasJwt returns a JWT signed with tenant key', () => {

@@ -1,93 +1,83 @@
 /**
- * AppAPI authentication.
+ * AppAPI authentication (Nextcloud AppAPI 5.x).
  *
- * Every request Nextcloud routes to this container carries headers that
- * prove (a) it really came from the customer's Nextcloud and (b) which user
- * is on the other end. We verify the signature, look up the user against
- * Nextcloud OCS, and mint a short-lived JWT the SaaS proxy can forward.
+ * Empirically verified against AppAPI 5.0.2 source — the public docs are
+ * stale and reference an older HMAC scheme that no longer exists. Actual
+ * scheme is a shared-secret in a single header:
  *
- * Reference (header names + canonical-string format):
- *   https://github.com/nextcloud/app_api/blob/main/lib/AppAPIService.php
- *   https://docs.nextcloud.com/server/stable/developer_manual/exapp_development/tech_details/Authentication.html
+ *   AUTHORIZATION-APP-API: base64(<userId>:<APP_SECRET>)
  *
- * NOTE: AppAPI's signing scheme has shifted between AA versions. The
- * canonical-string layout below matches AA v3 (NC 30+). If a customer is
- * pinned to an older AppAPI we'll need to branch on `aa-version`.
+ * Plus identifying headers (verified, not part of the secret):
+ *   AA-VERSION         AppAPI version (informational)
+ *   EX-APP-ID          must equal our APP_ID
+ *   EX-APP-VERSION     informational
+ *   AA-REQUEST-ID      forwarded for log correlation
+ *
+ * userId is empty for service-level calls (no human in the loop) and a
+ * Nextcloud uid otherwise. We mint a SaaS-bound JWT only for human-bound
+ * calls; service-level calls don't reach the proxy here (they hit lifecycle
+ * endpoints which are exempt).
  */
 
-const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const config = require('./config');
 
 const HDR = {
-    sig: 'aa-signature',
-    sigTime: 'aa-signature-time',
+    auth: 'authorization-app-api',
+    appId: 'ex-app-id',
+    appVersion: 'ex-app-version',
     aaVersion: 'aa-version',
     requestId: 'aa-request-id',
-    userId: 'ex-app-user-id',
 };
 
-function timingSafeEq(a, b) {
-    const ab = Buffer.from(a, 'utf8');
-    const bb = Buffer.from(b, 'utf8');
-    if (ab.length !== bb.length) return false;
-    return crypto.timingSafeEqual(ab, bb);
+const LIFECYCLE_PATHS = new Set(['/heartbeat', '/init', '/enabled']);
+
+// Paths that are safe to serve without a NC user context. Includes:
+//   - SPA shell + assets (index.html, favicon, /assets/*)
+//   - /js/* and /img/* — NC's embedded.html template loads these via
+//     `Util::addScript`/`Util::addStyle` through its proxy_js/proxy_css
+//     mapping. Browser requests come in unsigned-userId because they're
+//     declared as PUBLIC routes in info.xml. Blocking them with a 401 here
+//     leaves the embedded page blank (no embed.js, no app icon).
+//   - Any path ending in a static-asset extension (svg/png/jpg/ico/css/js/
+//     woff2/etc.). Components in the SPA bundle may emit hard-coded asset
+//     paths like `<img src="bee-flow-logo.svg">` that browsers resolve
+//     relative to the iframe URL. These never carry user context.
+//
+// API/auth/etc. still require a populated AUTHORIZATION-APP-API header to
+// mint a SaaS JWT.
+const ANON_OK = /^\/(assets\/|js\/|img\/|index\.html$|favicon|$)|\.(svg|png|jpe?g|gif|webp|ico|css|js|woff2?|ttf|otf|eot|map)$/i;
+
+function decodeAuthHeader(header) {
+    if (!header || typeof header !== 'string') return null;
+    let decoded;
+    try {
+        decoded = Buffer.from(header, 'base64').toString('utf8');
+    } catch {
+        return null;
+    }
+    const idx = decoded.indexOf(':');
+    if (idx === -1) return null;
+    return { userId: decoded.slice(0, idx), secret: decoded.slice(idx + 1) };
 }
 
 /**
- * Verify the AppAPI HMAC signature on an incoming request.
- * Throws if invalid. Mutates nothing.
+ * Look up a Nextcloud user via OCS using the same shared-secret auth.
+ *
+ * Cached per-uid for 60s. The connector hits this on EVERY browser request
+ * (every fetch of /auth/user, /agents, /api/...) to mint a per-request JWT
+ * and derive the user's email. Without the cache, each request adds an
+ * extra HTTP round-trip to NC just to get data that rarely changes —
+ * doubling perceived latency on every SPA action.
  */
-function verifyAppApiSignature(req) {
-    const sig = req.headers[HDR.sig];
-    const sigTimeStr = req.headers[HDR.sigTime];
-    if (!sig || !sigTimeStr) {
-        const err = new Error('Missing AppAPI signature headers');
-        err.status = 401;
-        throw err;
-    }
+const _userCache = new Map(); // uid → { user, expiresAt }
+const USER_CACHE_TTL_MS = 60_000;
 
-    const sigTime = parseInt(sigTimeStr, 10);
-    if (!Number.isFinite(sigTime)) {
-        const err = new Error('Malformed signature time');
-        err.status = 401;
-        throw err;
-    }
-    const skew = Math.abs(Math.floor(Date.now() / 1000) - sigTime);
-    if (skew > config.sigSkewSeconds) {
-        const err = new Error(`Signature timestamp skew ${skew}s exceeds tolerance`);
-        err.status = 401;
-        throw err;
-    }
-
-    // Canonical string: METHOD\nPATH\nBODY_SHA256\nTIMESTAMP
-    // (See AppAPIService::generateRequestSignature in the AppAPI source.)
-    const bodyHash = crypto.createHash('sha256')
-        .update(req.rawBody || '')
-        .digest('hex');
-    const canonical = [
-        req.method.toUpperCase(),
-        req.originalUrl || req.url,
-        bodyHash,
-        String(sigTime),
-    ].join('\n');
-
-    const expected = crypto.createHmac('sha256', config.appSecret)
-        .update(canonical)
-        .digest('base64');
-
-    if (!timingSafeEq(sig, expected)) {
-        const err = new Error('Invalid AppAPI signature');
-        err.status = 401;
-        throw err;
-    }
-}
-
-/**
- * Look up a Nextcloud user via OCS. AppAPI service auth uses the same
- * APP_SECRET we already have — no additional credential.
- */
 async function fetchNextcloudUser(uid) {
+    const now = Date.now();
+    const cached = _userCache.get(uid);
+    if (cached && cached.expiresAt > now) return cached.user;
+
     const url = `${config.nextcloudUrl}/ocs/v2.php/cloud/users/${encodeURIComponent(uid)}?format=json`;
     const res = await fetch(url, {
         headers: {
@@ -105,23 +95,28 @@ async function fetchNextcloudUser(uid) {
     const body = await res.json();
     const data = body?.ocs?.data;
     if (!data) throw new Error('OCS user lookup returned no data');
-    return {
+    const user = {
         uid: data.id,
         email: data.email || null,
         displayName: data.displayname || data.display_name || data.id,
     };
+    _userCache.set(uid, { user, expiresAt: now + USER_CACHE_TTL_MS });
+    // Bound the cache so churn on a busy NC instance can't leak memory.
+    if (_userCache.size > 1000) {
+        const oldest = _userCache.keys().next().value;
+        if (oldest) _userCache.delete(oldest);
+    }
+    return user;
 }
 
-/**
- * Mint a short-lived JWT for the SaaS proxy to use as the bearer.
- */
 function mintSaasJwt(user) {
+    if (!config.tenantKey) {
+        const err = new Error('Tenant key not configured — bootstrap may have failed');
+        err.code = 'TENANT_KEY_MISSING';
+        throw err;
+    }
     return jwt.sign(
-        {
-            sub: user.uid,
-            email: user.email,
-            name: user.displayName,
-        },
+        { sub: user.uid, email: user.email, name: user.displayName },
         config.tenantKey,
         {
             algorithm: 'HS256',
@@ -132,47 +127,50 @@ function mintSaasJwt(user) {
     );
 }
 
-/**
- * Express middleware: verifies AppAPI signature on every request, looks up
- * the user, attaches `req.beeflow = { user, jwt }`. Lifecycle endpoints
- * (/heartbeat, /init, /enabled) are exempt — AppAPI 5.x does not sign these
- * lifecycle probes, and they only run AppAPI-internal logic (health check,
- * status report) without touching user data.
- */
-const LIFECYCLE_PATHS = new Set(['/heartbeat', '/init', '/enabled']);
-
 function appApiAuthMiddleware(req, res, next) {
     if (LIFECYCLE_PATHS.has(req.path)) return next();
-    // Public assets fetched server-to-server by NC (menu icon, embed JS) —
-    // no user data, no API access. NC fetches these unsigned to inject into
-    // its own chrome.
+    // Public assets fetched server-to-server by NC (menu icon, embed JS).
     if (req.path.startsWith('/img/') || req.path.startsWith('/js/')) return next();
-    Promise.resolve()
-        .then(() => verifyAppApiSignature(req))
-        .then(() => {
-            const uid = req.headers[HDR.userId];
-            if (!uid) {
-                const err = new Error('Missing EX-APP-USER-ID header');
-                err.status = 401;
-                throw err;
-            }
-            return fetchNextcloudUser(uid);
-        })
+
+    const decoded = decodeAuthHeader(req.headers[HDR.auth]);
+    if (!decoded) {
+        return res.status(401).json({ error: 'Missing AppAPI auth header' });
+    }
+    if (decoded.secret !== config.appSecret) {
+        return res.status(401).json({ error: 'Invalid AppAPI shared secret' });
+    }
+    const expectedAppId = req.headers[HDR.appId];
+    if (expectedAppId && expectedAppId !== config.appId) {
+        return res.status(401).json({ error: 'EX-APP-ID mismatch' });
+    }
+
+    if (!decoded.userId) {
+        // PUBLIC route reached anonymously (NC user not logged in). Serve
+        // the SPA shell — but reject SaaS-bound requests with a clear error
+        // so the SPA can show a recognizable login-required state instead
+        // of silently failing or showing stale data.
+        if (ANON_OK.test(req.path)) return next();
+        return res.status(401).json({
+            error: 'NC session not visible — please refresh after logging in',
+        });
+    }
+
+    fetchNextcloudUser(decoded.userId)
         .then(user => {
             req.beeflow = { user, jwt: mintSaasJwt(user) };
             next();
         })
         .catch(err => {
-            const status = err.status || 500;
-            console.warn(`[Auth] ${status} ${req.method} ${req.url}: ${err.message}`);
-            res.status(status).json({ error: err.message });
+            console.warn(`[Auth] User lookup failed for ${decoded.userId}: ${err.message}`);
+            res.status(502).json({ error: 'User lookup failed' });
         });
 }
 
 module.exports = {
     appApiAuthMiddleware,
-    verifyAppApiSignature,
+    decodeAuthHeader,
     fetchNextcloudUser,
     mintSaasJwt,
     HDR,
+    LIFECYCLE_PATHS,
 };

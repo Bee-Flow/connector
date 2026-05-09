@@ -263,7 +263,7 @@ cmd_up() {
     nc_occ config:system:set trusted_domains 1 --value="$NC_NAME" >/dev/null
 
     nc_occ app:install app_api 2>&1 | tail -1 || true
-    docker exec "$NC_NAME" bash -c "command -v sqlite3 >/dev/null || (apt-get update -qq >/dev/null && apt-get install -y -qq sqlite3 >/dev/null)" || true
+    docker exec -e DEBIAN_FRONTEND=noninteractive "$NC_NAME" bash -c "command -v sqlite3 >/dev/null || (apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq sqlite3 >/dev/null 2>&1)" || true
 
     # Daemon's host MUST be the connector container's name — that's how
     # AppAPI builds the heartbeat URL (http://<host>:<exapp-port>/heartbeat).

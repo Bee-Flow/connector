@@ -19,6 +19,30 @@ The connector is the only thing the Nextcloud App Store sees. The hosted SaaS at
 
 ## Local development
 
+The fastest way to run this connector against a local Nextcloud — **without** publishing anything to the App Store — is the bundled sandbox script:
+
+```bash
+./scripts/local-sandbox.sh up
+```
+
+This builds the connector image, runs Nextcloud 31 on `:8080` (admin/admin), installs AppAPI, registers a `manual-install` deployment daemon, and side-loads this connector. End state: open <http://localhost:8080>, click the bee in the top bar.
+
+Subcommands:
+
+```bash
+./scripts/local-sandbox.sh status   # show container state
+./scripts/local-sandbox.sh logs     # tail logs
+./scripts/local-sandbox.sh down     # stop containers (keep data)
+./scripts/local-sandbox.sh clean    # nuke containers + image
+FORCE=1 ./scripts/local-sandbox.sh up   # force re-register from info.xml
+```
+
+Full walkthrough — including the manual `occ` commands and verification steps — at <https://bee-flow.github.io/docs/getting-started/local-development/>.
+
+### Running the connector directly (without Nextcloud)
+
+If you just want to iterate on the Express handlers without a Nextcloud in the loop:
+
 ```bash
 cd nextcloud-connector
 npm install
@@ -34,27 +58,11 @@ npm start
 
 ## Building the container
 
-From the repo root (so the SPA build context is reachable):
-
 ```bash
-docker build -f nextcloud-connector/Dockerfile -t ghcr.io/beeflow-ai/bee-flow-connector:dev .
+docker build -t ghcr.io/bee-flow/connector:dev .
 ```
 
-## Side-loading into a local Nextcloud
-
-```bash
-# 1. Start a Nextcloud sandbox with AppAPI installed
-docker run -d --name nc-test -p 8080:80 nextcloud:31
-docker exec -u www-data nc-test php occ app:install app_api
-
-# 2. Register a docker-install daemon
-docker exec -u www-data nc-test php occ app_api:daemon:register \
-    local-docker docker-install local docker http://host.docker.internal:8080
-
-# 3. Side-load this connector
-docker exec -u www-data nc-test php occ app_api:app:register bee_flow \
-    local-docker --info-xml /path/to/nextcloud-connector/appinfo/info.xml
-```
+The Dockerfile clones [`Bee-Flow/hive`](https://github.com/Bee-Flow/hive) anonymously over HTTPS at build time and bakes the SPA into the image — no SSH key or GitHub token required. Pass `--build-arg HIVE_REF=v0.1.0` to pin a specific frontend tag.
 
 ## Tests
 

@@ -94,10 +94,17 @@ cmd_up() {
     if ! nc_occ status 2>/dev/null | grep -q 'installed: true'; then
         b "[4/7] Installing Nextcloud (admin/admin)"
         nc_occ maintenance:install --database=sqlite --admin-user=admin --admin-pass=admin >/dev/null
-        nc_occ config:system:set trusted_domains 1 --value=host.docker.internal >/dev/null
     else
         b "[4/7] Nextcloud already installed"
     fi
+
+    # Trusted domains — must include every hostname the connector / browser
+    # uses to reach NC. Without these, NC returns its web-UI HTML for OCS
+    # calls instead of JSON, which breaks the connector's /init flow
+    # (TopMenu / EmbedScript / events_listener registrations all 400).
+    #   localhost        → for the browser (already default-trusted)
+    #   $NC_NAME         → for the connector calling NC over the shared network
+    nc_occ config:system:set trusted_domains 1 --value="$NC_NAME" >/dev/null
 
     nc_occ app:install app_api 2>&1 | tail -1 || true
     docker exec "$NC_NAME" bash -c "command -v sqlite3 >/dev/null || (apt-get update -qq >/dev/null && apt-get install -y -qq sqlite3 >/dev/null)" || true

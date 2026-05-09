@@ -37,11 +37,10 @@ cmd_up() {
 
     if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
         b "[1/7] Building $IMAGE (one-time, ~1-3 min)"
-        # Self-contained build: Dockerfile clones Bee-Flow/hive over a
-        # forwarded SSH agent at build time. Context is the connector dir
-        # only — no `agent-hub/` sibling required.
-        DOCKER_BUILDKIT=1 docker buildx build --ssh default \
-            -t "$IMAGE" "$REPO_ROOT/nextcloud-connector"
+        # Self-contained build: Dockerfile clones Bee-Flow/hive anonymously
+        # over HTTPS at build time. Context is the connector dir only — no
+        # agent-hub/ sibling, no SSH key, no GitHub token required.
+        docker build -t "$IMAGE" "$REPO_ROOT/nextcloud-connector"
     else
         b "[1/7] Reusing existing $IMAGE"
     fi

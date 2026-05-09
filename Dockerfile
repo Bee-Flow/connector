@@ -2,36 +2,46 @@
 #
 # Bee Flow Nextcloud connector — Docker image.
 #
-# This Dockerfile is **self-contained**: it clones the Bee Flow frontend
-# (Bee-Flow/hive) at build time using a forwarded SSH agent, so the connector
-# repository can be built standalone without needing the hive source as a
-# sibling in the build context.
+# Self-contained, reviewer-reproducible build: clones the Bee Flow frontend
+# (Bee-Flow/hive) anonymously over HTTPS at build time. Anyone (including
+# Nextcloud App Store reviewers and CI runners) can rebuild the exact same
+# image without any GitHub token, SSH key or private credential.
 #
 # Build:
 #     cd nextcloud-connector            # or any clone of Bee-Flow/connector
-#     docker buildx build --ssh default -t bf-connector:dev .
+#     docker build -t bf-connector:dev .
 #
-# The `--ssh default` forwards your local SSH agent into the build so the
-# (currently private) hive repo is cloneable. On CI you can supply a
-# deploy-key the same way: `docker buildx build --ssh default=$SSH_KEY ...`.
+# Pin the frontend to a specific tag/commit/branch (recommended for
+# reproducible releases) via HIVE_REF — defaults to `main`:
+#     docker build --build-arg HIVE_REF=v1.0.0 -t bf-connector:v1.0.0 .
 #
-# To pin a specific frontend commit / branch, override HIVE_REF:
-#     docker buildx build --ssh default --build-arg HIVE_REF=v1.2.0 .
+# Override the source repo (e.g. for a fork) via HIVE_REPO:
+#     docker build --build-arg HIVE_REPO=tomkooy/bee-flow-fork \
+#                  --build-arg HIVE_REF=feature/foo .
 
 # ── Stage 1: build the React SPA from Bee-Flow/hive ──────────────
 FROM node:20-alpine AS spa-build
 
-# git + ssh client to clone the frontend over the forwarded agent.
-RUN apk add --no-cache git openssh-client \
-    && mkdir -p /root/.ssh \
-    && ssh-keyscan github.com >> /root/.ssh/known_hosts
+# git is enough — no SSH client, no credentials. Anonymous HTTPS clone
+# works once Bee-Flow/hive is public. While the repo is still private
+# you can supply a token via BuildKit secret:
+#   echo $GITHUB_TOKEN | docker build --secret id=gh_token,src=- ...
+# The token is read inside the RUN and never lands in the image layers.
+RUN apk add --no-cache git
 
 ARG HIVE_REPO=Bee-Flow/hive
 ARG HIVE_REF=main
 
 WORKDIR /spa
-RUN --mount=type=ssh \
-    git clone --depth=1 --branch=${HIVE_REF} git@github.com:${HIVE_REPO}.git . \
+RUN --mount=type=secret,id=gh_token,required=false \
+    if [ -s /run/secrets/gh_token ]; then \
+        TOKEN=$(cat /run/secrets/gh_token); \
+        git clone --depth=1 --branch=${HIVE_REF} \
+            "https://x-access-token:${TOKEN}@github.com/${HIVE_REPO}.git" . ; \
+    else \
+        git clone --depth=1 --branch=${HIVE_REF} \
+            "https://github.com/${HIVE_REPO}.git" . ; \
+    fi \
     && rm -rf .git
 
 RUN npm ci --no-audit --no-fund

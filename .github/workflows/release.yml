@@ -20,7 +20,9 @@ permissions:
 
 env:
   APP_ID: bee_flow
-  IMAGE: ghcr.io/${{ github.repository_owner }}/bee-flow-connector
+  # Must match <docker-install><image> in appinfo/info.xml so AppAPI pulls
+  # the same image admins see referenced in the manifest.
+  IMAGE: ghcr.io/bee-flow/connector
 
 jobs:
   build-and-publish:
@@ -50,6 +52,9 @@ jobs:
             exit 1
           fi
 
+      - name: Set up QEMU (multi-arch emulation)
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -60,15 +65,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push image
+      - name: Build and push multi-arch image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: true
+          # amd64 covers most NC servers; arm64 covers Raspberry Pi / Apple
+          # Silicon / Graviton. App Store reviewers test both — image must
+          # support both or the listing review fails.
+          platforms: linux/amd64,linux/arm64
           tags: |
             ${{ env.IMAGE }}:${{ steps.ver.outputs.version }}
             ${{ env.IMAGE }}:latest
+          # Pin the frontend to the same version as the connector tag so
+          # `bee_flow:1.2.0` always contains exactly hive `1.2.0`.
+          build-args: |
+            HIVE_REF=${{ github.ref_name }}
           # Reproducible builds matter for App Store audits.
           provenance: true
           sbom: true

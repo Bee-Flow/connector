@@ -5,15 +5,18 @@
 # Subcommands: up | down | clean | logs | status
 #
 # Env overrides:
-#   NC_VERSION=34  NC_PORT=8080  APP_ID=bee_flow
-#                  (info.xml supports 31–34; pick whatever you want to test)
-#   IMAGE=bee-flow-connector:dev
+#   NC_VERSION=stable  NC_PORT=8080  APP_ID=bee_flow
+#                      (info.xml supports 31–34; "stable" tracks Docker Hub
+#                       latest-stable. Pin to NC_VERSION=32 / 32.0.5 / etc.
+#                       for reproducibility.)
+#   IMAGE=bee-flow-connector:dev          # local build (default)
+#   IMAGE=ghcr.io/bee-flow/connector:dev  # pull pre-built (no local build)
 #   TENANT_KEY=dev-tenant-key
 #   API_BASE_URL=http://host.docker.internal:3101
 
 set -euo pipefail
 
-NC_VERSION="${NC_VERSION:-34}"
+NC_VERSION="${NC_VERSION:-stable}"
 NC_PORT="${NC_PORT:-8080}"
 APP_ID="${APP_ID:-bee_flow}"
 IMAGE="${IMAGE:-bee-flow-connector:dev}"
@@ -39,14 +42,22 @@ nc_sql() { docker exec "$NC_NAME" sqlite3 "$DB" "$1"; }
 cmd_up() {
     docker info >/dev/null 2>&1 || { r "Docker daemon is not reachable"; exit 1; }
 
-    if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-        b "[1/7] Building $IMAGE (one-time, ~1-3 min)"
+    # Image source priority:
+    #   1. Already-loaded local image  → reuse
+    #   2. Image looks like a registry path (contains '/' and a registry host
+    #      such as ghcr.io / docker.io)  → docker pull
+    #   3. Plain local tag (no registry host)  → docker build from CONNECTOR_DIR
+    if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        b "[1/7] Reusing existing $IMAGE"
+    elif [[ "$IMAGE" == *"/"*"/"* ]] || [[ "$IMAGE" == ghcr.io/* ]] || [[ "$IMAGE" == */* && "$IMAGE" != "library/"* && "$IMAGE" =~ \. ]]; then
+        b "[1/7] Pulling $IMAGE from registry"
+        docker pull "$IMAGE"
+    else
+        b "[1/7] Building $IMAGE locally (~1-3 min one-off; pre-built dev images live at ghcr.io/bee-flow/connector:dev)"
         # Self-contained build: Dockerfile clones Bee-Flow/hive anonymously
         # over HTTPS at build time. Context is the connector dir only — no
         # agent-hub/ sibling, no SSH key, no GitHub token required.
         docker build -t "$IMAGE" "$CONNECTOR_DIR"
-    else
-        b "[1/7] Reusing existing $IMAGE"
     fi
 
     if ! docker ps --format '{{.Names}}' | grep -qx "$NC_NAME"; then

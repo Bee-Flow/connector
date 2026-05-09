@@ -167,6 +167,16 @@ A free **Community tier** (single user, basic chat, local knowledge base) is ful
 
             <!-- HMAC-signed reverse proxy back to NC for SaaS-side calls -->
             <route><url>^nc\/.*</url><verb>GET,POST,PUT,DELETE,PATCH,PROPFIND,REPORT,MKCOL,MOVE,COPY</verb><access_level>PUBLIC</access_level></route>
+
+            <!-- SaaS-proxied catch-all. The SPA calls many top-level paths
+                 (/agents, /automation, /integrations, /chat, /components,
+                 /me, /knowledge, /notebooks, /admin, /ai, /skills, …) that
+                 the connector forwards to the Bee Flow server. Enumerating
+                 each one drifts as new endpoints are added; a USER-level
+                 catch-all keeps the allow-list small while still requiring
+                 a logged-in NC user (the App Store concern was a PUBLIC
+                 catch-all, which let anonymous traffic through). -->
+            <route><url>^.*</url><verb>GET,POST,PUT,DELETE,PATCH</verb><access_level>USER</access_level></route>
         </routes>
     </external-app>
 </info>

@@ -37,7 +37,7 @@ When you act on a Nextcloud item, the connector sends the item to the Bee Flow s
 
 Bee Flow **does not** bulk-export file contents, mail bodies, calendars or contacts. The connector forwards individual requests; nothing is copied, mirrored or indexed by default.
 
-Full privacy policy: <https://beeflow.ai/privacy>. License model: <https://docs.beeflow.ai/license-model>.
+Full privacy policy: <https://beeflow.ai/privacy>.
 
 ## Getting started
 
@@ -50,12 +50,14 @@ A free **Community tier** (single user, basic chat, local knowledge base) is ful
         ]]></description>
     <version>0.1.0</version>
     <licence>AGPL-3.0-or-later</licence>
-    <author mail="dev@beeflow.ai" homepage="https://beeflow.ai">Bee Flow B.V.</author>
+    <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.ai">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>
-    <documentation>
-        <user>https://beeflow.ai/docs/user</user>
-        <admin>https://beeflow.ai/docs/admin</admin>
-    </documentation>
+    <!--
+        Documentation URLs deliberately omitted until docs.beeflow.ai is
+        live. App Store reviewers will see the README on the GitHub repo
+        as the de-facto docs source.
+    -->
+
     <!--
         Categories — must match the enum in
         https://apps.nextcloud.com/schema/apps/info.xsd (no other values

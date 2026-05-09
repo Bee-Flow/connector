@@ -115,21 +115,60 @@ async function fetchUserInfo(uid) {
     return body?.ocs?.data || null;
 }
 
+async function fetchAdminUidsViaGroup() {
+    // OCS gives us the admin-group members directly — single round-trip
+    // instead of N user-info lookups. Returns null on any failure so the
+    // caller can fall back to the slow path.
+    try {
+        const url = `${config.nextcloudUrl}/ocs/v2.php/cloud/groups/admin/users?format=json`;
+        const res = await fetch(url, {
+            headers: await appApiOcsHeaders(''),
+            signal: AbortSignal.timeout(5_000),
+        });
+        if (!res.ok) return null;
+        const body = await res.json();
+        const data = body?.ocs?.data?.users;
+        return Array.isArray(data) && data.length > 0 ? data : null;
+    } catch { return null; }
+}
+
 async function fetchFirstAdmin() {
+    // Fast path: ask NC for the admin-group membership directly. One round-
+    // trip instead of `fetchAllUids` + N × `fetchUserInfo` (which on a 100-
+    // user instance was up to 1000s).
+    const adminUids = await fetchAdminUidsViaGroup();
+    if (adminUids) {
+        const uid = adminUids[0];
+        const info = await fetchUserInfo(uid);
+        return {
+            uid,
+            email: info?.email || `${uid}@example.local`,
+            displayName: info?.displayname || info?.['display-name'] || uid,
+        };
+    }
+
+    // Slow-path fallback: AppAPI version doesn't expose /cloud/groups/admin/users.
+    // Walk the user list in parallel batches of 5 instead of one-by-one.
     const uids = await fetchAllUids();
     if (uids.length === 0) throw new Error('No NC users visible to the ExApp');
     let firstAny = null;
-    for (const uid of uids) {
-        const info = await fetchUserInfo(uid);
-        if (!info) continue;
-        if (!firstAny) firstAny = { uid, info };
-        const groups = info.groups || [];
-        if (groups.includes('admin')) {
-            return {
-                uid,
-                email: info.email || `${uid}@example.local`,
-                displayName: info.displayname || info['display-name'] || uid,
-            };
+    const BATCH_SIZE = 5;
+    for (let i = 0; i < uids.length; i += BATCH_SIZE) {
+        const batch = uids.slice(i, i + BATCH_SIZE);
+        const infos = await Promise.all(batch.map(uid =>
+            fetchUserInfo(uid).then(info => ({ uid, info })).catch(() => ({ uid, info: null }))
+        ));
+        for (const { uid, info } of infos) {
+            if (!info) continue;
+            if (!firstAny) firstAny = { uid, info };
+            const groups = info.groups || [];
+            if (groups.includes('admin')) {
+                return {
+                    uid,
+                    email: info.email || `${uid}@example.local`,
+                    displayName: info.displayname || info['display-name'] || uid,
+                };
+            }
         }
     }
     // Fallback: no admin group reported — use first user. This is a fresh

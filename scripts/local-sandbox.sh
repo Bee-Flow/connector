@@ -117,11 +117,28 @@ cmd_up() {
         -e BEEFLOW_API_BASE_URL="$API_BASE_URL" \
         "$IMAGE" >/dev/null
 
-    nc_sql "UPDATE oc_ex_apps SET status='{\"deploy\":100,\"init\":100,\"action\":\"\",\"type\":\"install\",\"error\":\"\"}' WHERE appid='$APP_ID';"
+    # Wait for the connector's /heartbeat to respond before enabling. Async
+    # /init will report progress itself once it boots; we just need the
+    # container to be reachable on its assigned port.
+    b "[7/7] Waiting for connector /heartbeat on :$PORT"
+    for i in $(seq 1 20); do
+        if curl -sf -o /dev/null -m 1 "http://localhost:$PORT/heartbeat"; then
+            break
+        fi
+        sleep 0.5
+    done
+
+    # Force-bootstrap the deploy state. AppAPI's deploy step (image pull +
+    # container start) was bypassed because we ran docker run ourselves;
+    # set deploy=100 so AppAPI doesn't think it's mid-install. The /init
+    # step will report progress autonomously as the container processes
+    # its background setup.
+    nc_sql "UPDATE oc_ex_apps SET status='{\"deploy\":100,\"init\":0,\"action\":\"\",\"type\":\"install\",\"error\":\"\"}' WHERE appid='$APP_ID';"
     nc_occ app_api:app:enable "$APP_ID" 2>&1 | tail -1
 
     g "✔ Sandbox up — http://localhost:$NC_PORT  (admin / admin)"
-    echo "  Connector logs:  docker logs -f $CONN_NAME"
+    echo "  Connector port: $PORT  (heartbeat: http://localhost:$PORT/heartbeat)"
+    echo "  Connector logs: docker logs -f $CONN_NAME"
 }
 
 cmd_down() {

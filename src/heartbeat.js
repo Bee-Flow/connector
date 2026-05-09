@@ -1,11 +1,18 @@
 /**
  * ExApp lifecycle endpoints.
  *
- * Contract: https://docs.nextcloud.com/server/32/developer_manual/exapp_development/development_overview/ExAppLifecycle.html
+ * Contract: https://docs.nextcloud.com/server/latest/developer_manual/exapp_development/tech_details/ExAppLifecycle.html
  *
  *   GET  /heartbeat     — unauthenticated, must respond within 10 min of start
- *   POST /init          — authenticated, optional setup; report progress 1-100
+ *   POST /init          — authenticated, MUST return HTTP 200 immediately. All
+ *                         setup happens in the background; progress is reported
+ *                         async via PUT /ocs/v2.php/apps/app_api/ex-app/status.
  *   PUT  /enabled?...   — authenticated, registers/unregisters NC-side hooks
+ *
+ * Why /init returns immediately: AppAPI's `--wait-finish` polls the status
+ * field and blocks until init=100 or an error appears. If /init does work
+ * synchronously, AppAPI sees the call as "still loading" for the entire
+ * duration of that work, and the install command appears to hang.
  */
 
 const config = require('./config');
@@ -15,57 +22,55 @@ function registerLifecycle(app) {
         res.json({ status: 'ok' });
     });
 
-    // /init runs once per install. We do a best-effort SaaS probe so the
-    // admin sees a warning if upstream is unreachable, but install never
-    // fails on it — a transient SaaS outage shouldn't block the connector
-    // from coming up. AppAPI expects progress on
-    // /ocs/v2.php/apps/app_api/ex-app/status; we report 100 immediately
-    // because there's no model download or migration to run on our side.
-    app.post('/init', async (req, res) => {
-        // Retry bootstrap if startup attempt failed — by /init time the SaaS
-        // is reachable and we have a stable HOSTNAME, so this is a more
-        // reliable point than initial container boot.
-        if (!config.tenantKey && config.isAutoTenantKey) {
-            try {
-                const { bootstrapIfNeeded } = require('./bootstrap');
-                await bootstrapIfNeeded();
-            } catch (err) {
-                console.warn(`[Init] Bootstrap retry failed (non-fatal): ${err.message}`);
-            }
-        }
-        try {
-            const probe = await fetch(`${config.apiBaseUrl}/api/health`, {
-                method: 'GET',
-                signal: AbortSignal.timeout(5_000),
-            });
-            if (!probe.ok) {
-                console.warn(`[Init] SaaS health probe returned HTTP ${probe.status} — continuing`);
-            }
-        } catch (err) {
-            console.warn(`[Init] SaaS health probe failed (non-fatal): ${err.message}`);
-        }
-        await registerTopMenu().catch(err => {
-            console.warn(`[Init] TopMenu registration failed (non-fatal): ${err.message}`);
-        });
-        await registerEmbedScript().catch(err => {
-            console.warn(`[Init] Embed script registration failed (non-fatal): ${err.message}`);
-        });
-        await registerEventListeners().catch(err => {
-            console.warn(`[Init] Event listener registration failed (non-fatal): ${err.message}`);
-        });
-        await reportInitProgress(100).catch(err => {
-            console.warn(`[Init] Progress report failed (non-fatal): ${err.message}`);
-        });
+    app.post('/init', (req, res) => {
+        // Spec compliance: respond fast, run setup in the background.
         res.json({ status: 'ok' });
+
+        setImmediate(() => {
+            runInitInBackground().catch(err => {
+                console.error(`[Init] Background setup failed: ${err.message}`);
+                // Surface the error to AppAPI so `--wait-finish` exits cleanly
+                // instead of polling forever.
+                reportInitProgress(0, err.message).catch(() => {});
+            });
+        });
     });
 
     app.put('/enabled', (req, res) => {
         const enabled = req.query.enabled === '1';
         console.log(`[Lifecycle] enabled=${enabled}`);
-        // Future: register/unregister navigation entry, dashboard widget, etc.
-        // For v0.1.0 the navigation entry is declared statically in info.xml.
         res.json({ status: 'ok' });
     });
+}
+
+// Background setup pipeline. Each milestone reports progress so that
+// AppAPI's deploy state advances visibly during install.
+async function runInitInBackground() {
+    const t0 = Date.now();
+
+    // 1. Auto-bootstrap (only if BEEFLOW_TENANT_KEY=auto and not yet cached)
+    if (!config.tenantKey && config.isAutoTenantKey) {
+        try {
+            const { bootstrapIfNeeded } = require('./bootstrap');
+            await bootstrapIfNeeded();
+        } catch (err) {
+            console.warn(`[Init] Bootstrap retry failed (non-fatal): ${err.message}`);
+        }
+    }
+    await reportInitProgress(25).catch(() => {});
+
+    // 2. NC UI registrations — independent, run in parallel.
+    await Promise.allSettled([
+        registerTopMenu().catch(err => console.warn(`[Init] TopMenu register failed: ${err.message}`)),
+        registerEmbedScript().catch(err => console.warn(`[Init] Embed script register failed: ${err.message}`)),
+    ]);
+    await reportInitProgress(60).catch(() => {});
+
+    // 3. Event-listener subscriptions (parallel, with per-call 3s timeout).
+    await registerEventListeners();
+    await reportInitProgress(100).catch(() => {});
+
+    console.log(`[Init] Background setup completed in ${Date.now() - t0}ms`);
 }
 
 function appApiHeaders() {
@@ -90,9 +95,9 @@ async function registerTopMenu() {
             icon: 'img/app.svg',
             adminRequired: 0,
         }),
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(5_000),
     });
-    if (!res.ok) {
+    if (!res.ok && res.status !== 409) {
         const body = await res.text().catch(() => '');
         throw new Error(`TopMenu register HTTP ${res.status}: ${body.slice(0, 200)}`);
     }
@@ -113,55 +118,29 @@ async function registerEmbedScript() {
             path: 'js/embed',
             afterAppId: '',
         }),
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(5_000),
     });
-    if (!res.ok) {
+    if (!res.ok && res.status !== 409) {
         const body = await res.text().catch(() => '');
         throw new Error(`Script register HTTP ${res.status}: ${body.slice(0, 200)}`);
     }
     console.log('[Init] Embed script registered');
 }
 
-// Canonical list of events the connector subscribes to. Single source of
-// truth so register + unregister + cleanup all stay in sync.
+// Canonical list of events the connector subscribes to.
 //
-// Two action-handlers split the work:
-//   - 'webhook/nc-events'    → user/group events (forwarded to SaaS user-sync)
-//   - 'webhook/automation'   → trigger events for the Automations engine
-//
-// The handler field is the connector-relative path NC will POST to; the
-// connector then signs+forwards to the SaaS at the appropriate endpoint.
+// Trimmed to the 5 user/group sync events with active SaaS-side consumers
+// (server/routes/webhooks/ncEvents.js → ncUserGroupSync). Automation /
+// files / calendar / deck / talk events were removed — their consumer
+// (server/routes/webhooks/automationEvents.js) doesn't exist yet, and
+// each subscription costs an OCS round-trip on every install. Re-add
+// individual events when their SaaS-side handler ships.
 const SUBSCRIBED_EVENTS = [
-    // ── User/group sync (legacy, untouched) ───────────────────────────
     { eventType: 'OCP\\User\\Events\\UserCreatedEvent', actionHandler: 'webhook/nc-events' },
     { eventType: 'OCP\\User\\Events\\UserDeletedEvent', actionHandler: 'webhook/nc-events' },
     { eventType: 'OCP\\User\\Events\\UserChangedEvent', actionHandler: 'webhook/nc-events' },
     { eventType: 'OCP\\Group\\Events\\UserAddedEvent', actionHandler: 'webhook/nc-events' },
     { eventType: 'OCP\\Group\\Events\\UserRemovedEvent', actionHandler: 'webhook/nc-events' },
-
-    // ── Files / shares / comments / tags ──────────────────────────────
-    { eventType: 'OCP\\Files\\Events\\Node\\NodeCreatedEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCP\\Files\\Events\\Node\\NodeWrittenEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCP\\Files\\Events\\Node\\NodeDeletedEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCP\\Files\\Events\\Node\\NodeRenamedEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCA\\Files_Sharing\\Event\\ShareCreatedEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCA\\Files_Sharing\\Event\\ShareAcceptedEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCA\\Files_Sharing\\Event\\ShareDeletedEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCP\\Comments\\CommentsEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCP\\SystemTag\\ManagerEvent', actionHandler: 'webhook/automation' },
-
-    // ── Calendar / DAV ────────────────────────────────────────────────
-    { eventType: 'OCA\\DAV\\Events\\CalendarObjectCreatedEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCA\\DAV\\Events\\CalendarObjectUpdatedEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCA\\DAV\\Events\\CalendarObjectDeletedEvent', actionHandler: 'webhook/automation' },
-
-    // ── Deck (kanban) ─────────────────────────────────────────────────
-    { eventType: 'OCA\\Deck\\Event\\CardCreatedEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCA\\Deck\\Event\\CardUpdatedEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCA\\Deck\\Event\\CardDeletedEvent', actionHandler: 'webhook/automation' },
-
-    // ── Talk (chat) ───────────────────────────────────────────────────
-    { eventType: 'OCA\\Talk\\Events\\ChatMessageSentEvent', actionHandler: 'webhook/automation' },
 ];
 
 // Subscribe to NC user/group events so we can mirror them into Bee Flow
@@ -169,70 +148,56 @@ const SUBSCRIBED_EVENTS = [
 // callbacks and forwards them (HMAC-signed) to the SaaS.
 //
 // Idempotent: NC enforces a unique constraint on (appId, eventType,
-// actionHandler) and returns 409 on duplicate. We swallow 409. On NC
-// versions exposing GET we additionally prune stale listeners pointing
-// at our actionHandler but for an event we no longer support.
+// actionHandler) and returns 409 on duplicate. We swallow 409.
+//
+// Parallelised via Promise.allSettled so worst-case is the timeout of a
+// single call (3s), not N × 3s. NC 33.0.0 / AppAPI 33.0.0 has a broken
+// EventsListenerController that always returns 500 — we detect that on
+// the first response and skip the rest.
 async function registerEventListeners() {
     const url = `${config.nextcloudUrl}/ocs/v1.php/apps/app_api/api/v1/events_listener`;
+    const PER_CALL_TIMEOUT_MS = 3_000;
 
-    // Best-effort cleanup of stale listeners (event-class no longer in our list)
-    try {
-        const list = await fetch(url, {
-            method: 'GET',
-            headers: appApiHeaders(),
-            signal: AbortSignal.timeout(10_000),
-        });
-        if (list.ok) {
-            const body = await list.json().catch(() => null);
-            const existing = body?.ocs?.data || body?.data || (Array.isArray(body) ? body : []);
-            const wantedSet = new Set(SUBSCRIBED_EVENTS.map(e => `${e.eventType}::${e.actionHandler}`));
-            for (const sub of existing) {
-                const evType = sub?.eventType || sub?.event_type;
-                const handler = sub?.actionHandler || sub?.action_handler;
-                if (!evType || !handler) continue;
-                if (handler !== 'webhook/nc-events') continue;
-                if (wantedSet.has(`${evType}::${handler}`)) continue;
-                try {
-                    await fetch(url, {
-                        method: 'DELETE',
-                        headers: appApiHeaders(),
-                        body: JSON.stringify({ eventType: evType, actionHandler: handler }),
-                        signal: AbortSignal.timeout(10_000),
-                    });
-                    console.log(`[Init] Removed stale listener ${evType}`);
-                } catch { /* non-fatal */ }
-            }
-        }
-    } catch { /* GET unsupported on this NC version — fall through */ }
-
-    let unsupportedVersion = false;
-    for (const ev of SUBSCRIBED_EVENTS) {
-        if (unsupportedVersion) break;
-        try {
-            const res = await fetch(url, {
-                method: 'POST',
-                headers: appApiHeaders(),
-                body: JSON.stringify({ eventType: ev.eventType, actionHandler: ev.actionHandler, eventSubtypes: [] }),
-                signal: AbortSignal.timeout(10_000),
-            });
-            if (!res.ok && res.status !== 409) {
-                const body = await res.text().catch(() => '');
-                // Some AppAPI builds (e.g. NC 33.0.3 / AppAPI 33.0.0) ship a
-                // routes file referencing EventsListenerController without the
-                // class — the endpoint always 500s. There is no point retrying
-                // for the next 4 events; bail with a single explanatory log.
-                if (res.status >= 500 && /EventsListenerController/i.test(body)) {
-                    console.log('[Init] AppAPI on this Nextcloud version does not implement events_listener — real-time user/group sync disabled. Periodic backstop and manual "Sync now" remain available.');
-                    unsupportedVersion = true;
-                    break;
-                }
-                console.warn(`[Init] events_listener ${ev.eventType} HTTP ${res.status}: ${body.slice(0, 120)}`);
-            }
-        } catch (err) {
-            console.warn(`[Init] events_listener ${ev.eventType} failed: ${err.message}`);
-        }
+    // Probe one event first. If NC responds with the EventsListenerController
+    // error, the rest will all fail the same way — skip them.
+    const probeResult = await registerOne(url, SUBSCRIBED_EVENTS[0], PER_CALL_TIMEOUT_MS);
+    if (probeResult.unsupportedVersion) {
+        console.log('[Init] AppAPI on this Nextcloud version does not implement events_listener — real-time user/group sync disabled. Periodic backstop and manual "Sync now" remain available.');
+        return;
     }
-    if (!unsupportedVersion) console.log('[Init] Event listeners registered');
+    if (probeResult.error) {
+        console.warn(`[Init] events_listener probe failed: ${probeResult.error}`);
+    }
+
+    // Probe ok — fan out the rest in parallel.
+    const rest = SUBSCRIBED_EVENTS.slice(1);
+    const results = await Promise.allSettled(
+        rest.map(ev => registerOne(url, ev, PER_CALL_TIMEOUT_MS))
+    );
+    let failed = 0;
+    for (const r of results) {
+        if (r.status === 'rejected' || (r.value && r.value.error)) failed++;
+    }
+    console.log(`[Init] Event listeners registered (${SUBSCRIBED_EVENTS.length - failed}/${SUBSCRIBED_EVENTS.length})`);
+}
+
+async function registerOne(url, ev, timeoutMs) {
+    try {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: appApiHeaders(),
+            body: JSON.stringify({ eventType: ev.eventType, actionHandler: ev.actionHandler, eventSubtypes: [] }),
+            signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (res.ok || res.status === 409) return { ok: true };
+        const body = await res.text().catch(() => '');
+        if (res.status >= 500 && /EventsListenerController/i.test(body)) {
+            return { unsupportedVersion: true };
+        }
+        return { error: `HTTP ${res.status}: ${body.slice(0, 120)}` };
+    } catch (err) {
+        return { error: err.message };
+    }
 }
 
 // Called from process signal handlers. Best-effort: if NC is already
@@ -241,35 +206,34 @@ async function registerEventListeners() {
 async function unregisterEventListeners() {
     if (!config.nextcloudUrl) return;
     const url = `${config.nextcloudUrl}/ocs/v1.php/apps/app_api/api/v1/events_listener`;
-    for (const ev of SUBSCRIBED_EVENTS) {
-        try {
-            await fetch(url, {
-                method: 'DELETE',
-                headers: appApiHeaders(),
-                body: JSON.stringify({ eventType: ev.eventType, actionHandler: ev.actionHandler }),
-                signal: AbortSignal.timeout(3_000),
-            });
-        } catch { /* swallow on shutdown */ }
-    }
+    await Promise.allSettled(SUBSCRIBED_EVENTS.map(ev =>
+        fetch(url, {
+            method: 'DELETE',
+            headers: appApiHeaders(),
+            body: JSON.stringify({ eventType: ev.eventType, actionHandler: ev.actionHandler }),
+            signal: AbortSignal.timeout(2_000),
+        }).catch(() => {})
+    ));
 }
 
-async function reportInitProgress(percent) {
+// Reports init progress to AppAPI. Spec: PUT /ocs/v2.php/apps/app_api/ex-app/status
+// with `{progress: 0-100, error?: string}`. AppAPI's `waitInitStepFinish`
+// polls the same field every 0.1s; reporting 100 unblocks `--wait-finish`,
+// reporting `error` does the same with a failure exit.
+async function reportInitProgress(percent, errorMessage) {
     const url = `${config.nextcloudUrl}/ocs/v2.php/apps/app_api/ex-app/status`;
+    const body = errorMessage
+        ? { progress: percent, error: errorMessage }
+        : { progress: percent };
     const res = await fetch(url, {
         method: 'PUT',
-        headers: {
-            'Content-Type': 'application/json',
-            'OCS-APIRequest': 'true',
-            'EX-APP-ID': config.appId,
-            'EX-APP-VERSION': config.appVersion,
-            'AUTHORIZATION-APP-API': Buffer.from(`:${config.appSecret}`).toString('base64'),
-        },
-        body: JSON.stringify({ progress: percent }),
-        signal: AbortSignal.timeout(10_000),
+        headers: appApiHeaders(),
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(5_000),
     });
     if (!res.ok) {
         throw new Error(`Status report failed: HTTP ${res.status}`);
     }
 }
 
-module.exports = { registerLifecycle, unregisterEventListeners };
+module.exports = { registerLifecycle, unregisterEventListeners, runInitInBackground };

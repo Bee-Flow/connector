@@ -53,9 +53,8 @@ A free **Community tier** (single user, basic chat, local knowledge base) is ful
     <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.ai">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>
     <!--
-        Documentation URLs deliberately omitted until docs.beeflow.ai is
-        live. App Store reviewers will see the README on the GitHub repo
-        as the de-facto docs source.
+        Documentation URLs deliberately omitted; reviewers and users
+        should consult the README on the GitHub repository.
     -->
 
     <!--

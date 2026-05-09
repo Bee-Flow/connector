@@ -136,8 +136,12 @@ function appApiAuthMiddleware(req, res, next) {
     if (!decoded) {
         return res.status(401).json({ error: 'Missing AppAPI auth header' });
     }
-    if (decoded.secret !== config.appSecret) {
-        return res.status(401).json({ error: 'Invalid AppAPI shared secret' });
+    {
+        const a = Buffer.from(String(decoded.secret));
+        const b = Buffer.from(String(config.appSecret));
+        if (a.length !== b.length || !require('crypto').timingSafeEqual(a, b)) {
+            return res.status(401).json({ error: 'Invalid AppAPI shared secret' });
+        }
     }
     const expectedAppId = req.headers[HDR.appId];
     if (expectedAppId && expectedAppId !== config.appId) {

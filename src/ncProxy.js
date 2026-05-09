@@ -36,9 +36,9 @@ const config = require('./config');
 const ALLOWED_PREFIXES = ['/ocs/', '/remote.php/dav/', '/index.php/apps/'];
 
 // Constant-time HMAC verification of `<ts>.<sig>` using tenant key.
-// The SaaS sends `X-Beeflow-Sig: <unixSeconds>.<hexHmac>`. We allow ±5min
-// of clock skew; outside that, reject. Without the tenant key (bootstrap
-// hasn't completed), we deny all /nc/* — fail-closed.
+// The SaaS sends `X-Beeflow-Sig: <unixSeconds>.<hexHmac>`. Skew tolerance
+// is governed by config.sigSkewSeconds (BEEFLOW_SIG_SKEW_SECONDS). Without
+// the tenant key (bootstrap hasn't completed), we deny all /nc/* — fail-closed.
 function verifyHmac(req) {
     if (!config.tenantKey) return false;
     const sigHeader = req.headers['x-beeflow-sig'];
@@ -49,7 +49,7 @@ function verifyHmac(req) {
     const sig = sigHeader.slice(dot + 1);
     if (!Number.isFinite(ts)) return false;
     const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - ts) > 300) return false;
+    if (Math.abs(now - ts) > config.sigSkewSeconds) return false;
 
     const ncUid = String(req.headers['x-beeflow-nc-uid'] || '');
     const path = req.originalUrl || req.url;

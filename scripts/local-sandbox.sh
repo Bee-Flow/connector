@@ -25,6 +25,8 @@ API_BASE_URL="${API_BASE_URL:-http://host.docker.internal:3101}"
 NC_NAME="bee-flow-nc-sandbox"
 CONN_NAME="bee-flow-connector-instance"
 DAEMON="manual_dev"
+NETWORK="bee-flow-net"     # shared bridge network so NC ↔ connector can talk
+                           # via container DNS instead of host.docker.internal
 
 # Connector dir = parent of this script. Works in both layouts:
 #   monorepo:   <monorepo>/nextcloud-connector/scripts/local-sandbox.sh
@@ -60,6 +62,12 @@ cmd_up() {
         docker build -t "$IMAGE" "$CONNECTOR_DIR"
     fi
 
+    # Ensure shared docker network exists. NC + connector both attach so
+    # they can resolve each other by container name (no host.docker.internal).
+    if ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
+        docker network create "$NETWORK" >/dev/null
+    fi
+
     if ! docker ps --format '{{.Names}}' | grep -qx "$NC_NAME"; then
         if docker ps -a --format '{{.Names}}' | grep -qx "$NC_NAME"; then
             b "[2/7] Starting existing $NC_NAME"
@@ -67,11 +75,17 @@ cmd_up() {
         else
             b "[2/7] Launching Nextcloud $NC_VERSION on :$NC_PORT"
             docker run -d --name "$NC_NAME" -p "$NC_PORT:80" \
-                --add-host=host.docker.internal:host-gateway \
+                --network "$NETWORK" \
                 "nextcloud:$NC_VERSION" >/dev/null
         fi
     else
         b "[2/7] $NC_NAME already running"
+    fi
+
+    # Existing NC container may have been started before $NETWORK existed —
+    # attach it now if it isn't already on the network.
+    if ! docker network inspect "$NETWORK" --format '{{range .Containers}}{{.Name}} {{end}}' | grep -qw "$NC_NAME"; then
+        docker network connect "$NETWORK" "$NC_NAME" 2>/dev/null || true
     fi
 
     b "[3/7] Waiting for apache"
@@ -88,12 +102,22 @@ cmd_up() {
     nc_occ app:install app_api 2>&1 | tail -1 || true
     docker exec "$NC_NAME" bash -c "command -v sqlite3 >/dev/null || (apt-get update -qq >/dev/null && apt-get install -y -qq sqlite3 >/dev/null)" || true
 
+    # Daemon's host MUST be the connector container's name — that's how
+    # AppAPI builds the heartbeat URL (http://<host>:<exapp-port>/heartbeat).
+    # NC reaches it via Docker's embedded DNS on the shared $NETWORK.
+    # Re-register if the daemon's host is wrong (legacy "host.docker.internal"
+    # value from older runs).
+    daemon_host_in_db=$(nc_sql "SELECT host FROM oc_ex_apps_daemons WHERE name='$DAEMON';" 2>/dev/null || echo "")
+    if [ -n "$daemon_host_in_db" ] && [ "$daemon_host_in_db" != "$CONN_NAME" ]; then
+        b "[5/7] Daemon $DAEMON has stale host '$daemon_host_in_db' — re-registering with '$CONN_NAME'"
+        nc_occ app_api:daemon:unregister "$DAEMON" 2>&1 | tail -1 || true
+    fi
     if ! nc_occ app_api:daemon:list 2>/dev/null | grep -qw "$DAEMON"; then
-        b "[5/7] Registering $DAEMON daemon"
+        b "[5/7] Registering $DAEMON daemon (host=$CONN_NAME, networked)"
         nc_occ app_api:daemon:register \
-            "$DAEMON" "Manual Local" manual-install http host.docker.internal "http://host.docker.internal:$NC_PORT" 2>&1 | tail -1
+            "$DAEMON" "Manual Local" manual-install http "$CONN_NAME" "http://$NC_NAME" 2>&1 | tail -1
     else
-        b "[5/7] Daemon $DAEMON already registered"
+        b "[5/7] Daemon $DAEMON already registered (host=$daemon_host_in_db)"
     fi
 
     # Re-register if the ExApp doesn't exist OR if `info.xml` is newer than
@@ -145,26 +169,36 @@ cmd_up() {
     fi
 
     docker rm -f "$CONN_NAME" >/dev/null 2>&1 || true
-    b "[7/7] Starting connector on :$PORT (parallel to register)"
+    b "[7/7] Starting connector on :$PORT (network=$NETWORK, name=$CONN_NAME)"
     docker run -d --name "$CONN_NAME" \
-        -p "$PORT:$PORT" --add-host=host.docker.internal:host-gateway \
+        --network "$NETWORK" \
+        -p "$PORT:$PORT" \
         -e APP_ID="$APP_ID" -e APP_VERSION=0.1.0 \
         -e APP_HOST=0.0.0.0 -e APP_PORT="$PORT" \
         -e APP_SECRET="$SECRET" \
-        -e NEXTCLOUD_URL="http://host.docker.internal:$NC_PORT" \
+        -e NEXTCLOUD_URL="http://$NC_NAME" \
         -e BEEFLOW_TENANT_KEY="$TENANT_KEY" \
         -e BEEFLOW_API_BASE_URL="$API_BASE_URL" \
         "$IMAGE" >/dev/null
 
-    # Wait for the connector's /heartbeat to respond — and at the same time,
-    # this is what unblocks the backgrounded `app:register` call.
+    # Wait for connector /heartbeat (this also unblocks the backgrounded
+    # register call). Probe via the host port-publish — the same endpoint
+    # that NC will hit through the container network.
     b "[7/7] Waiting for connector /heartbeat on :$PORT"
-    for i in $(seq 1 20); do
+    for i in $(seq 1 30); do
         if curl -sf -o /dev/null -m 1 "http://localhost:$PORT/heartbeat"; then
             break
         fi
         sleep 0.5
     done
+
+    # Cross-check: NC must also be able to reach it via the network.
+    b "[7/7] Verifying NC → connector connectivity"
+    if ! docker exec "$NC_NAME" curl -sf -m 3 "http://$CONN_NAME:$PORT/heartbeat" >/dev/null; then
+        r "NC cannot reach the connector at http://$CONN_NAME:$PORT/heartbeat"
+        r "Try: docker network inspect $NETWORK   (both containers should be listed)"
+        r "     docker logs $CONN_NAME --tail 30"
+    fi
 
     # Now wait for the backgrounded register call to finish (it should
     # complete within seconds once heartbeat works).
@@ -193,6 +227,7 @@ cmd_down() {
 cmd_clean() {
     cmd_down
     docker rmi "$IMAGE" 2>/dev/null && g "✔ image removed" || true
+    docker network rm "$NETWORK" 2>/dev/null && g "✔ network removed" || true
 }
 cmd_logs()   { docker logs -f --tail 50 "$CONN_NAME"; }
 cmd_status() {

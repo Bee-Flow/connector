@@ -56,8 +56,19 @@ A free **Community tier** (single user, basic chat, local knowledge base) is ful
         <user>https://beeflow.ai/docs/user</user>
         <admin>https://beeflow.ai/docs/admin</admin>
     </documentation>
+    <!--
+        Categories — must match the enum in
+        https://apps.nextcloud.com/schema/apps/info.xsd (no other values
+        are accepted by the App Store). Bee Flow is primarily an `ai`
+        assistant; secondary `integration` (it bridges Files / Mail /
+        Calendar / Deck / Talk / Notes / Tasks / Contacts / Activity /
+        Notifications / User Status), `workflow` (the Automations engine),
+        and `office` (productivity-oriented agents).
+    -->
+    <category>ai</category>
     <category>integration</category>
-    <category>tools</category>
+    <category>workflow</category>
+    <category>office</category>
     <website>https://beeflow.ai</website>
     <bugs>https://github.com/Bee-Flow/connector/issues</bugs>
     <repository type="git">https://github.com/Bee-Flow/connector</repository>

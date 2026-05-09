@@ -19,6 +19,22 @@ const config = require('./config');
 
 function registerLifecycle(app) {
     app.get('/heartbeat', (req, res) => {
+        // Surface "awaiting admin approval" so the NC admin viewing the
+        // ExApp page sees an actionable state instead of a silent stuck
+        // bootstrap. AppAPI itself only reads `status: ok`; the extra
+        // fields are advisory for our own debug tooling.
+        let pending = null;
+        try {
+            const { getPendingState } = require('./bootstrap');
+            pending = getPendingState?.() || null;
+        } catch (_) { /* tolerate */ }
+        if (pending && pending.status === 'pending') {
+            return res.json({
+                status: 'ok',
+                bootstrap: 'awaiting_admin_approval',
+                expiresAt: pending.expiresAt,
+            });
+        }
         res.json({ status: 'ok' });
     });
 

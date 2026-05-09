@@ -31,6 +31,10 @@ const path = require('path');
 const config = require('./config');
 
 const CACHE_FILE = 'tenant-key.json';
+const PENDING_FILE = 'pending-bootstrap.json';
+const POLL_INTERVAL_MS = 30_000;
+const POLL_JITTER_MS = 5_000;
+const POLL_GRACE_AFTER_EXPIRY_MS = 5 * 60_000;
 
 async function readCache() {
     const cachePath = path.join(config.persistentStorage, CACHE_FILE);
@@ -50,6 +54,31 @@ async function writeCache(data) {
     } catch (e) {
         console.warn(`[Bootstrap] Could not persist tenant key to ${cachePath}: ${e.message}`);
     }
+}
+
+async function readPendingFile() {
+    const p = path.join(config.persistentStorage, PENDING_FILE);
+    try {
+        const raw = await fs.readFile(p, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (parsed?.pendingId && parsed?.pollUrl) return parsed;
+    } catch { /* missing */ }
+    return null;
+}
+
+async function writePendingFile(data) {
+    const p = path.join(config.persistentStorage, PENDING_FILE);
+    try {
+        await fs.mkdir(config.persistentStorage, { recursive: true });
+        await fs.writeFile(p, JSON.stringify(data, null, 2), { mode: 0o600 });
+    } catch (e) {
+        console.warn(`[Bootstrap] Could not persist pending state to ${p}: ${e.message}`);
+    }
+}
+
+async function deletePendingFile() {
+    const p = path.join(config.persistentStorage, PENDING_FILE);
+    try { await fs.unlink(p); } catch (_) { /* gone */ }
 }
 
 async function fetchCapabilities() {
@@ -183,6 +212,77 @@ async function fetchFirstAdmin() {
     throw new Error('Could not determine NC admin from user list');
 }
 
+// Pending-state runtime visibility — heartbeat.js reads this to surface
+// "awaiting admin approval" through AppAPI's ExApp status.
+let pendingState = null;
+function getPendingState() { return pendingState; }
+
+async function applyTenantKeyResponse(json, ncInstanceId) {
+    config.tenantKey = json.tenantKey;
+    config.organizationId = json.organizationId;
+    config.ncInstanceId = ncInstanceId;
+    await writeCache({
+        tenantKey: json.tenantKey,
+        organizationId: json.organizationId,
+        organizationName: json.organizationName,
+        ncInstanceId,
+        ncVersion: json.ncVersion,
+        provisionedAt: new Date().toISOString(),
+    });
+    await deletePendingFile();
+    pendingState = null;
+}
+
+// Poll the SaaS for an approved binding. Spawned in the background when the
+// bootstrap returns 202; returns once the binding is approved (and the
+// tenant key is cached) or denied/expired (gives up). The connector keeps
+// running with no tenant key in the meantime — heartbeat surfaces this.
+async function pollPendingBinding(pending) {
+    const stopAt = new Date(pending.expiresAt).getTime() + POLL_GRACE_AFTER_EXPIRY_MS;
+    pendingState = {
+        pendingId: pending.pendingId,
+        pollUrl: pending.pollUrl,
+        expiresAt: pending.expiresAt,
+        status: 'pending',
+    };
+    while (Date.now() < stopAt) {
+        const wait = POLL_INTERVAL_MS + Math.floor((Math.random() * 2 - 1) * POLL_JITTER_MS);
+        await new Promise(r => setTimeout(r, Math.max(5_000, wait)));
+        let res;
+        try {
+            res = await fetch(`${config.apiBaseUrl}${pending.pollUrl}`, {
+                signal: AbortSignal.timeout(10_000),
+            });
+        } catch (e) {
+            console.warn(`[Bootstrap] Poll failed (will retry): ${e.message}`);
+            continue;
+        }
+        if (res.status === 202) continue;
+        if (res.status === 410) {
+            const body = await res.json().catch(() => ({}));
+            console.warn(`[Bootstrap] Pending binding ${body.status || 'denied/expired'} — abandoning poll`);
+            pendingState = { ...pendingState, status: body.status || 'denied' };
+            await deletePendingFile();
+            return;
+        }
+        if (res.ok) {
+            const json = await res.json();
+            if (!json.tenantKey) {
+                console.warn('[Bootstrap] Pending poll returned 200 without tenantKey — retrying');
+                continue;
+            }
+            await applyTenantKeyResponse(json, pending.ncInstanceId);
+            console.log(`[Bootstrap] Bound to existing org ${json.organizationId} (${json.organizationName})`);
+            return;
+        }
+        // 4xx/5xx other than 202/410 — keep trying with backoff, capped.
+        console.warn(`[Bootstrap] Poll HTTP ${res.status}, retrying`);
+    }
+    console.warn('[Bootstrap] Pending binding poll window elapsed — giving up');
+    pendingState = { ...pendingState, status: 'expired' };
+    await deletePendingFile();
+}
+
 async function bootstrapIfNeeded() {
     if (!config.isAutoTenantKey) {
         console.log('[Bootstrap] BEEFLOW_TENANT_KEY explicitly set, skipping auto-bootstrap');
@@ -196,6 +296,19 @@ async function bootstrapIfNeeded() {
         config.ncInstanceId = cached.ncInstanceId || null;
         console.log(`[Bootstrap] Loaded cached tenant key for org ${cached.organizationId}`);
         return;
+    }
+
+    // Resume an in-flight pending binding instead of starting a new one —
+    // covers connector restart inside the approval window.
+    const existingPending = await readPendingFile();
+    if (existingPending) {
+        const expiresMs = new Date(existingPending.expiresAt).getTime();
+        if (Number.isFinite(expiresMs) && Date.now() < expiresMs + POLL_GRACE_AFTER_EXPIRY_MS) {
+            console.log(`[Bootstrap] Resuming pending binding ${existingPending.pendingId} (awaiting admin approval)`);
+            pollPendingBinding(existingPending).catch(e => console.warn('[Bootstrap] Pending poll crashed:', e.message));
+            return;
+        }
+        await deletePendingFile();
     }
 
     console.log('[Bootstrap] No cached tenant key; provisioning from SaaS...');
@@ -218,6 +331,27 @@ async function bootstrapIfNeeded() {
         body: JSON.stringify({ themingName: caps.themingName, version: caps.version }),
         signal: AbortSignal.timeout(15_000),
     });
+
+    if (res.status === 202) {
+        // Adoption candidate — admin approval required. Stash poll state
+        // and let the connector continue running; the poller will fill in
+        // the tenant key once the admin approves in the SaaS UI.
+        const json = await res.json();
+        if (!json.pendingId || !json.pollUrl) {
+            throw new Error('Bootstrap pending response missing pendingId/pollUrl');
+        }
+        const pending = {
+            pendingId: json.pendingId,
+            pollUrl: json.pollUrl,
+            expiresAt: json.expiresAt,
+            ncInstanceId: caps.instanceId,
+        };
+        await writePendingFile(pending);
+        console.log(`[Bootstrap] Awaiting org-admin approval (pending ${json.pendingId}, expires ${json.expiresAt})`);
+        pollPendingBinding(pending).catch(e => console.warn('[Bootstrap] Pending poll crashed:', e.message));
+        return;
+    }
+
     if (!res.ok) {
         const errBody = await res.text();
         throw new Error(`Bootstrap rejected by SaaS (HTTP ${res.status}): ${errBody.slice(0, 200)}`);
@@ -225,18 +359,8 @@ async function bootstrapIfNeeded() {
     const json = await res.json();
     if (!json.tenantKey) throw new Error('Bootstrap response missing tenantKey');
 
-    config.tenantKey = json.tenantKey;
-    config.organizationId = json.organizationId;
-    config.ncInstanceId = caps.instanceId;
-    await writeCache({
-        tenantKey: json.tenantKey,
-        organizationId: json.organizationId,
-        organizationName: json.organizationName,
-        ncInstanceId: caps.instanceId,
-        ncVersion: caps.version,
-        provisionedAt: new Date().toISOString(),
-    });
+    await applyTenantKeyResponse({ ...json, ncVersion: caps.version }, caps.instanceId);
     console.log(`[Bootstrap] Provisioned org ${json.organizationId} (${json.organizationName}) — tenant key cached`);
 }
 
-module.exports = { bootstrapIfNeeded, fetchCapabilities };
+module.exports = { bootstrapIfNeeded, fetchCapabilities, getPendingState };

@@ -7,8 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
-## [0.1.0] - 2026-05-08
+## [0.1.0] - 2026-05-09
 
 ### Added
-- Initial release. ExApp manifest, AppAPI HMAC signature verifier, `/heartbeat` `/init` `/enabled` lifecycle endpoints, JWT-bearer forward proxy to the hosted Bee Flow SaaS, and embedded React SPA served from the connector container.
-- Compatibility: Nextcloud 31–34, AppAPI 3.2+.
+- Initial public release.
+- ExApp manifest, AppAPI HMAC signature verifier, AppAPI lifecycle endpoints (`/heartbeat`, `/init`, `/enabled`).
+- Auto-bootstrap: first install provisions a Bee Flow organisation automatically — no manual tenant-key paste.
+- Async `/init` per Nextcloud spec — install completes in well under a second.
+- Embedded React SPA pulled at build time from the public [`Bee-Flow/hive`](https://github.com/Bee-Flow/hive) repository so reviewers can reproduce the image with `docker build .` and no credentials.
+- Reverse proxy `/nc/*` from the SaaS back to the host Nextcloud, signed with a per-tenant HMAC key for SaaS → NC integration calls.
+- Real-time user/group sync via AppAPI events_listener (graceful fallback when the listener API is unavailable on the running NC version).
+- Periodic backstop sync covering missed webhooks (every 6h) — set up server-side, no connector-side configuration needed.
+- 4-step onboarding wizard for the org admin on first open: user-sync mode, default user status, privacy shield categories, finish.
+- Privacy Shield: PII detection (emails, IBANs, BSNs, names, …) before prompts reach the language model — local on-device by default.
+- Multi-architecture image (linux/amd64 + linux/arm64).
+- App Store categories: `ai`, `integration`, `workflow`, `office`.
+- AppAPI scopes declared explicitly: `FILES`, `USER_INFO`, `GROUPS` required; `NOTIFICATIONS`, `CALENDAR`, `CONTACTS`, `MAIL`, `TALK`, `DAV` optional.
+
+### Compatibility
+- Nextcloud 31, 32, 33, 34.
+- AppAPI 3.2+.
+
+### Security
+- Cosign-signed image with keyless OIDC attestation.
+- SBOM (SPDX) attached to every GitHub release.
+- Code-signed App Store tarball per Nextcloud's signing flow.

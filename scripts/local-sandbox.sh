@@ -157,7 +157,7 @@ start_server() {
         -p "$SERVER_PORT:$SERVER_PORT" \
         -e PORT="$SERVER_PORT" \
         -e NODE_ENV=development \
-        -e SESSION_SECRET=dev-session-secret-change-me \
+        -e SESSION_SECRET=dev-session-secret-change-me-at-least-32-chars \
         -e CORE_DATABASE_URL="postgres://beeflow:$PG_PASSWORD@$PG_NAME:5432/beeflow" \
         -e RUSTFS_ENDPOINT="http://$RUSTFS_NAME:9000" \
         -e RUSTFS_ACCESS_KEY="$RUSTFS_ACCESS_KEY" \

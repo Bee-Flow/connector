@@ -145,9 +145,13 @@ A free **Community tier** (single user, basic chat, local knowledge base) is ful
             <route><url>^js\/.*</url><verb>GET</verb><access_level>PUBLIC</access_level></route>
             <route><url>^assets\/.*</url><verb>GET</verb><access_level>PUBLIC</access_level></route>
 
-            <!-- Application API surface (proxied to SaaS) -->
-            <route><url>^api\/.*</url><verb>GET,POST,PUT,DELETE,PATCH</verb><access_level>PUBLIC</access_level></route>
-            <route><url>^auth\/.*</url><verb>GET,POST,PUT,DELETE,PATCH</verb><access_level>PUBLIC</access_level></route>
+            <!-- Application API surface (proxied to SaaS).
+                 USER (not PUBLIC) so AppAPI forwards the NC userId in
+                 AUTHORIZATION-APP-API; the connector mints a per-user SaaS
+                 JWT from it. PUBLIC would forward an empty userId and the
+                 connector's auth middleware would 401 every SaaS-bound call. -->
+            <route><url>^api\/.*</url><verb>GET,POST,PUT,DELETE,PATCH</verb><access_level>USER</access_level></route>
+            <route><url>^auth\/.*</url><verb>GET,POST,PUT,DELETE,PATCH</verb><access_level>USER</access_level></route>
 
             <!-- AppAPI lifecycle hooks (called by Nextcloud, not the browser) -->
             <route><url>^heartbeat$</url><verb>GET</verb><access_level>PUBLIC</access_level></route>

@@ -8,25 +8,45 @@
       xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
     <id>bee_flow_ai</id>
     <name>Bee Flow</name>
-    <summary>AI-native workspace for chat, automation, and your Nextcloud apps</summary>
+    <summary>AI assistant for your Nextcloud — chat with Files, Mail, Calendar, Deck, Notes, Tasks, Contacts and Talk.</summary>
     <description><![CDATA[
-Bee Flow is an AI workspace that connects your Nextcloud account to a hosted assistant capable of working across Files, Mail, Calendar, Deck, Notes, Tasks, Contacts, and Talk.
+**Bee Flow turns your Nextcloud into an AI workspace.**
 
-**What this app does**
-- Adds a Bee Flow icon to your Nextcloud top bar.
-- Authenticates you against your existing Nextcloud user — no second login.
-- Proxies UI requests to the hosted Bee Flow service so you can chat with an AI agent that has access to your Nextcloud data.
+Click the bee icon in your top bar and chat with an assistant that already knows your files, mail, calendar and team. Ask it to summarise a long PDF, draft a reply to an email, find that document from last quarter, or schedule a meeting — Bee Flow does the work in the apps you already use.
 
-**Data flow disclosure**
-This connector forwards the following information to the hosted Bee Flow service at beeflow.ai:
-- Your Nextcloud account ID, email, and display name (used to identify your Bee Flow tenant).
-- The contents of any Nextcloud item you explicitly ask Bee Flow to act on (e.g. an email you ask the assistant to summarise).
+## What you get
 
-The connector does **not** bulk-export file contents, contacts, or calendars. Privacy policy: https://beeflow.ai/privacy
+- **One-click install, zero configuration.** Sign-in with your existing Nextcloud account — no second password, no app-passwords, no API keys to paste anywhere.
+- **An AI agent with context.** Bee Flow can read and act on **Files, Mail, Calendar, Contacts, Deck, Notes, Tasks, Talk, Activity** and **Notifications** — only on the items you explicitly point it at.
+- **Built-in privacy shield.** Detects emails, phone numbers, IBANs, BSNs and other sensitive data in your prompts and replaces them with placeholders before anything reaches the language model. The original values are restored in the reply, only on your screen.
+- **Multi-user from day one.** Mirrors your Nextcloud users and groups automatically. Admins decide which groups get which Bee Flow integrations — disable Talk for interns, enable everything for the leadership team.
+- **Self-service for organisation admins.** A 4-step onboarding wizard walks the admin through user-sync mode, default permissions and privacy settings the first time they open Bee Flow. Re-configure anytime under Settings → Organisation.
 
-**Requirements**
-- A Bee Flow account provisioned by your organisation's Bee Flow administrator.
-- A tenant key (issued by Bee Flow) configured in the AppAPI app settings.
+## How it works
+
+This Nextcloud app is a thin connector. It runs as an ExApp container next to your Nextcloud and bridges the embedded Bee Flow web client (an open-source React SPA) to the hosted Bee Flow service. Browser → Nextcloud signed proxy → connector → Bee Flow API. Your Nextcloud session is the only credential.
+
+For self-hosters who want to run the entire stack on-premise: the connector, the SPA and the Bee Flow server are all open source ([Bee-Flow on GitHub](https://github.com/Bee-Flow)). The hosted service runs the same code under a [Sustainable Use Licence](https://beeflow.ai/license) and offers paid tiers for organisations that need automations, advanced analytics, DLP and SAML SSO.
+
+## Data flow disclosure
+
+When you act on a Nextcloud item, the connector sends the item to the Bee Flow service over TLS. Specifically:
+
+- **Always** — your Nextcloud user ID, email, display name and group memberships (used to identify your tenant and apply group-based permissions).
+- **On demand** — the contents of items you explicitly point the assistant at (e.g. an email you ask it to summarise, a file you ask it to read).
+
+Bee Flow **does not** bulk-export file contents, mail bodies, calendars or contacts. The connector forwards individual requests; nothing is copied, mirrored or indexed by default.
+
+Full privacy policy: <https://beeflow.ai/privacy>. License model: <https://docs.beeflow.ai/license-model>.
+
+## Getting started
+
+1. Install this app from the Nextcloud App Store.
+2. Open Bee Flow from the top bar.
+3. The first time the organisation admin opens it, the onboarding wizard runs automatically — pick your user-sync mode and privacy settings.
+4. Other users see a "Setup in progress" screen until the admin finishes — then the chat opens for everyone in the chosen sync scope.
+
+A free **Community tier** (single user, basic chat, local knowledge base) is fully functional with no license key. To unlock automations, multi-user, DLP and other premium features, paste a license key from <https://beeflow.ai/pricing> into Settings → Organisation → License & Usage.
         ]]></description>
     <version>0.1.0</version>
     <licence>AGPL-3.0-or-later</licence>
@@ -76,13 +96,14 @@ The connector does **not** bulk-export file contents, contacts, or calendars. Pr
         <environment-variables>
             <variable>
                 <name>BEEFLOW_TENANT_KEY</name>
-                <display-name>Bee Flow tenant key</display-name>
-                <description>HS256 key minted by the Bee Flow admin API. The connector signs JWTs with this key; the SaaS verifies them against the matching tenant.</description>
+                <display-name>Bee Flow tenant key (optional)</display-name>
+                <description>Leave at "auto" to provision a new Bee Flow organisation automatically the first time the connector starts. Override with a tenant key only if you're connecting this Nextcloud to an existing Bee Flow organisation (e.g. an enterprise reinstall).</description>
+                <default>auto</default>
             </variable>
             <variable>
                 <name>BEEFLOW_API_BASE_URL</name>
-                <display-name>Bee Flow API base URL</display-name>
-                <description>Base URL of the hosted Bee Flow service (default: https://api.beeflow.ai). Override only for staging or on-prem.</description>
+                <display-name>Bee Flow API base URL (optional)</display-name>
+                <description>Where the connector sends API calls. Default points at the hosted Bee Flow service. Override only for staging or fully on-prem deployments.</description>
                 <default>https://api.beeflow.ai</default>
             </variable>
         </environment-variables>

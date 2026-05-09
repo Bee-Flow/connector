@@ -19,7 +19,7 @@ permissions:
   packages: write
 
 env:
-  APP_ID: bee_flow_ai
+  APP_ID: bee_flow
   IMAGE: ghcr.io/${{ github.repository_owner }}/bee-flow-connector
 
 jobs:

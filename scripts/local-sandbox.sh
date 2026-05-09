@@ -5,7 +5,7 @@
 # Subcommands: up | down | clean | logs | status
 #
 # Env overrides:
-#   NC_VERSION=31  NC_PORT=8080  APP_ID=bee_flow_ai
+#   NC_VERSION=31  NC_PORT=8080  APP_ID=bee_flow
 #   IMAGE=bee-flow-connector:dev
 #   TENANT_KEY=dev-tenant-key
 #   API_BASE_URL=http://host.docker.internal:3101
@@ -14,7 +14,7 @@ set -euo pipefail
 
 NC_VERSION="${NC_VERSION:-31}"
 NC_PORT="${NC_PORT:-8080}"
-APP_ID="${APP_ID:-bee_flow_ai}"
+APP_ID="${APP_ID:-bee_flow}"
 IMAGE="${IMAGE:-bee-flow-connector:dev}"
 TENANT_KEY="${TENANT_KEY:-dev-tenant-key}"
 API_BASE_URL="${API_BASE_URL:-http://host.docker.internal:3101}"

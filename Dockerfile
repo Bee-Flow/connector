@@ -41,7 +41,7 @@ RUN npm ci --no-audit --no-fund
 # VITE_API_URL at build time prefixes every `${API_BASE}/auth/...` call so
 # the request lands on NC's proxy → connector → SaaS. Vite's --base does
 # the same for static asset URLs in index.html.
-ARG APP_ID=bee_flow_ai
+ARG APP_ID=bee_flow
 ENV VITE_API_URL=/index.php/apps/app_api/proxy/${APP_ID}
 
 # Hardcoded absolute paths in JSX (e.g. <img src="/bee-flow-logo.svg" />)

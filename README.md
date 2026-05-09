@@ -4,7 +4,7 @@
 
 ExApp / AppAPI connector that lets a Nextcloud instance host the Bee Flow workspace UI and forward authenticated requests to the Bee Flow SaaS.
 
-App ID: `bee_flow_ai` · Compatible with Nextcloud 31–34 · Requires AppAPI ≥ 3.2.
+App ID: `bee_flow` · Compatible with Nextcloud 31–34 · Requires AppAPI ≥ 3.2.
 
 ## Architecture
 
@@ -30,7 +30,7 @@ APP_PORT=9000 \
 npm start
 ```
 
-`APP_SECRET`, `NEXTCLOUD_URL`, `APP_ID`, `APP_PORT`, etc. are normally injected by AppAPI. For local dev, set them by hand. `BEEFLOW_TENANT_KEY` is configured per customer via `occ app_api:app:setenv bee_flow_ai BEEFLOW_TENANT_KEY <key>` after install.
+`APP_SECRET`, `NEXTCLOUD_URL`, `APP_ID`, `APP_PORT`, etc. are normally injected by AppAPI. For local dev, set them by hand. `BEEFLOW_TENANT_KEY` is configured per customer via `occ app_api:app:setenv bee_flow BEEFLOW_TENANT_KEY <key>` after install.
 
 ## Building the container
 
@@ -52,7 +52,7 @@ docker exec -u www-data nc-test php occ app_api:daemon:register \
     local-docker docker-install local docker http://host.docker.internal:8080
 
 # 3. Side-load this connector
-docker exec -u www-data nc-test php occ app_api:app:register bee_flow_ai \
+docker exec -u www-data nc-test php occ app_api:app:register bee_flow \
     local-docker --info-xml /path/to/nextcloud-connector/appinfo/info.xml
 ```
 

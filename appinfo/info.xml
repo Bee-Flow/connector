@@ -6,7 +6,7 @@
 -->
 <info xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
       xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
-    <id>bee_flow_ai</id>
+    <id>bee_flow</id>
     <name>Bee Flow</name>
     <summary>AI assistant for your Nextcloud — chat with Files, Mail, Calendar, Deck, Notes, Tasks, Contacts and Talk.</summary>
     <description><![CDATA[

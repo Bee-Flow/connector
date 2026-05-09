@@ -6,7 +6,7 @@
  *   https://docs.nextcloud.com/server/32/developer_manual/exapp_development/development_overview/ExAppLifecycle.html
  *
  * BEEFLOW_TENANT_KEY and BEEFLOW_API_BASE_URL are configured by the customer
- * admin via `occ app_api:app:setenv bee_flow_ai KEY VALUE` after install.
+ * admin via `occ app_api:app:setenv bee_flow KEY VALUE` after install.
  */
 
 function required(name) {
@@ -26,7 +26,7 @@ const isAutoTenantKey = (rawTenantKey === 'auto' || rawTenantKey === '');
 
 const config = {
     // ── AppAPI-injected ────────────────────────────────────────
-    appId: process.env.APP_ID || 'bee_flow_ai',
+    appId: process.env.APP_ID || 'bee_flow',
     appSecret: required('APP_SECRET'),
     appVersion: process.env.APP_VERSION || '0.0.0',
     // Always bind 0.0.0.0. AppAPI's manual-install daemon sets APP_HOST=127.0.0.1

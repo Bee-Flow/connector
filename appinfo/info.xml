@@ -39,17 +39,38 @@ The connector does **not** bulk-export file contents, contacts, or calendars. Pr
     <category>integration</category>
     <category>tools</category>
     <website>https://beeflow.ai</website>
-    <bugs>https://github.com/beeflow-ai/bee-flow-connector/issues</bugs>
-    <repository type="git">https://github.com/beeflow-ai/bee-flow-connector</repository>
-    <screenshot>https://github.com/beeflow-ai/bee-flow-connector/raw/main/img/screenshots/01-chat.png</screenshot>
-    <screenshot>https://github.com/beeflow-ai/bee-flow-connector/raw/main/img/screenshots/02-routines.png</screenshot>
+    <bugs>https://github.com/Bee-Flow/connector/issues</bugs>
+    <repository type="git">https://github.com/Bee-Flow/connector</repository>
+    <screenshot>https://github.com/Bee-Flow/connector/raw/main/img/screenshots/01-chat.png</screenshot>
+    <screenshot>https://github.com/Bee-Flow/connector/raw/main/img/screenshots/02-routines.png</screenshot>
     <dependencies>
         <nextcloud min-version="31" max-version="34"/>
     </dependencies>
+    <!--
+        OAuth-style scopes the Bee Flow ExApp uses against this Nextcloud
+        instance. Reviewers and admins can audit exactly what data flows
+        leave the instance via the connector. Each scope corresponds to a
+        Bee Flow agent tool group in `server/integrations/nextcloud*.js`.
+    -->
+    <scopes>
+        <required>
+            <value>FILES</value>
+            <value>USER_INFO</value>
+            <value>GROUPS</value>
+        </required>
+        <optional>
+            <value>NOTIFICATIONS</value>
+            <value>CALENDAR</value>
+            <value>CONTACTS</value>
+            <value>MAIL</value>
+            <value>TALK</value>
+            <value>DAV</value>
+        </optional>
+    </scopes>
     <external-app>
         <docker-install>
-            <registry>localhost:5000</registry>
-            <image>beeflow-ai/bee-flow-connector</image>
+            <registry>ghcr.io</registry>
+            <image>bee-flow/connector</image>
             <image-tag>latest</image-tag>
         </docker-install>
         <environment-variables>
@@ -65,32 +86,46 @@ The connector does **not** bulk-export file contents, contacts, or calendars. Pr
                 <default>https://api.beeflow.ai</default>
             </variable>
         </environment-variables>
+        <!--
+            Explicit allow-list of paths the connector serves. The previous
+            catch-all `^.*` route was overly permissive — App Store reviewers
+            flag it. Anything not matched here is rejected by AppAPI before
+            reaching the connector.
+
+            Path map:
+              ^img/, ^js/, ^assets/, ^favicon.ico, ^bee-flow-logo, ^index.html,
+              ^$                              → static SPA shell
+              ^api/                           → SaaS-proxied REST/SSE endpoints
+              ^auth/                          → SaaS-proxied auth + OAuth flows
+              ^heartbeat, ^init, ^enabled     → AppAPI lifecycle hooks
+              ^webhook/nc-events              → NC events_listener forwarder
+              ^nc/                            → reverse proxy back to NC (HMAC)
+        -->
         <routes>
-            <route>
-                <url>^img\/.*</url>
-                <verb>GET</verb>
-                <access_level>PUBLIC</access_level>
-            </route>
-            <route>
-                <url>^js\/.*</url>
-                <verb>GET</verb>
-                <access_level>PUBLIC</access_level>
-            </route>
-            <route>
-                <url>^assets\/.*</url>
-                <verb>GET</verb>
-                <access_level>PUBLIC</access_level>
-            </route>
-            <route>
-                <url>^api\/.*</url>
-                <verb>GET,POST,PUT,DELETE,PATCH</verb>
-                <access_level>PUBLIC</access_level>
-            </route>
-            <route>
-                <url>^.*</url>
-                <verb>GET,POST,PUT,DELETE,PATCH</verb>
-                <access_level>PUBLIC</access_level>
-            </route>
+            <!-- Static SPA shell + assets -->
+            <route><url>^$</url><verb>GET</verb><access_level>PUBLIC</access_level></route>
+            <route><url>^index\.html$</url><verb>GET</verb><access_level>PUBLIC</access_level></route>
+            <route><url>^favicon\.ico$</url><verb>GET</verb><access_level>PUBLIC</access_level></route>
+            <route><url>^bee-flow-logo.*</url><verb>GET</verb><access_level>PUBLIC</access_level></route>
+            <route><url>^BeeFlow-logo.*</url><verb>GET</verb><access_level>PUBLIC</access_level></route>
+            <route><url>^img\/.*</url><verb>GET</verb><access_level>PUBLIC</access_level></route>
+            <route><url>^js\/.*</url><verb>GET</verb><access_level>PUBLIC</access_level></route>
+            <route><url>^assets\/.*</url><verb>GET</verb><access_level>PUBLIC</access_level></route>
+
+            <!-- Application API surface (proxied to SaaS) -->
+            <route><url>^api\/.*</url><verb>GET,POST,PUT,DELETE,PATCH</verb><access_level>PUBLIC</access_level></route>
+            <route><url>^auth\/.*</url><verb>GET,POST,PUT,DELETE,PATCH</verb><access_level>PUBLIC</access_level></route>
+
+            <!-- AppAPI lifecycle hooks (called by Nextcloud, not the browser) -->
+            <route><url>^heartbeat$</url><verb>GET</verb><access_level>PUBLIC</access_level></route>
+            <route><url>^init$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
+            <route><url>^enabled$</url><verb>PUT</verb><access_level>ADMIN</access_level></route>
+
+            <!-- Webhooks: NC events_listener -> connector -->
+            <route><url>^webhook\/.*</url><verb>POST</verb><access_level>ADMIN</access_level></route>
+
+            <!-- HMAC-signed reverse proxy back to NC for SaaS-side calls -->
+            <route><url>^nc\/.*</url><verb>GET,POST,PUT,DELETE,PATCH,PROPFIND,REPORT,MKCOL,MOVE,COPY</verb><access_level>PUBLIC</access_level></route>
         </routes>
     </external-app>
 </info>

@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
-# Local sandbox using AppAPI's `manual-install` daemon (works without
-# pushing the image to a public registry).
+# Local sandbox bringing up the full Bee Flow stack on one machine:
+#   - Postgres 16              (data store for the Bee Flow server)
+#   - RustFS                   (S3-compatible blob storage)
+#   - Bee Flow server          (ghcr.io/bee-flow/beeflow:dev)
+#   - Nextcloud                (Docker Hub)
+#   - Bee Flow connector       (this repo's image)
+#
+# All five containers share the bee-flow-net Docker network and can
+# resolve each other by container name. Set WITH_SERVER=0 to skip the
+# Postgres + RustFS + server containers and point the connector at a
+# remote server / SaaS instead (override API_BASE_URL).
 #
 # Subcommands: up | down | clean | logs | status
 #
@@ -12,7 +21,16 @@
 #   IMAGE=bee-flow-connector:dev          # local build (default)
 #   IMAGE=ghcr.io/bee-flow/connector:dev  # pull pre-built (no local build)
 #   TENANT_KEY=dev-tenant-key
-#   API_BASE_URL=http://host.docker.internal:3101
+#   API_BASE_URL=                         # default: http://bee-flow-server:3001
+#                                          override to e.g. https://api.beeflow.ai
+#                                          to skip running the server locally
+#   WITH_SERVER=1                          # 0 to skip Postgres + RustFS + server
+#   SERVER_IMAGE=ghcr.io/bee-flow/beeflow:dev
+#   SERVER_PORT=3001                       # host-published port for the server
+#   PG_PASSWORD=beeflow-dev
+#   RUSTFS_IMAGE=rustfs/rustfs:latest
+#   RUSTFS_ACCESS_KEY=rustfsadmin
+#   RUSTFS_SECRET_KEY=rustfsadmin
 
 set -euo pipefail
 
@@ -21,12 +39,34 @@ NC_PORT="${NC_PORT:-8080}"
 APP_ID="${APP_ID:-bee_flow}"
 IMAGE="${IMAGE:-bee-flow-connector:dev}"
 TENANT_KEY="${TENANT_KEY:-dev-tenant-key}"
-API_BASE_URL="${API_BASE_URL:-http://host.docker.internal:3101}"
+
+# Bee Flow server stack
+WITH_SERVER="${WITH_SERVER:-1}"
+SERVER_IMAGE="${SERVER_IMAGE:-ghcr.io/bee-flow/beeflow:dev}"
+SERVER_PORT="${SERVER_PORT:-3001}"
+PG_IMAGE="${PG_IMAGE:-postgres:16-alpine}"
+PG_PASSWORD="${PG_PASSWORD:-beeflow-dev}"
+RUSTFS_IMAGE="${RUSTFS_IMAGE:-rustfs/rustfs:latest}"
+RUSTFS_ACCESS_KEY="${RUSTFS_ACCESS_KEY:-rustfsadmin}"
+RUSTFS_SECRET_KEY="${RUSTFS_SECRET_KEY:-rustfsadmin}"
+
+# Container names — used as DNS aliases on the shared network.
 NC_NAME="bee-flow-nc-sandbox"
 CONN_NAME="bee-flow-connector-instance"
+SRV_NAME="bee-flow-server"
+PG_NAME="bee-flow-postgres"
+RUSTFS_NAME="bee-flow-rustfs"
 DAEMON="manual_dev"
-NETWORK="bee-flow-net"     # shared bridge network so NC ↔ connector can talk
-                           # via container DNS instead of host.docker.internal
+NETWORK="bee-flow-net"     # shared bridge network — NC ↔ connector ↔ server
+                           # all resolve each other by container name.
+
+# Default the connector's SaaS target to the server we're starting locally.
+# If WITH_SERVER=0, fall back to the public hosted SaaS (override per env).
+if [ "$WITH_SERVER" = "1" ]; then
+    API_BASE_URL="${API_BASE_URL:-http://$SRV_NAME:$SERVER_PORT}"
+else
+    API_BASE_URL="${API_BASE_URL:-https://api.beeflow.ai}"
+fi
 
 # Connector dir = parent of this script. Works in both layouts:
 #   monorepo:   <monorepo>/nextcloud-connector/scripts/local-sandbox.sh
@@ -40,6 +80,111 @@ r() { printf '\033[1;31m%s\033[0m\n' "$*" >&2; }
 
 nc_occ() { docker exec -u www-data "$NC_NAME" php occ "$@"; }
 nc_sql() { docker exec "$NC_NAME" sqlite3 "$DB" "$1"; }
+
+# ─── stack helpers (Postgres + RustFS + server) ──────────────────────────────
+
+start_postgres() {
+    if docker ps --format '{{.Names}}' | grep -qx "$PG_NAME"; then
+        b "[Postgres] $PG_NAME already running"
+    elif docker ps -a --format '{{.Names}}' | grep -qx "$PG_NAME"; then
+        b "[Postgres] starting existing $PG_NAME"
+        docker start "$PG_NAME" >/dev/null
+    else
+        b "[Postgres] launching $PG_IMAGE"
+        docker run -d --name "$PG_NAME" \
+            --network "$NETWORK" \
+            -e POSTGRES_DB=beeflow \
+            -e POSTGRES_USER=beeflow \
+            -e POSTGRES_PASSWORD="$PG_PASSWORD" \
+            "$PG_IMAGE" >/dev/null
+    fi
+    b "[Postgres] waiting for ready"
+    for _ in $(seq 1 30); do
+        if docker exec "$PG_NAME" pg_isready -U beeflow >/dev/null 2>&1; then return 0; fi
+        sleep 1
+    done
+    r "Postgres failed to become ready in 30s"
+    return 1
+}
+
+start_rustfs() {
+    if docker ps --format '{{.Names}}' | grep -qx "$RUSTFS_NAME"; then
+        b "[RustFS] $RUSTFS_NAME already running"
+    elif docker ps -a --format '{{.Names}}' | grep -qx "$RUSTFS_NAME"; then
+        b "[RustFS] starting existing $RUSTFS_NAME"
+        docker start "$RUSTFS_NAME" >/dev/null
+    else
+        b "[RustFS] launching $RUSTFS_IMAGE"
+        docker run -d --name "$RUSTFS_NAME" \
+            --network "$NETWORK" \
+            -e RUSTFS_ACCESS_KEY="$RUSTFS_ACCESS_KEY" \
+            -e RUSTFS_SECRET_KEY="$RUSTFS_SECRET_KEY" \
+            -e RUSTFS_VOLUMES=/data \
+            "$RUSTFS_IMAGE" >/dev/null
+    fi
+    b "[RustFS] waiting for ready"
+    for _ in $(seq 1 20); do
+        # RustFS / S3 endpoints answer on / with a 200 or auth-challenge — both
+        # mean the server is alive enough to serve PUTs.
+        if docker exec "$RUSTFS_NAME" sh -c 'wget -q -O - --timeout=2 http://localhost:9000/ >/dev/null 2>&1 || curl -sf -m 2 http://localhost:9000/ >/dev/null 2>&1' ; then
+            return 0
+        fi
+        sleep 0.5
+    done
+    # Don't fail the whole sandbox on RustFS readiness — server falls back to
+    # local-disk if RustFS is unreachable. Just warn and continue.
+    echo "  ${YLW:-}note: RustFS readiness check timed out; server will use local-disk fallback if needed${OFF:-}"
+    return 0
+}
+
+run_server_migrations() {
+    b "[Server] running migrations"
+    docker run --rm --network "$NETWORK" \
+        -e CORE_DATABASE_URL="postgres://beeflow:$PG_PASSWORD@$PG_NAME:5432/beeflow" \
+        "$SERVER_IMAGE" \
+        node migrateDb.js 2>&1 | tail -5 || true
+}
+
+start_server() {
+    if docker ps --format '{{.Names}}' | grep -qx "$SRV_NAME"; then
+        b "[Server] $SRV_NAME already running — reusing"
+        return 0
+    fi
+    docker rm -f "$SRV_NAME" >/dev/null 2>&1 || true
+    b "[Server] launching $SERVER_IMAGE on :$SERVER_PORT"
+    docker run -d --name "$SRV_NAME" \
+        --network "$NETWORK" \
+        -p "$SERVER_PORT:$SERVER_PORT" \
+        -e PORT="$SERVER_PORT" \
+        -e NODE_ENV=development \
+        -e SESSION_SECRET=dev-session-secret-change-me \
+        -e CORE_DATABASE_URL="postgres://beeflow:$PG_PASSWORD@$PG_NAME:5432/beeflow" \
+        -e RUSTFS_ENDPOINT="http://$RUSTFS_NAME:9000" \
+        -e RUSTFS_ACCESS_KEY="$RUSTFS_ACCESS_KEY" \
+        -e RUSTFS_SECRET_KEY="$RUSTFS_SECRET_KEY" \
+        -e CORS_ORIGIN="http://localhost:$NC_PORT,http://$NC_NAME" \
+        -e COOKIE_SECURE=false \
+        "$SERVER_IMAGE" >/dev/null
+
+    b "[Server] waiting for /api/health"
+    for _ in $(seq 1 60); do
+        if curl -sf -m 1 "http://localhost:$SERVER_PORT/api/health" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    r "Server failed to become healthy in 60s — check: docker logs $SRV_NAME"
+    return 1
+}
+
+ensure_server_image() {
+    if docker image inspect "$SERVER_IMAGE" >/dev/null 2>&1; then
+        b "[Server] image $SERVER_IMAGE already present"
+        return 0
+    fi
+    b "[Server] pulling $SERVER_IMAGE"
+    docker pull "$SERVER_IMAGE"
+}
 
 cmd_up() {
     docker info >/dev/null 2>&1 || { r "Docker daemon is not reachable"; exit 1; }
@@ -62,10 +207,21 @@ cmd_up() {
         docker build -t "$IMAGE" "$CONNECTOR_DIR"
     fi
 
-    # Ensure shared docker network exists. NC + connector both attach so
+    # Ensure shared docker network exists. All sandbox containers attach so
     # they can resolve each other by container name (no host.docker.internal).
     if ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
         docker network create "$NETWORK" >/dev/null
+    fi
+
+    # ─── Server stack (Postgres + RustFS + Bee Flow server) ──────────────
+    if [ "$WITH_SERVER" = "1" ]; then
+        ensure_server_image
+        start_postgres
+        start_rustfs
+        run_server_migrations
+        start_server
+    else
+        b "[Server] WITH_SERVER=0 — skipping server stack; connector will hit $API_BASE_URL"
     fi
 
     if ! docker ps --format '{{.Names}}' | grep -qx "$NC_NAME"; then
@@ -229,16 +385,30 @@ cmd_up() {
 }
 
 cmd_down() {
-    docker rm -f "$NC_NAME" "$CONN_NAME" 2>/dev/null && g "✔ stopped" || echo "(nothing to stop)"
+    docker rm -f "$NC_NAME" "$CONN_NAME" "$SRV_NAME" "$RUSTFS_NAME" "$PG_NAME" 2>/dev/null \
+        && g "✔ stopped" || echo "(nothing to stop)"
 }
 cmd_clean() {
     cmd_down
-    docker rmi "$IMAGE" 2>/dev/null && g "✔ image removed" || true
+    docker rmi "$IMAGE" 2>/dev/null && g "✔ connector image removed" || true
+    # Server image is large (~1 GB) and tedious to re-pull — keep it cached
+    # by default. Set FULL_CLEAN=1 to also remove it and Postgres/RustFS.
+    if [ "${FULL_CLEAN:-0}" = "1" ]; then
+        docker rmi "$SERVER_IMAGE" 2>/dev/null && g "✔ server image removed" || true
+        docker rmi "$RUSTFS_IMAGE" 2>/dev/null && g "✔ rustfs image removed" || true
+        docker rmi "$PG_IMAGE" 2>/dev/null && g "✔ postgres image removed" || true
+    fi
     docker network rm "$NETWORK" 2>/dev/null && g "✔ network removed" || true
 }
 cmd_logs()   { docker logs -f --tail 50 "$CONN_NAME"; }
 cmd_status() {
-    docker ps --filter "name=$NC_NAME" --filter "name=$CONN_NAME" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+    docker ps \
+        --filter "name=$PG_NAME" \
+        --filter "name=$RUSTFS_NAME" \
+        --filter "name=$SRV_NAME" \
+        --filter "name=$NC_NAME" \
+        --filter "name=$CONN_NAME" \
+        --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
     echo
     curl -s "http://localhost:$NC_PORT/status.php" | head -c 200; echo
 }

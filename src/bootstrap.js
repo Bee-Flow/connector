@@ -363,4 +363,28 @@ async function bootstrapIfNeeded() {
     console.log(`[Bootstrap] Provisioned org ${json.organizationId} (${json.organizationName}) — tenant key cached`);
 }
 
-module.exports = { bootstrapIfNeeded, fetchCapabilities, getPendingState };
+/**
+ * Drop the cached tenant key + any in-flight pending binding, clear the
+ * in-memory tenant key on `config`, and run a fresh bootstrap. Used by the
+ * setup picker when the user flips between Bee Flow Cloud and a
+ * self-hosted server — the existing key is for a different SaaS and would
+ * be rejected.
+ *
+ * Best-effort: errors are caught + logged, never thrown to the caller.
+ */
+async function invalidateAndRebootstrap() {
+    try {
+        const cachePath = path.join(config.persistentStorage, CACHE_FILE);
+        await fs.unlink(cachePath).catch(() => {});
+        await deletePendingFile();
+        config.tenantKey = null;
+        config.organizationId = null;
+        config.ncInstanceId = null;
+        console.log('[Bootstrap] Invalidated cached tenant key after setup change — re-bootstrapping');
+        await bootstrapIfNeeded();
+    } catch (err) {
+        console.warn('[Bootstrap] invalidateAndRebootstrap failed:', err.message);
+    }
+}
+
+module.exports = { bootstrapIfNeeded, fetchCapabilities, getPendingState, invalidateAndRebootstrap };

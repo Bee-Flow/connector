@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bee Flow — Connect</title>
+<style>
+    :root {
+        --bg: #f8fafc;
+        --card: #ffffff;
+        --card-border: #e5e7eb;
+        --text: #0f172a;
+        --text-muted: #64748b;
+        --accent: #f59e0b;
+        --accent-dark: #d97706;
+        --accent-soft: #fef3c7;
+        --ok: #16a34a;
+        --err: #dc2626;
+        --shadow: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.06);
+    }
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --card-border: #334155;
+            --text: #f1f5f9;
+            --text-muted: #94a3b8;
+            --accent-soft: #422006;
+        }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+        margin: 0;
+        padding: 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.5;
+    }
+    .wrap { max-width: 760px; margin: 0 auto; padding: 48px 24px; }
+    header { margin-bottom: 32px; }
+    h1 { font-size: 28px; margin: 0 0 8px; }
+    .lede { color: var(--text-muted); margin: 0 0 4px; font-size: 15px; }
+    .badge {
+        display: inline-block;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent-dark);
+        font-size: 12px;
+        font-weight: 600;
+        margin-bottom: 12px;
+    }
+    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 640px) { .cards { grid-template-columns: 1fr; } }
+
+    .card {
+        background: var(--card);
+        border: 2px solid var(--card-border);
+        border-radius: 12px;
+        padding: 20px;
+        cursor: pointer;
+        transition: border-color 0.15s, box-shadow 0.15s, transform 0.05s;
+        position: relative;
+    }
+    .card:hover { border-color: var(--accent); }
+    .card.selected {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    .card .icon {
+        font-size: 32px;
+        margin-bottom: 8px;
+        line-height: 1;
+    }
+    .card h3 { margin: 0 0 6px; font-size: 17px; }
+    .card p { margin: 0; color: var(--text-muted); font-size: 13px; }
+    .card .pill {
+        position: absolute;
+        top: 16px;
+        right: 16px;
+        font-size: 11px;
+        background: var(--accent-soft);
+        color: var(--accent-dark);
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-weight: 600;
+    }
+
+    .form {
+        margin-top: 24px;
+        background: var(--card);
+        border: 1px solid var(--card-border);
+        border-radius: 12px;
+        padding: 20px;
+        display: none;
+    }
+    .form.show { display: block; }
+    .form label {
+        display: block;
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 6px;
+    }
+    .form input[type=url] {
+        width: 100%;
+        padding: 10px 12px;
+        font-size: 15px;
+        border-radius: 8px;
+        border: 1px solid var(--card-border);
+        background: var(--bg);
+        color: var(--text);
+        font-family: inherit;
+    }
+    .form input[type=url]:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px var(--accent-soft);
+    }
+    .hint { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
+
+    .actions {
+        margin-top: 24px;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+    }
+    button {
+        font: inherit;
+        padding: 10px 18px;
+        border-radius: 8px;
+        border: none;
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 14px;
+        transition: opacity 0.1s;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary {
+        background: var(--accent);
+        color: white;
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-dark); }
+    .btn-secondary {
+        background: transparent;
+        color: var(--text-muted);
+        border: 1px solid var(--card-border);
+    }
+    .btn-secondary:hover:not(:disabled) { color: var(--text); }
+
+    .status {
+        margin-top: 18px;
+        padding: 12px 16px;
+        border-radius: 8px;
+        font-size: 14px;
+        display: none;
+    }
+    .status.show { display: block; }
+    .status.info { background: #f1f5f9; color: var(--text); }
+    .status.ok { background: #dcfce7; color: #14532d; }
+    .status.err { background: #fee2e2; color: #7f1d1d; }
+    @media (prefers-color-scheme: dark) {
+        .status.info { background: #1e293b; color: var(--text); }
+        .status.ok { background: #14532d; color: #dcfce7; }
+        .status.err { background: #7f1d1d; color: #fee2e2; }
+    }
+    .status code {
+        font-family: ui-monospace, 'Menlo', monospace;
+        background: rgba(0,0,0,0.05);
+        padding: 1px 5px;
+        border-radius: 3px;
+    }
+
+    .meta {
+        margin-top: 32px;
+        padding-top: 24px;
+        border-top: 1px solid var(--card-border);
+        font-size: 12px;
+        color: var(--text-muted);
+    }
+    .meta strong { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="wrap">
+    <header>
+        <span class="badge" id="badge-current">Loading…</span>
+        <h1>Connect Bee Flow</h1>
+        <p class="lede">Pick where this Nextcloud should send Bee Flow API traffic.</p>
+    </header>
+
+    <div class="cards">
+        <div class="card" id="card-cloud" data-mode="cloud">
+            <span class="pill">Recommended</span>
+            <div class="icon">☁️</div>
+            <h3>Bee Flow Cloud</h3>
+            <p>Hosted by Bee Flow B.V. Zero infra. Updates and uptime are taken care of.
+               Connects to <code>api.beeflow.ai</code>.</p>
+        </div>
+        <div class="card" id="card-self" data-mode="self-hosted">
+            <div class="icon">🏠</div>
+            <h3>Self-hosted server</h3>
+            <p>Point at a Bee Flow server you run yourself — local, on-premise, or on
+               your own cloud account. You provide the URL.</p>
+        </div>
+    </div>
+
+    <div class="form" id="form-self">
+        <label for="apiBaseUrl">Server URL</label>
+        <input type="url" id="apiBaseUrl"
+               placeholder="https://beeflow.example.com"
+               autocomplete="off"
+               spellcheck="false" />
+        <div class="hint">
+            Include the scheme. Example: <code>https://beeflow.example.com</code>
+            or <code>http://bee-flow-server:3001</code> for a Docker-network sandbox.
+        </div>
+    </div>
+
+    <div class="actions">
+        <button class="btn-secondary" id="btn-test" disabled>Test connection</button>
+        <button class="btn-primary"   id="btn-save" disabled>Save and connect</button>
+        <span class="hint" id="status-inline" style="margin: 0;"></span>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <div class="meta">
+        <p><strong>Currently active</strong>: <code id="meta-active">…</code></p>
+        <p id="meta-env" style="display:none;">
+            ⚠️ <strong>Locked by AppAPI env</strong> —
+            <code>BEEFLOW_API_BASE_URL</code> is set on the connector container, so this
+            picker is disabled. Unset it via
+            <code>occ app_api:app:setenv bee_flow BEEFLOW_API_BASE_URL ''</code>.
+        </p>
+    </div>
+</div>
+
+<script>
+(() => {
+    const $ = (id) => document.getElementById(id);
+    const cards = document.querySelectorAll('.card');
+    const formSelf = $('form-self');
+    const inputUrl = $('apiBaseUrl');
+    const btnTest = $('btn-test');
+    const btnSave = $('btn-save');
+    const statusBox = $('status');
+    const statusInline = $('status-inline');
+    const badgeCurrent = $('badge-current');
+    const metaActive = $('meta-active');
+    const metaEnv = $('meta-env');
+
+    let mode = null;
+    let envLocked = false;
+    let cloudUrl = 'https://api.beeflow.ai';
+
+    function setMode(m) {
+        mode = m;
+        cards.forEach(c => c.classList.toggle('selected', c.dataset.mode === m));
+        formSelf.classList.toggle('show', m === 'self-hosted');
+        if (m === 'cloud') {
+            btnSave.disabled = envLocked;
+            btnTest.disabled = false;
+        } else {
+            btnSave.disabled = envLocked || !inputUrl.value.trim();
+            btnTest.disabled = !inputUrl.value.trim();
+        }
+        clearStatus();
+    }
+
+    function targetUrl() {
+        return mode === 'cloud' ? cloudUrl : inputUrl.value.trim();
+    }
+
+    function clearStatus() {
+        statusBox.className = 'status';
+        statusBox.textContent = '';
+        statusInline.textContent = '';
+    }
+    function showStatus(kind, html) {
+        statusBox.className = `status show ${kind}`;
+        statusBox.innerHTML = html;
+    }
+
+    cards.forEach(c => c.addEventListener('click', () => {
+        if (envLocked) return;
+        setMode(c.dataset.mode);
+    }));
+
+    inputUrl.addEventListener('input', () => {
+        const has = !!inputUrl.value.trim();
+        btnTest.disabled = !has;
+        btnSave.disabled = envLocked || !has;
+        clearStatus();
+    });
+
+    btnTest.addEventListener('click', async () => {
+        const url = targetUrl();
+        if (!url) return;
+        btnTest.disabled = true;
+        statusInline.textContent = 'testing…';
+        try {
+            const r = await fetch('/setup/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ apiBaseUrl: url }),
+            });
+            const d = await r.json();
+            if (d.ok) {
+                showStatus('ok',
+                    `<strong>Reachable.</strong> Server responded
+                     <code>${d.status}</code>${d.version ? ` · version <code>${d.version}</code>` : ''}${d.tier ? ` · tier <code>${d.tier}</code>` : ''}.`);
+            } else {
+                showStatus('err',
+                    `Could not reach <code>${d.url}</code>: ${d.error || 'unknown'}.`);
+            }
+        } catch (e) {
+            showStatus('err', `Test failed: ${e.message}`);
+        } finally {
+            statusInline.textContent = '';
+            btnTest.disabled = false;
+        }
+    });
+
+    btnSave.addEventListener('click', async () => {
+        const body = mode === 'cloud'
+            ? { mode: 'cloud' }
+            : { mode: 'self-hosted', apiBaseUrl: inputUrl.value.trim() };
+        btnSave.disabled = true;
+        statusInline.textContent = 'saving…';
+        try {
+            const r = await fetch('/setup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const d = await r.json();
+            if (!r.ok) {
+                showStatus('err', d.error || 'save failed');
+                btnSave.disabled = false;
+                return;
+            }
+            metaActive.textContent = d.saved.apiBaseUrl;
+            badgeCurrent.textContent = d.saved.mode === 'cloud' ? '☁️ Cloud' : '🏠 Self-hosted';
+            const probeMsg = d.probe?.ok
+                ? `Server is reachable.`
+                : `Saved, but the server isn't reachable yet (<code>${d.probe?.error || 'unknown'}</code>). Check the URL or start the server, then retry the test.`;
+            showStatus(d.probe?.ok ? 'ok' : 'info',
+                `<strong>Saved.</strong> ${probeMsg}`);
+        } catch (e) {
+            showStatus('err', `Save failed: ${e.message}`);
+        } finally {
+            btnSave.disabled = envLocked;
+            statusInline.textContent = '';
+        }
+    });
+
+    // Initial state
+    fetch('/setup/status').then(r => r.json()).then(s => {
+        cloudUrl = s.cloudUrl || cloudUrl;
+        metaActive.textContent = s.active;
+        envLocked = !!s.envOverridden;
+        if (envLocked) {
+            metaEnv.style.display = '';
+            cards.forEach(c => c.style.opacity = '0.5');
+            inputUrl.disabled = true;
+            btnSave.disabled = true;
+            btnTest.disabled = !s.active;
+            badgeCurrent.textContent = `🔒 Env-locked`;
+            return;
+        }
+        if (s.chosen) {
+            badgeCurrent.textContent = s.chosen.mode === 'cloud' ? '☁️ Cloud' : '🏠 Self-hosted';
+            if (s.chosen.mode === 'self-hosted') inputUrl.value = s.chosen.apiBaseUrl;
+            setMode(s.chosen.mode);
+        } else {
+            badgeCurrent.textContent = '⚠️ Not configured';
+            // Default-select Cloud as the recommended path.
+            setMode('cloud');
+        }
+    }).catch(err => {
+        showStatus('err', 'Could not load current status: ' + err.message);
+    });
+})();
+</script>
+</body>
+</html>

@@ -25,7 +25,25 @@ The fastest way to run this connector against a local Nextcloud — **without** 
 ./scripts/local-sandbox.sh up
 ```
 
-This builds the connector image, runs Nextcloud 31 on `:8080` (admin/admin), installs AppAPI, registers a `manual-install` deployment daemon, and side-loads this connector. End state: open <http://localhost:8080>, click the bee in the top bar.
+This builds the connector image, runs Nextcloud on `:8080` (admin/admin), installs AppAPI, registers a `manual-install` deployment daemon, and side-loads this connector. End state: open <http://localhost:8080>, click the bee in the top bar.
+
+## Switching between Bee Flow Cloud and a self-hosted server
+
+The connector ships with a small built-in picker page where an admin chooses where API traffic goes. Two big cards: **Bee Flow Cloud** (recommended) or **Self-hosted server** (paste your own URL, test it, save).
+
+Reach the picker at:
+
+- Embedded inside Nextcloud: `http://<your-nc>/index.php/apps/app_api/embedded/bee_flow/setup`
+- Direct to the connector: `http://localhost:23000/setup` (host-only)
+
+Set programmatically via `occ`:
+
+```bash
+sudo -u www-data php occ app_api:app:setenv bee_flow \
+    BEEFLOW_API_BASE_URL https://api.beeflow.ai     # or your self-hosted URL
+```
+
+The env-var path takes precedence over the picker — useful for IaC / GitOps lockdown. See [the docs](https://bee-flow.github.io/docs/connector/setup-picker/) for the full flow.
 
 Subcommands:
 

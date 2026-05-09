@@ -60,6 +60,16 @@ app.use(appApiAuthMiddleware);
 app.use('/', require('./eventsWebhook'));
 app.use('/', require('./automationEventsWebhook'));
 
+// User-facing setup picker — choose Bee Flow Cloud vs a self-hosted server.
+// Routes auth-checked by appApiAuthMiddleware above (admin only via NC).
+const setupConfig = require('./setupConfig');
+const stored = setupConfig.init(config.persistentStorage);
+if (stored && !process.env.BEEFLOW_API_BASE_URL && stored.apiBaseUrl) {
+    config.apiBaseUrl = stored.apiBaseUrl;
+    console.log(`[Setup] applying user-chosen apiBaseUrl: ${config.apiBaseUrl} (${stored.mode})`);
+}
+app.use('/setup', require('./setup'));
+
 registerLifecycle(app);
 
 // @nextcloud/l10n bundled into the SPA pings these endpoints on every page
@@ -77,7 +87,7 @@ app.get(['/api/languages/user/locales', '/api/languages/user/strings/:lang',
 // `/agents`, `/automation`, `/integrations`, `/api/*` sub-routes, etc.).
 // A maintained allow-list drifted as new endpoints were added; the deny-
 // list captures the small, stable set of connector-owned paths instead.
-const CONNECTOR_OWNED = /^\/(assets\/|js\/|img\/|favicon|BeeFlow-logo|bee-flow-logo|index\.html$|$)/;
+const CONNECTOR_OWNED = /^\/(setup\/?(.*)?$|assets\/|js\/|img\/|favicon|BeeFlow-logo|bee-flow-logo|index\.html$|$)/;
 const proxy = buildApiProxy();
 app.use((req, res, next) => {
     if (CONNECTOR_OWNED.test(req.url.split('?')[0])) return next();

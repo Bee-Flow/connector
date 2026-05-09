@@ -108,19 +108,44 @@ cmd_up() {
         nc_occ app_api:app:unregister "$APP_ID" 2>/dev/null | tail -1 || true
         nc_sql "DELETE FROM oc_ex_apps WHERE appid='$APP_ID'; DELETE FROM oc_ex_apps_routes WHERE appid='$APP_ID'; DELETE FROM oc_ex_ui_top_menu WHERE appid='$APP_ID'; DELETE FROM oc_ex_ui_scripts WHERE appid='$APP_ID';" 2>/dev/null || true
         docker cp "$CONNECTOR_DIR/appinfo/info.xml" "$NC_NAME:/tmp/info.xml"
+
+        # Run register in BACKGROUND. AppAPI inserts the row + secret + port
+        # synchronously, then blocks polling for the connector's heartbeat.
+        # That heartbeat can only succeed once we start the container — but
+        # the container needs the port + secret which AppAPI just minted.
+        # So we let register hang while we read the row, start the container,
+        # and then block on register to finish.
+        REGISTER_LOG=$(mktemp)
         nc_occ app_api:app:register "$APP_ID" "$DAEMON" \
             --info-xml /tmp/info.xml \
             --env "BEEFLOW_TENANT_KEY=$TENANT_KEY" \
-            --env "BEEFLOW_API_BASE_URL=$API_BASE_URL" 2>&1 | tail -1
+            --env "BEEFLOW_API_BASE_URL=$API_BASE_URL" >"$REGISTER_LOG" 2>&1 &
+        REGISTER_PID=$!
+
+        b "[6/7] Waiting for AppAPI to provision port + secret"
+        for i in $(seq 1 60); do
+            PORT=$(nc_sql "SELECT port FROM oc_ex_apps WHERE appid='$APP_ID';" 2>/dev/null)
+            SECRET=$(nc_sql "SELECT secret FROM oc_ex_apps WHERE appid='$APP_ID';" 2>/dev/null)
+            [ -n "$PORT" ] && [ -n "$SECRET" ] && break
+            sleep 0.5
+        done
+        if [ -z "$PORT" ] || [ -z "$SECRET" ]; then
+            r "Timed out waiting for AppAPI to provision the ExApp row"
+            kill "$REGISTER_PID" 2>/dev/null
+            cat "$REGISTER_LOG" >&2
+            rm -f "$REGISTER_LOG"
+            exit 1
+        fi
     else
         b "[6/7] ExApp $APP_ID already registered (info.xml unchanged)"
+        REGISTER_PID=""
+        REGISTER_LOG=""
+        SECRET=$(nc_sql "SELECT secret FROM oc_ex_apps WHERE appid='$APP_ID';")
+        PORT=$(nc_sql "SELECT port FROM oc_ex_apps WHERE appid='$APP_ID';")
     fi
 
-    SECRET=$(nc_sql "SELECT secret FROM oc_ex_apps WHERE appid='$APP_ID';")
-    PORT=$(nc_sql "SELECT port FROM oc_ex_apps WHERE appid='$APP_ID';")
-
     docker rm -f "$CONN_NAME" >/dev/null 2>&1 || true
-    b "[7/7] Starting connector on :$PORT"
+    b "[7/7] Starting connector on :$PORT (parallel to register)"
     docker run -d --name "$CONN_NAME" \
         -p "$PORT:$PORT" --add-host=host.docker.internal:host-gateway \
         -e APP_ID="$APP_ID" -e APP_VERSION=0.1.0 \
@@ -131,9 +156,8 @@ cmd_up() {
         -e BEEFLOW_API_BASE_URL="$API_BASE_URL" \
         "$IMAGE" >/dev/null
 
-    # Wait for the connector's /heartbeat to respond before enabling. Async
-    # /init will report progress itself once it boots; we just need the
-    # container to be reachable on its assigned port.
+    # Wait for the connector's /heartbeat to respond — and at the same time,
+    # this is what unblocks the backgrounded `app:register` call.
     b "[7/7] Waiting for connector /heartbeat on :$PORT"
     for i in $(seq 1 20); do
         if curl -sf -o /dev/null -m 1 "http://localhost:$PORT/heartbeat"; then
@@ -141,6 +165,14 @@ cmd_up() {
         fi
         sleep 0.5
     done
+
+    # Now wait for the backgrounded register call to finish (it should
+    # complete within seconds once heartbeat works).
+    if [ -n "${REGISTER_PID:-}" ]; then
+        wait "$REGISTER_PID" 2>/dev/null || true
+        tail -1 "$REGISTER_LOG" 2>/dev/null
+        rm -f "$REGISTER_LOG"
+    fi
 
     # Force-bootstrap the deploy state. AppAPI's deploy step (image pull +
     # container start) was bypassed because we ran docker run ourselves;

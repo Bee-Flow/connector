@@ -77,6 +77,19 @@ require('./declarativeSettings').startPolling();
 
 registerLifecycle(app);
 
+// Re-run UI registration (top-menu, embed script, settings form, event
+// listeners) on every boot. AppAPI only calls /init on install/upgrade, so
+// without this a `docker restart` after the script's re-registration step
+// (which DELETEs oc_ex_ui_top_menu) leaves the bee icon missing from the
+// NC top bar. Each underlying OCS call accepts HTTP 409 (already
+// registered) silently, so this is safe to re-run on a healthy install too.
+const { runInitInBackground } = require('./heartbeat');
+setImmediate(() => {
+    runInitInBackground().catch(err => {
+        console.warn(`[Boot] UI re-registration failed (non-fatal): ${err.message}`);
+    });
+});
+
 // @nextcloud/l10n bundled into the SPA pings these endpoints on every page
 // load to fetch translations from a "real" NC instance. The Bee Flow server
 // doesn't host them — forwarding produces 404 spam in the console. Return

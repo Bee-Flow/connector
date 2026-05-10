@@ -139,30 +139,42 @@ async function applyStoredValuesIfChanged() {
         return;
     }
 
-    console.log(`[Settings] apiBaseUrl changing: ${config.apiBaseUrl} → ${target}`);
+    console.log(`[Settings] apiBaseUrl change requested: ${config.apiBaseUrl} → ${target}`);
+    const previousUrl = config.apiBaseUrl;
     config.apiBaseUrl = target;
-    // Persistence is best-effort. setupConfig.save() needs init() to have
-    // been called first (server.js does that on boot); if a caller invokes
-    // applyStoredValuesIfChanged before init, the in-memory change still
-    // takes effect — we only lose persistence across restarts.
-    try {
-        setupConfig.save({
-            mode: values[FIELD_MODE] === 'self-hosted' ? 'self-hosted' : 'cloud',
-            apiBaseUrl: target,
-        });
-    } catch (err) {
-        console.warn(`[Settings] persistence skipped: ${err.message}`);
-    }
-    _lastApplied = fingerprint;
 
+    // Try the new target. If bootstrap fails (e.g. Cloud picked from a
+    // localhost-only sandbox NC, or a typo in the self-hosted URL), the
+    // bootstrap layer rolls back its tenant key — we mirror that here by
+    // restoring the previous apiBaseUrl so the next API request keeps
+    // working against the old, healthy target instead of stranding the
+    // user with a blank app.
+    let rebootstrapOk = true;
     try {
         const bootstrap = require('./bootstrap');
         if (typeof bootstrap.invalidateAndRebootstrap === 'function') {
             await bootstrap.invalidateAndRebootstrap();
         }
     } catch (err) {
-        console.warn(`[Settings] re-bootstrap after change failed: ${err.message}`);
+        rebootstrapOk = false;
+        config.apiBaseUrl = previousUrl;
+        console.warn(`[Settings] re-bootstrap failed; keeping previous apiBaseUrl ${previousUrl}. Detail: ${err.message}`);
     }
+
+    if (rebootstrapOk) {
+        try {
+            setupConfig.save({
+                mode: values[FIELD_MODE] === 'self-hosted' ? 'self-hosted' : 'cloud',
+                apiBaseUrl: target,
+            });
+        } catch (err) {
+            console.warn(`[Settings] persistence skipped: ${err.message}`);
+        }
+        _lastApplied = fingerprint;
+    }
+    // On failure: leave _lastApplied unchanged so the next poll retries.
+    // That way an admin who sets up ngrok later doesn't have to toggle
+    // the radio off and on for the connector to reattempt.
 }
 
 let _pollTimer = null;

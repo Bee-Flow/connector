@@ -373,8 +373,23 @@ async function bootstrapIfNeeded() {
  * Best-effort: errors are caught + logged, never thrown to the caller.
  */
 async function invalidateAndRebootstrap() {
+    // Snapshot the previous working state so we can roll back if the new
+    // target's bootstrap fails. Without this, a typo in the settings panel
+    // (or a Cloud-mode pick from a localhost-only NC sandbox) wipes the
+    // working tenant key and strands the connector with 502 "Tenant key not
+    // configured" until something else fixes it.
+    const prev = {
+        tenantKey: config.tenantKey,
+        organizationId: config.organizationId,
+        ncInstanceId: config.ncInstanceId,
+        cacheFile: null,
+    };
+    const cachePath = path.join(config.persistentStorage, CACHE_FILE);
     try {
-        const cachePath = path.join(config.persistentStorage, CACHE_FILE);
+        prev.cacheFile = await fs.readFile(cachePath, 'utf8').catch(() => null);
+    } catch (_) { /* tolerate */ }
+
+    try {
         await fs.unlink(cachePath).catch(() => {});
         await deletePendingFile();
         config.tenantKey = null;
@@ -382,8 +397,20 @@ async function invalidateAndRebootstrap() {
         config.ncInstanceId = null;
         console.log('[Bootstrap] Invalidated cached tenant key after setup change — re-bootstrapping');
         await bootstrapIfNeeded();
+        if (!config.tenantKey) {
+            // bootstrapIfNeeded swallows network errors and just logs; if we
+            // got back here without a key, the new target is unreachable.
+            throw new Error('bootstrap completed without producing a tenant key');
+        }
     } catch (err) {
-        console.warn('[Bootstrap] invalidateAndRebootstrap failed:', err.message);
+        console.warn(`[Bootstrap] re-bootstrap failed (${err.message}); rolling back to previous tenant key`);
+        config.tenantKey = prev.tenantKey;
+        config.organizationId = prev.organizationId;
+        config.ncInstanceId = prev.ncInstanceId;
+        if (prev.cacheFile) {
+            await fs.writeFile(cachePath, prev.cacheFile, { mode: 0o600 }).catch(() => {});
+        }
+        throw err;
     }
 }
 

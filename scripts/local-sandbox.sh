@@ -157,6 +157,45 @@ start_rustfs() {
     return 0
 }
 
+# Tunnel the local NC at $NC_NAME:80 to a public https URL so that the cloud
+# Bee Flow SaaS (server.beeflow.ai) can call back to verify NC ownership
+# during bootstrap. Returns the public URL on stdout (e.g.
+# `https://9f8e7d.ngrok-free.app`). No-op when NGROK_AUTHTOKEN is unset.
+start_ngrok() {
+    [ -z "$NGROK_AUTHTOKEN" ] && return 0
+
+    if ! docker ps --format '{{.Names}}' | grep -qx "$NGROK_NAME"; then
+        docker rm -f "$NGROK_NAME" >/dev/null 2>&1 || true
+        b "[ngrok] launching $NGROK_IMAGE → $NC_NAME:80" >&2
+        # `--log=stdout` is critical: without it ngrok writes to a file we
+        # can't tail, and we have no way to know it's ready. Port 4040 is
+        # the local API for tunnel introspection (only exposed on the
+        # internal docker network — not published).
+        docker run -d --name "$NGROK_NAME" \
+            --network "$NETWORK" \
+            -e NGROK_AUTHTOKEN="$NGROK_AUTHTOKEN" \
+            "$NGROK_IMAGE" \
+            http "$NC_NAME:80" --log=stdout >/dev/null
+    fi
+
+    b "[ngrok] waiting for public URL" >&2
+    for _ in $(seq 1 30); do
+        # Tunnels API returns JSON; jq isn't installed in the alpine ngrok
+        # image, so grep+sed the URL out. Match https only — the http and
+        # https tunnels are both listed; we want the https one for callback
+        # to actually succeed against NC.
+        url=$(docker exec "$NGROK_NAME" wget -qO- http://localhost:4040/api/tunnels 2>/dev/null \
+            | grep -oE '"public_url":"https://[^"]+"' | head -1 | sed 's/.*"\(https:[^"]*\)"/\1/')
+        if [ -n "$url" ]; then
+            echo "$url"
+            return 0
+        fi
+        sleep 1
+    done
+    r "ngrok did not produce a public URL within 30s — check 'docker logs $NGROK_NAME'"
+    return 1
+}
+
 run_server_migrations() {
     b "[Server] running migrations"
     docker run --rm --network "$NETWORK" \
@@ -280,6 +319,29 @@ cmd_up() {
     # claim"). NC's default admin has no email, so set one — idempotent.
     nc_occ user:setting admin settings email admin@example.com >/dev/null 2>&1 || true
 
+    # Optional ngrok tunnel for Cloud-mode bootstrap. The cloud SaaS verifies
+    # NC ownership by calling back to ${ncBaseUrl}/ocs/.../capabilities; the
+    # Docker-internal hostname $NC_NAME isn't reachable from the public
+    # internet, so we expose NC at a public https URL and pass that to the
+    # connector as BEEFLOW_NC_PUBLIC_URL. Only the bootstrap claim uses it;
+    # internal connector→NC traffic still goes via $NC_NAME.
+    NC_PUBLIC_URL=""
+    if [ -n "$NGROK_AUTHTOKEN" ]; then
+        NC_PUBLIC_URL=$(start_ngrok)
+        if [ -n "$NC_PUBLIC_URL" ]; then
+            ngrok_host="${NC_PUBLIC_URL#https://}"
+            b "[ngrok] adding $ngrok_host to NC trusted_domains"
+            # Reserve slot 2 for the ngrok host (slot 0=localhost, 1=$NC_NAME).
+            nc_occ config:system:set trusted_domains 2 --value="$ngrok_host" >/dev/null
+            # Also tell NC to honour the public hostname when generating
+            # absolute URLs in OCS responses; without this, NC may build
+            # capability URLs using the internal hostname and the SaaS
+            # callback fails the host check.
+            nc_occ config:system:set overwritehost --value="$ngrok_host" >/dev/null
+            nc_occ config:system:set overwriteprotocol --value="https" >/dev/null
+        fi
+    fi
+
     # Trusted domains — must include every hostname the connector / browser
     # uses to reach NC. Without these, NC returns its web-UI HTML for OCS
     # calls instead of JSON, which breaks the connector's /init flow
@@ -366,6 +428,7 @@ cmd_up() {
         -e APP_HOST=0.0.0.0 -e APP_PORT="$PORT" \
         -e APP_SECRET="$SECRET" \
         -e NEXTCLOUD_URL="http://$NC_NAME" \
+        -e BEEFLOW_NC_PUBLIC_URL="$NC_PUBLIC_URL" \
         -e BEEFLOW_TENANT_KEY="$TENANT_KEY" \
         -e BEEFLOW_API_BASE_URL="$API_BASE_URL" \
         "$IMAGE" >/dev/null
@@ -408,10 +471,13 @@ cmd_up() {
     g "✔ Sandbox up — http://localhost:$NC_PORT  (admin / admin)"
     echo "  Connector port: $PORT  (heartbeat: http://localhost:$PORT/heartbeat)"
     echo "  Connector logs: docker logs -f $CONN_NAME"
+    if [ -n "$NC_PUBLIC_URL" ]; then
+        echo "  Public NC URL:  $NC_PUBLIC_URL  (Cloud-mode bootstrap callback)"
+    fi
 }
 
 cmd_down() {
-    docker rm -f "$NC_NAME" "$CONN_NAME" "$SRV_NAME" "$RUSTFS_NAME" "$PG_NAME" 2>/dev/null \
+    docker rm -f "$NC_NAME" "$CONN_NAME" "$SRV_NAME" "$RUSTFS_NAME" "$PG_NAME" "$NGROK_NAME" 2>/dev/null \
         && g "✔ stopped" || echo "(nothing to stop)"
 }
 cmd_clean() {

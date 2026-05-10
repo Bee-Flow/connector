@@ -20,7 +20,13 @@
 #                       for reproducibility.)
 #   IMAGE=bee-flow-connector:dev          # local build (default)
 #   IMAGE=ghcr.io/bee-flow/connector:dev  # pull pre-built (no local build)
-#   TENANT_KEY=dev-tenant-key
+#   TENANT_KEY=auto                       # default: connector handshakes with
+#                                          # the SaaS, which provisions an org
+#                                          # and returns a real tenant key.
+#                                          # A literal value here SKIPS that
+#                                          # handshake — the SaaS won't have a
+#                                          # matching `connector_tenant_key_*`
+#                                          # row and every JWT will 401.
 #   API_BASE_URL=                         # default: http://bee-flow-server:3001
 #                                          override to e.g. https://api.beeflow.ai
 #                                          to skip running the server locally
@@ -38,7 +44,7 @@ NC_VERSION="${NC_VERSION:-stable}"
 NC_PORT="${NC_PORT:-8080}"
 APP_ID="${APP_ID:-bee_flow}"
 IMAGE="${IMAGE:-bee-flow-connector:dev}"
-TENANT_KEY="${TENANT_KEY:-dev-tenant-key}"
+TENANT_KEY="${TENANT_KEY:-auto}"
 
 # Bee Flow server stack
 WITH_SERVER="${WITH_SERVER:-1}"
@@ -158,6 +164,7 @@ start_server() {
         -e PORT="$SERVER_PORT" \
         -e NODE_ENV=development \
         -e SESSION_SECRET=dev-session-secret-change-me-at-least-32-chars \
+        -e MASTER_ENCRYPTION_KEY=dev-master-encryption-key-32-chars-min \
         -e CORE_DATABASE_URL="postgres://beeflow:$PG_PASSWORD@$PG_NAME:5432/beeflow" \
         -e RUSTFS_ENDPOINT="http://$RUSTFS_NAME:9000" \
         -e RUSTFS_ACCESS_KEY="$RUSTFS_ACCESS_KEY" \
@@ -253,6 +260,11 @@ cmd_up() {
     else
         b "[4/7] Nextcloud already installed"
     fi
+
+    # The connector mints SaaS-bound JWTs from the NC user record; the SaaS
+    # rejects JWTs with no `email` claim (400 "Connector token missing email
+    # claim"). NC's default admin has no email, so set one — idempotent.
+    nc_occ user:setting admin settings email admin@example.com >/dev/null 2>&1 || true
 
     # Trusted domains — must include every hostname the connector / browser
     # uses to reach NC. Without these, NC returns its web-UI HTML for OCS

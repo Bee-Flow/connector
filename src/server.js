@@ -70,6 +70,11 @@ if (stored && !process.env.BEEFLOW_API_BASE_URL && stored.apiBaseUrl) {
 }
 app.use('/setup', require('./setup'));
 
+// NC admin settings panel (Cloud vs self-hosted) — poll for changes every
+// 60s and apply to the live config. Started on every boot rather than only
+// on /init, since NC only calls /init on install/upgrade.
+require('./declarativeSettings').startPolling();
+
 registerLifecycle(app);
 
 // @nextcloud/l10n bundled into the SPA pings these endpoints on every page

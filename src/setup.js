@@ -89,13 +89,12 @@ router.post('/test', express.json(), async (req, res) => {
 });
 
 router.post('/', express.json(), async (req, res) => {
-    if (process.env.BEEFLOW_API_BASE_URL) {
-        // Hard-locked by AppAPI env. Refuse silently to flip — admins can
-        // unset via `occ app_api:app:setenv bee_flow BEEFLOW_API_BASE_URL ''`.
-        return res.status(409).json({
-            error: 'BEEFLOW_API_BASE_URL is set via AppAPI env and overrides any in-app choice',
-        });
-    }
+    // Note: BEEFLOW_API_BASE_URL used to hard-lock this endpoint to whatever
+    // value AppAPI env passed in. That made the in-NC settings panel
+    // (declarativeSettings.js) read-only in the local sandbox, which always
+    // sets the env var. The env now seeds the initial value via config.js
+    // but admin overrides through this endpoint or the NC settings panel
+    // win at runtime — last-writer wins, persisted via setupConfig.
     let { mode, apiBaseUrl } = req.body || {};
     if (mode === 'cloud') apiBaseUrl = setupConfig.CLOUD_URL;
 

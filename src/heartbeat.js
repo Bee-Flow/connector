@@ -76,10 +76,13 @@ async function runInitInBackground() {
     await reportInitProgress(25).catch(() => {});
 
     // 2. NC UI registrations — independent, run in parallel.
+    const declarativeSettings = require('./declarativeSettings');
     await Promise.allSettled([
         registerTopMenu().catch(err => console.warn(`[Init] TopMenu register failed: ${err.message}`)),
         registerEmbedScript().catch(err => console.warn(`[Init] Embed script register failed: ${err.message}`)),
+        declarativeSettings.registerSettingsForm().catch(err => console.warn(`[Init] Settings form register failed: ${err.message}`)),
     ]);
+    declarativeSettings.startPolling();
     await reportInitProgress(60).catch(() => {});
 
     // 3. Event-listener subscriptions (parallel, with per-call 3s timeout).

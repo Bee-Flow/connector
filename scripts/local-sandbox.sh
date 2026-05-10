@@ -12,6 +12,11 @@
 # remote server / SaaS instead (override API_BASE_URL).
 #
 # Subcommands: up | down | clean | logs | status
+#   `up` accepts `--cloud` to point the connector at https://server.beeflow.ai
+#   instead of the local SaaS, and auto-spawn a public tunnel (cloudflared by
+#   default, ngrok if NGROK_AUTHTOKEN is set) so the cloud can callback-verify
+#   your NC. One-command sandbox-against-cloud:
+#     ./local-sandbox.sh --cloud
 #
 # Env overrides:
 #   NC_VERSION=stable  NC_PORT=8080  APP_ID=bee_flow
@@ -45,6 +50,10 @@
 #                                          # Required to use Cloud mode from
 #                                          # this Docker sandbox; without it,
 #                                          # only Self-hosted mode works.
+#                                          # Get a free token (no card needed) at
+#                                          # https://dashboard.ngrok.com/get-started/your-authtoken
+#                                          # and run:
+#                                          #   NGROK_AUTHTOKEN=... ./local-sandbox.sh
 
 set -euo pipefail
 
@@ -64,11 +73,21 @@ RUSTFS_IMAGE="${RUSTFS_IMAGE:-rustfs/rustfs:latest}"
 RUSTFS_ACCESS_KEY="${RUSTFS_ACCESS_KEY:-rustfsadmin}"
 RUSTFS_SECRET_KEY="${RUSTFS_SECRET_KEY:-rustfsadmin}"
 
-# Optional public-tunnel for Cloud mode (server.beeflow.ai needs to call NC
-# back to verify ownership). Only used when NGROK_AUTHTOKEN is provided.
+# Public-tunnel for Cloud mode (server.beeflow.ai needs to call NC back to
+# verify ownership). Two implementations: cloudflared (default, no signup)
+# and ngrok (opt-in via NGROK_AUTHTOKEN, named URL, slightly more reliable).
+# A tunnel is started automatically whenever cmd_up runs in --cloud mode.
 NGROK_AUTHTOKEN="${NGROK_AUTHTOKEN:-}"
 NGROK_IMAGE="${NGROK_IMAGE:-ngrok/ngrok:latest}"
 NGROK_NAME="bee-flow-ngrok"
+CFD_IMAGE="${CFD_IMAGE:-cloudflare/cloudflared:latest}"
+CFD_NAME="bee-flow-cloudflared"
+
+# --cloud flag — set later by cmd_up arg parsing. When true, the script:
+#   1. skips the local Postgres+RustFS+server stack (WITH_SERVER=0)
+#   2. points the connector at https://server.beeflow.ai
+#   3. spawns a public tunnel for the bootstrap callback
+CLOUD_MODE=0
 
 # Container names — used as DNS aliases on the shared network.
 NC_NAME="bee-flow-nc-sandbox"
@@ -196,6 +215,49 @@ start_ngrok() {
     return 1
 }
 
+# cloudflared quick-tunnel — same purpose as start_ngrok but no signup, no
+# authtoken. The tunnel URL changes on every restart (e.g.
+# https://random-words.trycloudflare.com), which is fine for a sandbox: each
+# fresh `up` re-bootstraps with the new URL anyway.
+start_cloudflared() {
+    if ! docker ps --format '{{.Names}}' | grep -qx "$CFD_NAME"; then
+        docker rm -f "$CFD_NAME" >/dev/null 2>&1 || true
+        b "[cloudflared] launching → $NC_NAME:80" >&2
+        # `--no-autoupdate` keeps the container deterministic; `--url`
+        # creates a quick-tunnel (anonymous, no Cloudflare account).
+        docker run -d --name "$CFD_NAME" \
+            --network "$NETWORK" \
+            "$CFD_IMAGE" \
+            tunnel --no-autoupdate --url "http://$NC_NAME:80" >/dev/null
+    fi
+
+    b "[cloudflared] waiting for public URL" >&2
+    for _ in $(seq 1 30); do
+        # cloudflared logs the URL within ~5s, e.g.:
+        #   "Your quick Tunnel has been created!  https://<words>.trycloudflare.com"
+        url=$(docker logs "$CFD_NAME" 2>&1 \
+            | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | head -1)
+        if [ -n "$url" ]; then
+            echo "$url"
+            return 0
+        fi
+        sleep 1
+    done
+    r "cloudflared did not produce a public URL within 30s — check 'docker logs $CFD_NAME'"
+    return 1
+}
+
+# Picks an available public-tunnel implementation. Preference order:
+#   1. ngrok      — when NGROK_AUTHTOKEN set; named *.ngrok-free.app URL
+#   2. cloudflared — default; *.trycloudflare.com, no signup
+start_public_tunnel() {
+    if [ -n "$NGROK_AUTHTOKEN" ]; then
+        start_ngrok
+    else
+        start_cloudflared
+    fi
+}
+
 run_server_migrations() {
     b "[Server] running migrations"
     docker run --rm --network "$NETWORK" \
@@ -218,6 +280,7 @@ start_server() {
         -e NODE_ENV=development \
         -e SESSION_SECRET=dev-session-secret-change-me-at-least-32-chars \
         -e MASTER_ENCRYPTION_KEY=dev-master-encryption-key-32-chars-min \
+        -e BEEFLOW_BOOTSTRAP_SKIP_VERIFY=true \
         -e CORE_DATABASE_URL="postgres://beeflow:$PG_PASSWORD@$PG_NAME:5432/beeflow" \
         -e RUSTFS_ENDPOINT="http://$RUSTFS_NAME:9000" \
         -e RUSTFS_ACCESS_KEY="$RUSTFS_ACCESS_KEY" \
@@ -248,6 +311,15 @@ ensure_server_image() {
 
 cmd_up() {
     docker info >/dev/null 2>&1 || { r "Docker daemon is not reachable"; exit 1; }
+
+    # --cloud — point connector at https://server.beeflow.ai instead of the
+    # local SaaS, skip the Postgres+RustFS+server stack, and start a public
+    # tunnel so the cloud can callback-verify the NC instance.
+    if [ "$CLOUD_MODE" = "1" ]; then
+        WITH_SERVER=0
+        API_BASE_URL="https://server.beeflow.ai"
+        b "[cloud] Connector will target $API_BASE_URL; local SaaS stack disabled"
+    fi
 
     # Image source priority:
     #   1. Already-loaded local image  → reuse
@@ -307,6 +379,18 @@ cmd_up() {
     b "[3/7] Waiting for apache"
     until docker exec "$NC_NAME" curl -sf http://127.0.0.1/status.php >/dev/null 2>&1; do sleep 2; done
 
+    # Disable Apache mod_deflate so SSE responses (e.g. /ai/chat/direct/stream)
+    # aren't gzip-buffered before reaching the browser. With deflate on, the
+    # SPA's chat UI sees a partial / corrupted stream and prints "Error
+    # generating response" while the cloud is actually streaming fine.
+    # Idempotent: a2dismod is a no-op if already disabled.
+    if docker exec "$NC_NAME" sh -c 'apache2ctl -M 2>/dev/null | grep -q deflate_module'; then
+        docker exec "$NC_NAME" a2dismod -f deflate >/dev/null 2>&1 || true
+        docker exec "$NC_NAME" apache2ctl restart 2>&1 | grep -v "fully qualified" >&2 || true
+        # apache2ctl restart can briefly tear down the listener; wait for it back.
+        until docker exec "$NC_NAME" curl -sf http://127.0.0.1/status.php >/dev/null 2>&1; do sleep 1; done
+    fi
+
     if ! nc_occ status 2>/dev/null | grep -q 'installed: true'; then
         b "[4/7] Installing Nextcloud (admin/admin)"
         nc_occ maintenance:install --database=sqlite --admin-user=admin --admin-pass=admin >/dev/null
@@ -319,26 +403,35 @@ cmd_up() {
     # claim"). NC's default admin has no email, so set one — idempotent.
     nc_occ user:setting admin settings email admin@example.com >/dev/null 2>&1 || true
 
-    # Optional ngrok tunnel for Cloud-mode bootstrap. The cloud SaaS verifies
-    # NC ownership by calling back to ${ncBaseUrl}/ocs/.../capabilities; the
+    # Public tunnel for Cloud-mode bootstrap. The cloud SaaS verifies NC
+    # ownership by calling back to ${ncBaseUrl}/ocs/.../capabilities; the
     # Docker-internal hostname $NC_NAME isn't reachable from the public
     # internet, so we expose NC at a public https URL and pass that to the
     # connector as BEEFLOW_NC_PUBLIC_URL. Only the bootstrap claim uses it;
     # internal connector→NC traffic still goes via $NC_NAME.
+    #
+    # Tunnel auto-starts when --cloud is passed (cloudflared by default,
+    # ngrok if NGROK_AUTHTOKEN is set). Without --cloud, only fires when an
+    # NGROK_AUTHTOKEN is explicitly provided (preserves prior behaviour).
     NC_PUBLIC_URL=""
-    if [ -n "$NGROK_AUTHTOKEN" ]; then
-        NC_PUBLIC_URL=$(start_ngrok)
+    if [ "$CLOUD_MODE" = "1" ] || [ -n "$NGROK_AUTHTOKEN" ]; then
+        NC_PUBLIC_URL=$(start_public_tunnel)
         if [ -n "$NC_PUBLIC_URL" ]; then
-            ngrok_host="${NC_PUBLIC_URL#https://}"
-            b "[ngrok] adding $ngrok_host to NC trusted_domains"
-            # Reserve slot 2 for the ngrok host (slot 0=localhost, 1=$NC_NAME).
-            nc_occ config:system:set trusted_domains 2 --value="$ngrok_host" >/dev/null
-            # Also tell NC to honour the public hostname when generating
-            # absolute URLs in OCS responses; without this, NC may build
-            # capability URLs using the internal hostname and the SaaS
-            # callback fails the host check.
-            nc_occ config:system:set overwritehost --value="$ngrok_host" >/dev/null
-            nc_occ config:system:set overwriteprotocol --value="https" >/dev/null
+            tunnel_host="${NC_PUBLIC_URL#https://}"
+            b "[tunnel] adding $tunnel_host to NC trusted_domains"
+            # Reserve slot 2 for the tunnel host (slot 0=localhost, 1=$NC_NAME).
+            # Adding to trusted_domains is enough — NC will accept inbound
+            # requests at this host (which the cloud SaaS hits during the
+            # one-off bootstrap callback). DO NOT set overwritehost: that
+            # makes NC redirect ALL browser traffic to the cloudflared URL,
+            # routing the user's interactive session through a flaky free
+            # tunnel (SSE 520, request rate limits, etc.). The user should
+            # keep browsing http://localhost:$NC_PORT directly.
+            nc_occ config:system:set trusted_domains 2 --value="$tunnel_host" >/dev/null
+            # Defensive: clear overwritehost / overwriteprotocol if a prior
+            # version of this script (or a previous run) set them.
+            nc_occ config:system:delete overwritehost >/dev/null 2>&1 || true
+            nc_occ config:system:delete overwriteprotocol >/dev/null 2>&1 || true
         fi
     fi
 
@@ -477,7 +570,7 @@ cmd_up() {
 }
 
 cmd_down() {
-    docker rm -f "$NC_NAME" "$CONN_NAME" "$SRV_NAME" "$RUSTFS_NAME" "$PG_NAME" "$NGROK_NAME" 2>/dev/null \
+    docker rm -f "$NC_NAME" "$CONN_NAME" "$SRV_NAME" "$RUSTFS_NAME" "$PG_NAME" "$NGROK_NAME" "$CFD_NAME" 2>/dev/null \
         && g "✔ stopped" || echo "(nothing to stop)"
 }
 cmd_clean() {
@@ -505,11 +598,21 @@ cmd_status() {
     curl -s "http://localhost:$NC_PORT/status.php" | head -c 200; echo
 }
 
-case "${1:-up}" in
+# Parse subcommand + flags. `--cloud` can appear after `up` (or before, when
+# implicit `up` is used). It sets CLOUD_MODE=1 which cmd_up acts on.
+SUBCMD="up"
+for arg in "$@"; do
+    case "$arg" in
+        --cloud) CLOUD_MODE=1 ;;
+        up|down|clean|logs|status) SUBCMD="$arg" ;;
+        *) echo "Usage: $0 {up|down|clean|logs|status} [--cloud]"; exit 1 ;;
+    esac
+done
+
+case "$SUBCMD" in
     up) cmd_up ;;
     down) cmd_down ;;
     clean) cmd_clean ;;
     logs) cmd_logs ;;
     status) cmd_status ;;
-    *) echo "Usage: $0 {up|down|clean|logs|status}"; exit 1 ;;
 esac

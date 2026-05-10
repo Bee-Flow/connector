@@ -315,7 +315,19 @@ async function bootstrapIfNeeded() {
     const caps = await fetchCapabilities();
     const admin = await fetchFirstAdmin();
 
-    const connectorCallbackUrl = `http://${process.env.HOSTNAME || 'nc_app_' + config.appId}:${config.appPort}`;
+    // Where the SaaS will reach this connector for runtime callbacks (the
+    // /nc/* HMAC-signed reverse proxy used by every SaaS→NC operation:
+    // user sync, file fetches, group lookups, etc.). MUST be publicly
+    // reachable from the SaaS host. Pattern: route through NC's AppAPI
+    // proxy (^nc/.* is declared PUBLIC in info.xml), so the URL is
+    // `<NC-public-base>/index.php/apps/app_api/proxy/<appId>`. AppAPI
+    // forwards to the connector's /nc/* paths with no per-user auth, and
+    // the connector verifies the SaaS's HMAC. Falls back to nextcloudUrl
+    // when no public URL is configured (production NC App Store installs
+    // already have publicly-reachable NC hostnames; only the local Docker
+    // sandbox needs `BEEFLOW_NC_PUBLIC_URL` to point at a tunnel).
+    const ncBase = config.nextcloudPublicUrl || config.nextcloudUrl;
+    const connectorCallbackUrl = `${ncBase}/index.php/apps/app_api/proxy/${config.appId}`;
     const res = await fetch(`${config.apiBaseUrl}/auth/connector/bootstrap`, {
         method: 'POST',
         headers: {

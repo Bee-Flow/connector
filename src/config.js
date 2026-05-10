@@ -39,6 +39,13 @@ const config = {
     appPort: parseInt(process.env.APP_PORT || '8080', 10),
     persistentStorage: process.env.APP_PERSISTENT_STORAGE || '/data',
     nextcloudUrl: required('NEXTCLOUD_URL').replace(/\/+$/, ''),
+    // Public URL the SaaS uses to call NC back during bootstrap (anti-spoofing
+    // capabilities check). Distinct from nextcloudUrl so that internal connector
+    // → NC traffic can keep using the fast Docker-internal hostname while only
+    // the bootstrap claim sent to the SaaS uses the publicly-reachable URL
+    // (e.g. an ngrok / cloudflared tunnel). Falls back to nextcloudUrl when
+    // unset, which is correct for production (NC is publicly addressable).
+    nextcloudPublicUrl: (process.env.BEEFLOW_NC_PUBLIC_URL || '').replace(/\/+$/, '') || null,
 
     // ── Customer-configured / auto-provisioned ─────────────────
     // tenantKey is filled in at runtime: either from env, or from the bootstrap

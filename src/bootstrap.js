@@ -322,7 +322,7 @@ async function bootstrapIfNeeded() {
             'Content-Type': 'application/json',
             'X-Beeflow-Source': 'nextcloud-connector',
             'X-Beeflow-NC-Instance-Id': caps.instanceId,
-            'X-Beeflow-NC-Base-Url': config.nextcloudUrl,
+            'X-Beeflow-NC-Base-Url': config.nextcloudPublicUrl || config.nextcloudUrl,
             'X-Beeflow-NC-Admin-Uid': admin.uid,
             'X-Beeflow-NC-Admin-Email': admin.email,
             'X-Beeflow-NC-Admin-Display-Name': admin.displayName,

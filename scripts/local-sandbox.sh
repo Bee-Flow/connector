@@ -37,6 +37,14 @@
 #   RUSTFS_IMAGE=rustfs/rustfs:latest
 #   RUSTFS_ACCESS_KEY=rustfsadmin
 #   RUSTFS_SECRET_KEY=rustfsadmin
+#
+#   NGROK_AUTHTOKEN=...                    # if set, expose the local NC at a
+#                                          # public https://*.ngrok-free.app URL
+#                                          # so server.beeflow.ai's bootstrap
+#                                          # callback can verify NC ownership.
+#                                          # Required to use Cloud mode from
+#                                          # this Docker sandbox; without it,
+#                                          # only Self-hosted mode works.
 
 set -euo pipefail
 
@@ -55,6 +63,12 @@ PG_PASSWORD="${PG_PASSWORD:-beeflow-dev}"
 RUSTFS_IMAGE="${RUSTFS_IMAGE:-rustfs/rustfs:latest}"
 RUSTFS_ACCESS_KEY="${RUSTFS_ACCESS_KEY:-rustfsadmin}"
 RUSTFS_SECRET_KEY="${RUSTFS_SECRET_KEY:-rustfsadmin}"
+
+# Optional public-tunnel for Cloud mode (server.beeflow.ai needs to call NC
+# back to verify ownership). Only used when NGROK_AUTHTOKEN is provided.
+NGROK_AUTHTOKEN="${NGROK_AUTHTOKEN:-}"
+NGROK_IMAGE="${NGROK_IMAGE:-ngrok/ngrok:latest}"
+NGROK_NAME="bee-flow-ngrok"
 
 # Container names — used as DNS aliases on the shared network.
 NC_NAME="bee-flow-nc-sandbox"

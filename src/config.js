@@ -50,7 +50,7 @@ const config = {
     ncInstanceId: null,
     // Override only for staging / on-prem. Production default points at our
     // public API.
-    apiBaseUrl: (process.env.BEEFLOW_API_BASE_URL || 'https://api.beeflow.ai').replace(/\/+$/, ''),
+    apiBaseUrl: (process.env.BEEFLOW_API_BASE_URL || 'https://server.beeflow.ai').replace(/\/+$/, ''),
 
     // ── Operational knobs ──────────────────────────────────────
     // JWT TTL — short on purpose. The SaaS treats every request as a new

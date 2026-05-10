@@ -116,7 +116,7 @@ A free **Community tier** (single user, basic chat, local knowledge base) is ful
                 <name>BEEFLOW_API_BASE_URL</name>
                 <display-name>Bee Flow API base URL (optional)</display-name>
                 <description>Where the connector sends API calls. Default points at the hosted Bee Flow service. Override only for staging or fully on-prem deployments.</description>
-                <default>https://api.beeflow.ai</default>
+                <default>https://server.beeflow.ai</default>
             </variable>
         </environment-variables>
         <!--

@@ -11,8 +11,9 @@
     "test": "node --test test/*.test.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.0.0 <23.0.0"
   },
+  "packageManager": "npm@10.9.0",
   "dependencies": {
     "express": "^4.21.2",
     "http-proxy-middleware": "^3.0.3",

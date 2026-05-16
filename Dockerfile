@@ -20,7 +20,7 @@
 #                  --build-arg HIVE_REF=feature/foo .
 
 # ── Stage 1: build the React SPA from Bee-Flow/hive ──────────────
-FROM node:20-alpine AS spa-build
+FROM node:22-alpine AS spa-build
 
 # git is enough — no SSH client, no credentials. Anonymous HTTPS clone
 # works once Bee-Flow/hive is public. While the repo is still private
@@ -70,7 +70,7 @@ RUN find . -path ./node_modules -prune -o \( -name '*.jsx' -o -name '*.js' -o -n
 RUN npm run build -- --base=/index.php/apps/app_api/proxy/${APP_ID}/
 
 # ── Stage 2: connector runtime ────────────────────────────────
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 WORKDIR /app
 
 # Connector source is the build context. Paths are relative to the connector

@@ -32,6 +32,7 @@ const config = require('./config');
 
 const CACHE_FILE = 'tenant-key.json';
 const PENDING_FILE = 'pending-bootstrap.json';
+const ERROR_FILE = 'bootstrap-last-error.json';
 const POLL_INTERVAL_MS = 30_000;
 const POLL_JITTER_MS = 5_000;
 const POLL_GRACE_AFTER_EXPIRY_MS = 5 * 60_000;
@@ -217,6 +218,93 @@ async function fetchFirstAdmin() {
 let pendingState = null;
 function getPendingState() { return pendingState; }
 
+// Last-error visibility — heartbeat.js + /setup/diagnostics surface this so
+// the NC admin sees a categorised, actionable failure (with remediation
+// text) instead of a silent stuck bootstrap. Cleared on success.
+//
+// REMEDIATION lives here (single source of truth) so heartbeat.js and
+// setup.js can both consume it without drifting.
+const REMEDIATION = {
+    saas_unreachable:
+        'The Bee Flow service is not reachable from this Nextcloud. Test with `curl https://server.beeflow.ai/api/health` from the connector container and whitelist that hostname in your egress firewall.',
+    nc_not_publicly_reachable:
+        'Bee Flow Cloud cannot reach this Nextcloud for user-sync callbacks. Set BEEFLOW_NC_PUBLIC_URL to your public NC URL, or switch to self-hosted mode via the setup picker.',
+    admin_lookup_failed:
+        'No admin user found in this Nextcloud. Add one with `occ user:add --group admin <uid>` then redeploy the connector.',
+    saas_auth_rejected:
+        'The Bee Flow service rejected our credentials. Check that this NC instance has not been disabled in your Bee Flow organisation.',
+    tenant_already_provisioned:
+        'This Nextcloud was bootstrapped previously and the tenant-key cache was lost. Recover the key from the Bee Flow admin UI, then set BEEFLOW_TENANT_KEY via `occ app_api:app:setenv`.',
+    appstore_signature_invalid:
+        'The downloaded connector tarball failed signature verification. Uninstall and reinstall from the App Store.',
+    unknown:
+        'Bootstrap failed. Check `docker logs nc_app_bee_flow --tail 200` for details.',
+};
+function remediationFor(category) {
+    return REMEDIATION[category] || REMEDIATION.unknown;
+}
+
+let lastErrorState = null;
+function getLastErrorState() { return lastErrorState; }
+async function readErrorFile() {
+    const p = path.join(config.persistentStorage, ERROR_FILE);
+    try {
+        const raw = await fs.readFile(p, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (parsed?.category) return parsed;
+    } catch { /* missing */ }
+    return null;
+}
+async function writeErrorFile(data) {
+    const p = path.join(config.persistentStorage, ERROR_FILE);
+    try {
+        await fs.mkdir(config.persistentStorage, { recursive: true });
+        await fs.writeFile(p, JSON.stringify(data, null, 2), { mode: 0o600 });
+    } catch (e) {
+        console.warn(`[Bootstrap] Could not persist error state to ${p}: ${e.message}`);
+    }
+}
+async function clearErrorFile() {
+    const p = path.join(config.persistentStorage, ERROR_FILE);
+    try { await fs.unlink(p); } catch (_) { /* already gone */ }
+    lastErrorState = null;
+}
+
+// Categorise a thrown error into one of the well-known buckets that the
+// SPA's error overlay knows how to render. Anything we don't recognise
+// falls through as `unknown` — still surfaced, just without specific
+// remediation copy.
+function categoriseError(err, phase) {
+    const msg = String(err?.message || err || '');
+    if (phase === 'capabilities' || /NC capabilities/i.test(msg)) return 'nc_not_publicly_reachable';
+    if (phase === 'admin' || /admin/i.test(msg) && /No NC users|admin from user list/i.test(msg)) return 'admin_lookup_failed';
+    if (/HTTP 401|HTTP 403/i.test(msg)) return 'saas_auth_rejected';
+    if (/HTTP 409/i.test(msg)) return 'tenant_already_provisioned';
+    if (/ENOTFOUND|ECONNREFUSED|EHOSTUNREACH|fetch failed|network|AbortError|timeout/i.test(msg)) return 'saas_unreachable';
+    if (/signature/i.test(msg)) return 'appstore_signature_invalid';
+    return 'unknown';
+}
+
+// Record a bootstrap failure for surfacing to /heartbeat and /setup/diagnostics.
+// Always best-effort: any failure to persist the error itself is logged but
+// not re-thrown (we don't want failure-reporting to mask the real failure).
+async function recordBootstrapError(err, phase) {
+    const category = categoriseError(err, phase);
+    const now = new Date().toISOString();
+    const state = {
+        status: 'failed',
+        category,
+        phase: phase || 'unknown',
+        error: String(err?.message || err || 'unknown'),
+        lastAttemptAt: now,
+        nextRetryAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    lastErrorState = state;
+    await writeErrorFile(state);
+    console.warn(`[Bootstrap] ${category} (${phase || '-'}): ${state.error}`);
+    return state;
+}
+
 async function applyTenantKeyResponse(json, ncInstanceId) {
     config.tenantKey = json.tenantKey;
     config.organizationId = json.organizationId;
@@ -294,8 +382,16 @@ async function bootstrapIfNeeded() {
         config.tenantKey = cached.tenantKey;
         config.organizationId = cached.organizationId || null;
         config.ncInstanceId = cached.ncInstanceId || null;
+        await clearErrorFile();
         console.log(`[Bootstrap] Loaded cached tenant key for org ${cached.organizationId}`);
         return;
+    }
+
+    // Hydrate last-error state from disk so a container restart can
+    // surface the previous failure until the next bootstrap attempt
+    // either resolves or refreshes it.
+    if (!lastErrorState) {
+        lastErrorState = await readErrorFile();
     }
 
     // Resume an in-flight pending binding instead of starting a new one —
@@ -312,8 +408,20 @@ async function bootstrapIfNeeded() {
     }
 
     console.log('[Bootstrap] No cached tenant key; provisioning from SaaS...');
-    const caps = await fetchCapabilities();
-    const admin = await fetchFirstAdmin();
+
+    let caps, admin;
+    try {
+        caps = await fetchCapabilities();
+    } catch (err) {
+        await recordBootstrapError(err, 'capabilities');
+        throw err;
+    }
+    try {
+        admin = await fetchFirstAdmin();
+    } catch (err) {
+        await recordBootstrapError(err, 'admin');
+        throw err;
+    }
 
     // Where the SaaS will reach this connector for runtime callbacks (the
     // /nc/* HMAC-signed reverse proxy used by every SaaS→NC operation:
@@ -328,21 +436,30 @@ async function bootstrapIfNeeded() {
     // sandbox needs `BEEFLOW_NC_PUBLIC_URL` to point at a tunnel).
     const ncBase = config.nextcloudPublicUrl || config.nextcloudUrl;
     const connectorCallbackUrl = `${ncBase}/index.php/apps/app_api/proxy/${config.appId}`;
-    const res = await fetch(`${config.apiBaseUrl}/auth/connector/bootstrap`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-Beeflow-Source': 'nextcloud-connector',
-            'X-Beeflow-NC-Instance-Id': caps.instanceId,
-            'X-Beeflow-NC-Base-Url': config.nextcloudPublicUrl || config.nextcloudUrl,
-            'X-Beeflow-NC-Admin-Uid': admin.uid,
-            'X-Beeflow-NC-Admin-Email': admin.email,
-            'X-Beeflow-NC-Admin-Display-Name': admin.displayName,
-            'X-Beeflow-Connector-Callback-Url': connectorCallbackUrl,
-        },
-        body: JSON.stringify({ themingName: caps.themingName, version: caps.version }),
-        signal: AbortSignal.timeout(15_000),
-    });
+
+    let res;
+    try {
+        res = await fetch(`${config.apiBaseUrl}/auth/connector/bootstrap`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Beeflow-Source': 'nextcloud-connector',
+                'X-Beeflow-NC-Instance-Id': caps.instanceId,
+                'X-Beeflow-NC-Base-Url': config.nextcloudPublicUrl || config.nextcloudUrl,
+                'X-Beeflow-NC-Admin-Uid': admin.uid,
+                'X-Beeflow-NC-Admin-Email': admin.email,
+                'X-Beeflow-NC-Admin-Display-Name': admin.displayName,
+                'X-Beeflow-Connector-Callback-Url': connectorCallbackUrl,
+            },
+            body: JSON.stringify({ themingName: caps.themingName, version: caps.version }),
+            signal: AbortSignal.timeout(15_000),
+        });
+    } catch (err) {
+        // Network-level failure (DNS, refused, timeout). Distinct from a
+        // SaaS HTTP error which is handled below.
+        await recordBootstrapError(err, 'saas_post');
+        throw err;
+    }
 
     if (res.status === 202) {
         // Adoption candidate — admin approval required. Stash poll state
@@ -350,7 +467,9 @@ async function bootstrapIfNeeded() {
         // the tenant key once the admin approves in the SaaS UI.
         const json = await res.json();
         if (!json.pendingId || !json.pollUrl) {
-            throw new Error('Bootstrap pending response missing pendingId/pollUrl');
+            const e = new Error('Bootstrap pending response missing pendingId/pollUrl');
+            await recordBootstrapError(e, 'saas_response');
+            throw e;
         }
         const pending = {
             pendingId: json.pendingId,
@@ -360,18 +479,26 @@ async function bootstrapIfNeeded() {
         };
         await writePendingFile(pending);
         console.log(`[Bootstrap] Awaiting org-admin approval (pending ${json.pendingId}, expires ${json.expiresAt})`);
+        await clearErrorFile(); // pending is a valid in-flight state, not a failure
         pollPendingBinding(pending).catch(e => console.warn('[Bootstrap] Pending poll crashed:', e.message));
         return;
     }
 
     if (!res.ok) {
         const errBody = await res.text();
-        throw new Error(`Bootstrap rejected by SaaS (HTTP ${res.status}): ${errBody.slice(0, 200)}`);
+        const e = new Error(`Bootstrap rejected by SaaS (HTTP ${res.status}): ${errBody.slice(0, 200)}`);
+        await recordBootstrapError(e, 'saas_post');
+        throw e;
     }
     const json = await res.json();
-    if (!json.tenantKey) throw new Error('Bootstrap response missing tenantKey');
+    if (!json.tenantKey) {
+        const e = new Error('Bootstrap response missing tenantKey');
+        await recordBootstrapError(e, 'saas_response');
+        throw e;
+    }
 
     await applyTenantKeyResponse({ ...json, ncVersion: caps.version }, caps.instanceId);
+    await clearErrorFile();
     console.log(`[Bootstrap] Provisioned org ${json.organizationId} (${json.organizationName}) — tenant key cached`);
 }
 
@@ -426,4 +553,11 @@ async function invalidateAndRebootstrap() {
     }
 }
 
-module.exports = { bootstrapIfNeeded, fetchCapabilities, getPendingState, invalidateAndRebootstrap };
+module.exports = {
+    bootstrapIfNeeded,
+    fetchCapabilities,
+    getPendingState,
+    getLastErrorState,
+    remediationFor,
+    invalidateAndRebootstrap,
+};

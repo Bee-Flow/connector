@@ -12,6 +12,8 @@
     <description><![CDATA[
 > ⚠️ **Public beta — testing in progress.** This is an early release. Expect rough edges, occasional breaking changes between versions, and please report issues at [github.com/Bee-Flow/connector/issues](https://github.com/Bee-Flow/connector/issues). Not yet recommended for production-critical workflows.
 
+> 📋 **Prerequisites:** Bee Flow is delivered as an **ExApp**, so installing it from this page only succeeds when your Nextcloud already has **AppAPI** enabled **and** a deploy daemon registered. Most managed setups (Nextcloud All-in-One, Hetzner Storage Share) already have this; vanilla self-hosted instances usually need a one-time `occ app_api:daemon:register` step. The 3-minute [Bee Flow install guide](https://docs.beeflow.ai/getting-started/nextcloud) walks you through both cases plus the NAT/reverse-proxy scenario.
+
 **Bee Flow turns your Nextcloud into an AI workspace.**
 
 Click the bee icon in your top bar and chat with an assistant that already knows your files, mail, calendar and team. Ask it to summarise a long PDF, draft a reply to an email, find that document from last quarter, or schedule a meeting — Bee Flow does the work in the apps you already use.
@@ -170,9 +172,12 @@ A free **Community tier** (single user, basic chat, local knowledge base) is ful
             <route><url>^init$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
             <route><url>^enabled$</url><verb>PUT</verb><access_level>ADMIN</access_level></route>
 
-            <!-- Setup picker (Bee Flow Cloud vs self-hosted) — admin only -->
+            <!-- Setup picker (Bee Flow Cloud vs self-hosted) — admin only.
+                 /diagnostics returns categorised bootstrap status + the
+                 active SaaS URL; it stays ADMIN because both can leak
+                 internal-network shape. -->
             <route><url>^setup\/?$</url><verb>GET,POST</verb><access_level>ADMIN</access_level></route>
-            <route><url>^setup\/(status|test)$</url><verb>GET,POST</verb><access_level>ADMIN</access_level></route>
+            <route><url>^setup\/(status|test|diagnostics)$</url><verb>GET,POST</verb><access_level>ADMIN</access_level></route>
 
             <!-- Webhooks: NC events_listener -> connector -->
             <route><url>^webhook\/.*</url><verb>POST</verb><access_level>ADMIN</access_level></route>

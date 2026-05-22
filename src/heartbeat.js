@@ -19,15 +19,20 @@ const config = require('./config');
 
 function registerLifecycle(app) {
     app.get('/heartbeat', (req, res) => {
-        // Surface "awaiting admin approval" so the NC admin viewing the
-        // ExApp page sees an actionable state instead of a silent stuck
-        // bootstrap. AppAPI itself only reads `status: ok`; the extra
-        // fields are advisory for our own debug tooling.
+        // Surface bootstrap state so the NC admin viewing the ExApp page
+        // sees an actionable status instead of a silent stuck bootstrap.
+        // AppAPI itself only reads `status: ok`; the extra fields are
+        // advisory for our own diagnostics (consumed by the SPA error
+        // overlay and `app_api:app:heartbeat` operators).
         let pending = null;
+        let lastError = null;
+        let bs = null;
         try {
-            const { getPendingState } = require('./bootstrap');
-            pending = getPendingState?.() || null;
-        } catch (_) { /* tolerate */ }
+            bs = require('./bootstrap');
+            pending = bs.getPendingState?.() || null;
+            lastError = bs.getLastErrorState?.() || null;
+        } catch (_) { /* tolerate during module init */ }
+
         if (pending && pending.status === 'pending') {
             return res.json({
                 status: 'ok',
@@ -35,6 +40,23 @@ function registerLifecycle(app) {
                 expiresAt: pending.expiresAt,
             });
         }
+
+        // A persisted last-error wins over a bare-OK so the admin sees
+        // why bootstrap hasn't completed yet. Cleared on success or on
+        // a transition to the pending-approval state above.
+        if (lastError && lastError.status === 'failed' && !config.tenantKey) {
+            return res.json({
+                status: 'ok', // AppAPI's contract — must be `ok` to keep the ExApp alive
+                bootstrap: 'failed',
+                category: lastError.category,
+                error: lastError.error,
+                remediation: bs?.remediationFor?.(lastError.category)
+                    || 'Bootstrap failed. Check `docker logs nc_app_bee_flow --tail 200` for details.',
+                lastAttemptAt: lastError.lastAttemptAt,
+                nextRetryAt: lastError.nextRetryAt,
+            });
+        }
+
         res.json({ status: 'ok' });
     });
 

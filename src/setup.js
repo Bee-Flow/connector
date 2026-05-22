@@ -81,6 +81,45 @@ router.get('/status', (req, res) => {
     });
 });
 
+// Diagnostics — bootstrap state + actionable remediation for the SPA's
+// error overlay and `app_api:app:heartbeat` operators. Admin-gated in
+// info.xml because the response includes the active SaaS URL and the
+// raw error message, both of which can leak internal-network shape.
+router.get('/diagnostics', (req, res) => {
+    let pending = null;
+    let lastError = null;
+    try {
+        pending = bootstrap.getPendingState?.() || null;
+        lastError = bootstrap.getLastErrorState?.() || null;
+    } catch (_) { /* tolerate */ }
+
+    const hasTenantKey = !!config.tenantKey;
+    let state = 'ok';
+    if (!hasTenantKey && pending && pending.status === 'pending') state = 'awaiting_admin_approval';
+    else if (!hasTenantKey && lastError && lastError.status === 'failed') state = 'failed';
+    else if (!hasTenantKey) state = 'initialising';
+
+    res.json({
+        state,
+        hasTenantKey,
+        apiBaseUrl: config.apiBaseUrl,
+        organizationId: config.organizationId || null,
+        ncInstanceId: config.ncInstanceId || null,
+        pending: pending ? {
+            pendingId: pending.pendingId,
+            expiresAt: pending.expiresAt,
+        } : null,
+        lastError: lastError ? {
+            category: lastError.category,
+            phase: lastError.phase,
+            error: lastError.error,
+            remediation: bootstrap.remediationFor(lastError.category),
+            lastAttemptAt: lastError.lastAttemptAt,
+            nextRetryAt: lastError.nextRetryAt,
+        } : null,
+    });
+});
+
 router.post('/test', express.json(), async (req, res) => {
     const url = String(req.body?.apiBaseUrl || '').trim();
     if (!url) return res.status(400).json({ error: 'apiBaseUrl required' });

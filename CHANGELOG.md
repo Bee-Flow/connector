@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.6] - 2026-05-22
+
+### Added
+- Bee Flow brand logo (`img/bee-flow-logo.svg`) added as the first `<screenshot>` entry so apps.nextcloud.com uses it as the listing hero image and the apps-overview tile preview.
+
 ## [0.1.5] - 2026-05-22
 
 ### Changed

@@ -62,7 +62,7 @@ Full privacy policy: <https://beeflow.ai/privacy>.
 
 A free **Community tier** (single user, basic chat, local knowledge base) is fully functional with no license key. To unlock automations, multi-user, DLP and other premium features, paste a license key from <https://beeflow.ai/pricing> into Settings → Organisation → License & Usage.
         ]]></description>
-    <version>0.1.3</version>
+    <version>0.1.4</version>
     <licence>AGPL-3.0-or-later</licence>
     <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.ai">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>
@@ -88,12 +88,13 @@ A free **Community tier** (single user, basic chat, local knowledge base) is ful
     <bugs>https://github.com/Bee-Flow/connector/issues</bugs>
     <repository type="git">https://github.com/Bee-Flow/connector</repository>
     <!--
-        apps.nextcloud.com renders the first <screenshot> as the hero image
-        on the listing page; the rest appear in the gallery below.
+        No <screenshot> entries on purpose — apps.nextcloud.com would
+        render them as a full-width carousel banner above the title,
+        which dominates the listing page. The same PNGs are embedded
+        inline in the markdown <description> above so they appear in
+        context next to the relevant copy.
     -->
-    <screenshot>https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/01-chat.png</screenshot>
-    <screenshot>https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/02-agents.png</screenshot>
-    <screenshot>https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/03-agent-editor.png</screenshot>
+
     <dependencies>
         <nextcloud min-version="31" max-version="34"/>
     </dependencies>

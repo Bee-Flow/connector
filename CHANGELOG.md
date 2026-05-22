@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.4] - 2026-05-22
+
+### Changed
+- Removed the `<screenshot>` entries to suppress the full-width carousel banner above the listing title. Screenshots remain embedded inline in the markdown description, where they sit next to the copy that explains them.
+
 ## [0.1.3] - 2026-05-22
 
 ### Added

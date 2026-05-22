@@ -78,10 +78,15 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ steps.ver.outputs.version }}
             ${{ env.IMAGE }}:latest
-          # Pin the frontend to the same version as the connector tag so
-          # `bee_flow:1.2.0` always contains exactly hive `1.2.0`.
+          # Pin the frontend to hive `main`. Hive has its own version
+          # lifecycle (npm @beeflow/frontend, currently 1.x) decoupled from
+          # this connector's v0.1.x tags; trying to share tags caused hive
+          # release-workflow failures (`Tag X does not match package.json
+          # version Y`). For App Store audits the connector image is still
+          # reproducible because Docker buildx records the resolved hive
+          # commit SHA in the SBOM step below.
           build-args: |
-            HIVE_REF=${{ github.ref_name }}
+            HIVE_REF=main
           # Reproducible builds matter for App Store audits.
           provenance: true
           sbom: true

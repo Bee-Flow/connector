@@ -48,7 +48,7 @@ Full privacy policy: <https://beeflow.ai/privacy>.
 
 A free **Community tier** (single user, basic chat, local knowledge base) is fully functional with no license key. To unlock automations, multi-user, DLP and other premium features, paste a license key from <https://beeflow.ai/pricing> into Settings → Organisation → License & Usage.
         ]]></description>
-    <version>0.1.2</version>
+    <version>0.1.3</version>
     <licence>AGPL-3.0-or-later</licence>
     <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.ai">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>
@@ -74,11 +74,13 @@ A free **Community tier** (single user, basic chat, local knowledge base) is ful
     <bugs>https://github.com/Bee-Flow/connector/issues</bugs>
     <repository type="git">https://github.com/Bee-Flow/connector</repository>
     <!--
-        Screenshots intentionally omitted while the listing is nightly-only.
-        Add <screenshot> entries pointing to img/screenshots/*.png before
-        promoting the listing from nightly to stable — apps.nextcloud.com
-        requires at least one for public listings.
+        apps.nextcloud.com renders the first <screenshot> as the hero image
+        on the listing page. Using the bee-icon SVG (same file as the
+        Nextcloud top-bar icon) until real UI screenshots replace it.
+        TODO: capture 01-chat.png + 02-routines.png from the running app
+        and swap these <screenshot> entries before promoting to stable.
     -->
+    <screenshot>https://raw.githubusercontent.com/Bee-Flow/connector/main/img/app.svg</screenshot>
     <dependencies>
         <nextcloud min-version="31" max-version="34"/>
     </dependencies>

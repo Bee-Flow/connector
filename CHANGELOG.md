@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.3] - 2026-05-22
+
+### Added
+- Hero image on apps.nextcloud.com listing page — uses the existing bee-icon SVG as a placeholder screenshot until real UI captures replace it.
+
 ## [0.1.2] - 2026-05-22
 
 ### Added

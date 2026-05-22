@@ -22,6 +22,20 @@ Click the bee icon in your top bar and chat with an assistant that already knows
 - **Multi-user from day one.** Mirrors your Nextcloud users and groups automatically. Admins decide which groups get which Bee Flow integrations — disable Talk for interns, enable everything for the leadership team.
 - **Self-service for organisation admins.** A 4-step onboarding wizard walks the admin through user-sync mode, default permissions and privacy settings the first time they open Bee Flow. Re-configure anytime under Settings → Organisation.
 
+## Screenshots
+
+![Ask me anything — the chat landing screen](https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/01-chat.png)
+
+*The default chat surface — sign in with your Nextcloud account and start a conversation.*
+
+![Agents overview — browse and create assistants](https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/02-agents.png)
+
+*Pre-built agents (Live Component Builder, SEO Blog Agent, Juridisch Assistent, …) plus a one-click "Create a new agent" wizard for your own.*
+
+![Agent editor — configure tools, skills and instructions](https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/03-agent-editor.png)
+
+*Refine any agent: edit the system prompt, attach knowledge bases, enable Nextcloud apps and routines.*
+
 ## How it works
 
 This Nextcloud app is a thin connector. It runs as an ExApp container next to your Nextcloud and bridges the embedded Bee Flow web client (an open-source React SPA) to the hosted Bee Flow service. Browser → Nextcloud signed proxy → connector → Bee Flow API. Your Nextcloud session is the only credential.
@@ -75,12 +89,11 @@ A free **Community tier** (single user, basic chat, local knowledge base) is ful
     <repository type="git">https://github.com/Bee-Flow/connector</repository>
     <!--
         apps.nextcloud.com renders the first <screenshot> as the hero image
-        on the listing page. Using the bee-icon SVG (same file as the
-        Nextcloud top-bar icon) until real UI screenshots replace it.
-        TODO: capture 01-chat.png + 02-routines.png from the running app
-        and swap these <screenshot> entries before promoting to stable.
+        on the listing page; the rest appear in the gallery below.
     -->
-    <screenshot>https://raw.githubusercontent.com/Bee-Flow/connector/main/img/app.svg</screenshot>
+    <screenshot>https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/01-chat.png</screenshot>
+    <screenshot>https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/02-agents.png</screenshot>
+    <screenshot>https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/03-agent-editor.png</screenshot>
     <dependencies>
         <nextcloud min-version="31" max-version="34"/>
     </dependencies>

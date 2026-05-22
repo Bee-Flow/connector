@@ -10,7 +10,7 @@ The Nextcloud App Store reads the entry whose heading matches `<version>` in `ap
 ## [0.1.3] - 2026-05-22
 
 ### Added
-- Hero image on apps.nextcloud.com listing page — uses the existing bee-icon SVG as a placeholder screenshot until real UI captures replace it.
+- Three real product screenshots (`01-chat.png`, `02-agents.png`, `03-agent-editor.png`) under `img/screenshots/`, wired into both the `<screenshot>` manifest entries and the markdown description so apps.nextcloud.com renders them inline.
 
 ## [0.1.2] - 2026-05-22
 

@@ -7,13 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.4] - 2026-05-22
+
+### Changed
+- Removed the `<screenshot>` manifest entries: apps.nextcloud.com rendered them as a full-width carousel banner above the listing title, which crowded out the rest of the page. Same PNGs remain embedded inline in the markdown description so they sit next to the copy that explains them.
+
 ## [0.1.3] - 2026-05-22
 
 ### Added
-- Three real product screenshots (`01-chat.png`, `02-agents.png`, `03-agent-editor.png`) under `img/screenshots/`, embedded inline in the markdown description so they sit next to the copy that explains them.
-
-### Notes
-- No `<screenshot>` manifest entries: apps.nextcloud.com would render those as a full-width carousel banner above the listing title, which crowds out the rest of the listing. The inline markdown images give the same content in better context.
+- Three real product screenshots (`01-chat.png`, `02-agents.png`, `03-agent-editor.png`) under `img/screenshots/`, wired into both the `<screenshot>` manifest entries and the markdown description.
 
 ## [0.1.2] - 2026-05-22
 

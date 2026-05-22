@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.2] - 2026-05-22
+
+### Added
+- First upload to apps.nextcloud.com on the **nightly** channel — visible only to admins who opt in to nightly/dev apps.
+
+### Changed
+- Screenshots temporarily removed from the manifest until the public listing is promoted from nightly to stable.
+
 ## [0.1.0] - 2026-05-09
 
 ### Added

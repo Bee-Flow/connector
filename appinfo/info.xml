@@ -73,8 +73,12 @@ A free **Community tier** (single user, basic chat, local knowledge base) is ful
     <website>https://beeflow.ai</website>
     <bugs>https://github.com/Bee-Flow/connector/issues</bugs>
     <repository type="git">https://github.com/Bee-Flow/connector</repository>
-    <screenshot>https://github.com/Bee-Flow/connector/raw/main/img/screenshots/01-chat.png</screenshot>
-    <screenshot>https://github.com/Bee-Flow/connector/raw/main/img/screenshots/02-routines.png</screenshot>
+    <!--
+        Screenshots intentionally omitted while the listing is nightly-only.
+        Add <screenshot> entries pointing to img/screenshots/*.png before
+        promoting the listing from nightly to stable — apps.nextcloud.com
+        requires at least one for public listings.
+    -->
     <dependencies>
         <nextcloud min-version="31" max-version="34"/>
     </dependencies>

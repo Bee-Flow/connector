@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.7] - 2026-05-22
+
+### Changed
+- First stable-channel release on apps.nextcloud.com so admins can install Bee Flow through the standard Apps → AI section instead of via manual `occ` commands.
+- Added a prominent **Public beta** warning at the top of the listing description so admins understand the maturity level before installing.
+
 ## [0.1.6] - 2026-05-22
 
 ### Added

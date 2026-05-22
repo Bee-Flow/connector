@@ -10,6 +10,8 @@
     <name>Bee Flow</name>
     <summary>AI assistant for your Nextcloud — chat with Files, Mail, Calendar, Deck, Notes, Tasks, Contacts and Talk.</summary>
     <description><![CDATA[
+> ⚠️ **Public beta — testing in progress.** This is an early release. Expect rough edges, occasional breaking changes between versions, and please report issues at [github.com/Bee-Flow/connector/issues](https://github.com/Bee-Flow/connector/issues). Not yet recommended for production-critical workflows.
+
 **Bee Flow turns your Nextcloud into an AI workspace.**
 
 Click the bee icon in your top bar and chat with an assistant that already knows your files, mail, calendar and team. Ask it to summarise a long PDF, draft a reply to an email, find that document from last quarter, or schedule a meeting — Bee Flow does the work in the apps you already use.
@@ -48,7 +50,7 @@ Full privacy policy: <https://beeflow.ai/privacy>.
 
 A free **Community tier** (single user, basic chat, local knowledge base) is fully functional with no license key. To unlock automations, multi-user, DLP and other premium features, paste a license key from <https://beeflow.ai/pricing> into Settings → Organisation → License & Usage.
         ]]></description>
-    <version>0.1.6</version>
+    <version>0.1.7</version>
     <licence>AGPL-3.0-or-later</licence>
     <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.ai">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>

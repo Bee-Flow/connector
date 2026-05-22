@@ -22,20 +22,6 @@ Click the bee icon in your top bar and chat with an assistant that already knows
 - **Multi-user from day one.** Mirrors your Nextcloud users and groups automatically. Admins decide which groups get which Bee Flow integrations — disable Talk for interns, enable everything for the leadership team.
 - **Self-service for organisation admins.** A 4-step onboarding wizard walks the admin through user-sync mode, default permissions and privacy settings the first time they open Bee Flow. Re-configure anytime under Settings → Organisation.
 
-## Screenshots
-
-![Ask me anything — the chat landing screen](https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/01-chat.png)
-
-*The default chat surface — sign in with your Nextcloud account and start a conversation.*
-
-![Agents overview — browse and create assistants](https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/02-agents.png)
-
-*Pre-built agents (Live Component Builder, SEO Blog Agent, Juridisch Assistent, …) plus a one-click "Create a new agent" wizard for your own.*
-
-![Agent editor — configure tools, skills and instructions](https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/03-agent-editor.png)
-
-*Refine any agent: edit the system prompt, attach knowledge bases, enable Nextcloud apps and routines.*
-
 ## How it works
 
 This Nextcloud app is a thin connector. It runs as an ExApp container next to your Nextcloud and bridges the embedded Bee Flow web client (an open-source React SPA) to the hosted Bee Flow service. Browser → Nextcloud signed proxy → connector → Bee Flow API. Your Nextcloud session is the only credential.
@@ -62,7 +48,7 @@ Full privacy policy: <https://beeflow.ai/privacy>.
 
 A free **Community tier** (single user, basic chat, local knowledge base) is fully functional with no license key. To unlock automations, multi-user, DLP and other premium features, paste a license key from <https://beeflow.ai/pricing> into Settings → Organisation → License & Usage.
         ]]></description>
-    <version>0.1.4</version>
+    <version>0.1.5</version>
     <licence>AGPL-3.0-or-later</licence>
     <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.ai">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>
@@ -88,12 +74,16 @@ A free **Community tier** (single user, basic chat, local knowledge base) is ful
     <bugs>https://github.com/Bee-Flow/connector/issues</bugs>
     <repository type="git">https://github.com/Bee-Flow/connector</repository>
     <!--
-        No <screenshot> entries on purpose — apps.nextcloud.com would
-        render them as a full-width carousel banner above the title,
-        which dominates the listing page. The same PNGs are embedded
-        inline in the markdown <description> above so they appear in
-        context next to the relevant copy.
+        Each <screenshot> renders in the listing's gallery section in the
+        order given. The small-thumbnail attribute supplies the preview
+        image used on the app-list overview — kept identical to the full
+        screenshot for now; replace with proper ~320px-wide JPGs when a
+        local image converter (imagemagick/rsvg) is available.
+        Reference: https://docs.nextcloud.com/server/latest/developer_manual/app_development/info.html
     -->
+    <screenshot small-thumbnail="https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/01-chat.png">https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/01-chat.png</screenshot>
+    <screenshot small-thumbnail="https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/02-agents.png">https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/02-agents.png</screenshot>
+    <screenshot small-thumbnail="https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/03-agent-editor.png">https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/03-agent-editor.png</screenshot>
 
     <dependencies>
         <nextcloud min-version="31" max-version="34"/>

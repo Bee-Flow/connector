@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.5] - 2026-05-22
+
+### Changed
+- Switched to the documented Nextcloud convention for screenshots: `<screenshot small-thumbnail="…">…</screenshot>` entries restored, inline `![]()` markdown images removed from the description. The App Store now renders the gallery in its dedicated section instead of as a heavy banner above the title.
+
 ## [0.1.4] - 2026-05-22
 
 ### Changed

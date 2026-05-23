@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.9] - 2026-05-23
+
+### Changed
+- Bootstrap surfaces a structured `code` + `remediation` field from the SaaS so the heartbeat and `/setup/diagnostics` endpoint give the admin an actionable message instead of a generic "fetch failed".
+- New "Public Nextcloud URL" field in the `/setup` picker — admins behind NAT can point Bee Flow Cloud at a public tunnel/reverse-proxy URL without redeploying the connector.
+- Embedded route now serves the SPA shell (with its error overlay) when bootstrap is still in flight, instead of a raw `User lookup failed` JSON page.
+
 ## [0.1.7] - 2026-05-22
 
 ### Changed

@@ -78,6 +78,17 @@ router.get('/status', (req, res) => {
             selfHostedHint: 'http://bee-flow-server:3001',
             selfHostedLan: 'http://server.example.lan:3001',
         },
+        // Public NC URL used by the SaaS for callbacks. Surfacing the
+        // resolved value plus origin lets the picker UI decide what to
+        // show: the env-fixed value is read-only; otherwise the field is
+        // editable and we display the last-saved picker entry.
+        publicNcUrl: {
+            envOverridden: !!process.env.BEEFLOW_NC_PUBLIC_URL,
+            envValue: process.env.BEEFLOW_NC_PUBLIC_URL || null,
+            chosen: stored?.publicNcUrl || null,
+            active: config.nextcloudPublicUrl || null,
+            internalNcUrl: config.nextcloudUrl,
+        },
     });
 });
 
@@ -125,6 +136,35 @@ router.post('/test', express.json(), async (req, res) => {
     if (!url) return res.status(400).json({ error: 'apiBaseUrl required' });
     const result = await probe(url);
     res.json(result);
+});
+
+// Admin-supplied public NC URL — used by the SaaS to call back into NC
+// for ownership verification + runtime callbacks. Only needed when NC
+// is behind NAT and BEEFLOW_NC_PUBLIC_URL wasn't set at deploy time.
+// Empty body clears the override and falls back to NEXTCLOUD_URL.
+router.post('/public-nc-url', express.json(), async (req, res) => {
+    const url = String(req.body?.publicNcUrl || '').trim();
+    if (url && !/^https?:\/\//.test(url)) {
+        return res.status(400).json({ error: 'publicNcUrl must start with http:// or https://' });
+    }
+    let saved;
+    try {
+        saved = setupConfig.savePublicNcUrl(url || null);
+    } catch (err) {
+        return res.status(400).json({ error: err.message });
+    }
+    config.nextcloudPublicUrl = saved.publicNcUrl || null;
+
+    // Drop the cached tenant key + retry bootstrap with the new public URL
+    // so the admin sees a clear success/new error within ~5s instead of
+    // restarting the container manually.
+    if (typeof bootstrap.invalidateAndRebootstrap === 'function') {
+        bootstrap.invalidateAndRebootstrap().catch(err => {
+            console.warn('[Setup] public NC URL re-bootstrap failed (non-fatal):', err.message);
+        });
+    }
+
+    res.json({ saved: { publicNcUrl: saved.publicNcUrl || null } });
 });
 
 router.post('/', express.json(), async (req, res) => {

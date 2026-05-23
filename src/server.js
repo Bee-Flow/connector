@@ -68,6 +68,12 @@ if (stored && !process.env.BEEFLOW_API_BASE_URL && stored.apiBaseUrl) {
     config.apiBaseUrl = stored.apiBaseUrl;
     console.log(`[Setup] applying user-chosen apiBaseUrl: ${config.apiBaseUrl} (${stored.mode})`);
 }
+// Admin-supplied public NC URL — only used when the env override is unset.
+// Same precedence rule as apiBaseUrl: env wins, then picker, then fallback.
+if (stored && !process.env.BEEFLOW_NC_PUBLIC_URL && stored.publicNcUrl) {
+    config.nextcloudPublicUrl = stored.publicNcUrl;
+    console.log(`[Setup] applying user-chosen publicNcUrl: ${config.nextcloudPublicUrl}`);
+}
 app.use('/setup', require('./setup'));
 
 // NC admin settings panel (Cloud vs self-hosted) — poll for changes every

@@ -12,7 +12,7 @@
 # remote server / SaaS instead (override API_BASE_URL).
 #
 # Subcommands: up | down | clean | logs | status
-#   `up` accepts `--cloud` to point the connector at https://server.beeflow.ai
+#   `up` accepts `--cloud` to point the connector at https://server.beeflow.nl
 #   instead of the local SaaS, and auto-spawn a public tunnel (cloudflared by
 #   default, ngrok if NGROK_AUTHTOKEN is set) so the cloud can callback-verify
 #   your NC. One-command sandbox-against-cloud:
@@ -45,7 +45,7 @@
 #
 #   NGROK_AUTHTOKEN=...                    # if set, expose the local NC at a
 #                                          # public https://*.ngrok-free.app URL
-#                                          # so server.beeflow.ai's bootstrap
+#                                          # so server.beeflow.nl's bootstrap
 #                                          # callback can verify NC ownership.
 #                                          # Required to use Cloud mode from
 #                                          # this Docker sandbox; without it,
@@ -73,7 +73,7 @@ RUSTFS_IMAGE="${RUSTFS_IMAGE:-rustfs/rustfs:latest}"
 RUSTFS_ACCESS_KEY="${RUSTFS_ACCESS_KEY:-rustfsadmin}"
 RUSTFS_SECRET_KEY="${RUSTFS_SECRET_KEY:-rustfsadmin}"
 
-# Public-tunnel for Cloud mode (server.beeflow.ai needs to call NC back to
+# Public-tunnel for Cloud mode (server.beeflow.nl needs to call NC back to
 # verify ownership). Two implementations: cloudflared (default, no signup)
 # and ngrok (opt-in via NGROK_AUTHTOKEN, named URL, slightly more reliable).
 # A tunnel is started automatically whenever cmd_up runs in --cloud mode.
@@ -85,7 +85,7 @@ CFD_NAME="bee-flow-cloudflared"
 
 # --cloud flag — set later by cmd_up arg parsing. When true, the script:
 #   1. skips the local Postgres+RustFS+server stack (WITH_SERVER=0)
-#   2. points the connector at https://server.beeflow.ai
+#   2. points the connector at https://server.beeflow.nl
 #   3. spawns a public tunnel for the bootstrap callback
 CLOUD_MODE=0
 
@@ -177,7 +177,7 @@ start_rustfs() {
 }
 
 # Tunnel the local NC at $NC_NAME:80 to a public https URL so that the cloud
-# Bee Flow SaaS (server.beeflow.ai) can call back to verify NC ownership
+# Bee Flow SaaS (server.beeflow.nl) can call back to verify NC ownership
 # during bootstrap. Returns the public URL on stdout (e.g.
 # `https://9f8e7d.ngrok-free.app`). No-op when NGROK_AUTHTOKEN is unset.
 start_ngrok() {
@@ -312,12 +312,12 @@ ensure_server_image() {
 cmd_up() {
     docker info >/dev/null 2>&1 || { r "Docker daemon is not reachable"; exit 1; }
 
-    # --cloud — point connector at https://server.beeflow.ai instead of the
+    # --cloud — point connector at https://server.beeflow.nl instead of the
     # local SaaS, skip the Postgres+RustFS+server stack, and start a public
     # tunnel so the cloud can callback-verify the NC instance.
     if [ "$CLOUD_MODE" = "1" ]; then
         WITH_SERVER=0
-        API_BASE_URL="https://server.beeflow.ai"
+        API_BASE_URL="https://server.beeflow.nl"
         b "[cloud] Connector will target $API_BASE_URL; local SaaS stack disabled"
     fi
 

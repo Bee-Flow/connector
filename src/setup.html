@@ -235,6 +235,36 @@
             <code>occ app_api:app:setenv bee_flow BEEFLOW_API_BASE_URL ''</code>.
         </p>
     </div>
+
+    <hr style="margin: 32px 0; border: 0; border-top: 1px solid #e5e7eb;" />
+
+    <h2 style="margin-top: 0;">Public Nextcloud URL <span style="font-weight: normal; color: #6b7280; font-size: 0.9em;">(advanced)</span></h2>
+    <p>
+        Bee Flow Cloud calls your Nextcloud back at this URL to verify ownership during
+        first-time setup and for runtime user-sync. Leave blank if your Nextcloud is already
+        publicly reachable at <code id="meta-internal-nc">…</code> — that's the common case.
+        Set this only if your Nextcloud is behind NAT or only reachable via a tunnel /
+        reverse-proxy you control.
+    </p>
+    <div class="form">
+        <label for="publicNcUrl">Public Nextcloud URL</label>
+        <input type="url" id="publicNcUrl"
+               placeholder="https://nextcloud.example.com"
+               autocomplete="off"
+               spellcheck="false" />
+        <div class="hint">
+            HTTPS recommended. Example: <code>https://abc123.trycloudflare.com</code>
+            for a temporary cloudflared tunnel, or your reverse-proxy URL.
+        </div>
+    </div>
+    <div class="actions">
+        <button class="btn-primary" id="btn-save-public">Save public URL</button>
+        <span class="hint" id="status-public-inline" style="margin: 0;"></span>
+    </div>
+    <p id="meta-public-env" style="display:none; color:#6b7280;">
+        ⚠️ Locked by <code>BEEFLOW_NC_PUBLIC_URL</code> env — unset it via
+        <code>occ app_api:app:setenv bee_flow BEEFLOW_NC_PUBLIC_URL ''</code> to use this field.
+    </p>
 </div>
 
 <script>
@@ -368,9 +398,7 @@
             btnSave.disabled = true;
             btnTest.disabled = !s.active;
             badgeCurrent.textContent = `🔒 Env-locked`;
-            return;
-        }
-        if (s.chosen) {
+        } else if (s.chosen) {
             badgeCurrent.textContent = s.chosen.mode === 'cloud' ? '☁️ Cloud' : '🏠 Self-hosted';
             if (s.chosen.mode === 'self-hosted') inputUrl.value = s.chosen.apiBaseUrl;
             setMode(s.chosen.mode);
@@ -379,6 +407,42 @@
             // Default-select Cloud as the recommended path.
             setMode('cloud');
         }
+
+        // Public NC URL section
+        const pnu = s.publicNcUrl || {};
+        $('meta-internal-nc').textContent = pnu.internalNcUrl || '(unknown)';
+        const inputPublicNc = $('publicNcUrl');
+        const btnSavePublic = $('btn-save-public');
+        const statusPublicInline = $('status-public-inline');
+        const metaPublicEnv = $('meta-public-env');
+        if (pnu.envOverridden) {
+            metaPublicEnv.style.display = '';
+            inputPublicNc.value = pnu.envValue || '';
+            inputPublicNc.disabled = true;
+            btnSavePublic.disabled = true;
+        } else if (pnu.chosen) {
+            inputPublicNc.value = pnu.chosen;
+        }
+        btnSavePublic.addEventListener('click', async () => {
+            statusPublicInline.textContent = 'Saving…';
+            btnSavePublic.disabled = true;
+            try {
+                const r = await fetch('/setup/public-nc-url', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ publicNcUrl: inputPublicNc.value.trim() }),
+                });
+                const d = await r.json();
+                if (!r.ok) throw new Error(d.error || 'save failed');
+                statusPublicInline.textContent = d.saved.publicNcUrl
+                    ? `Saved. Re-bootstrapping with ${d.saved.publicNcUrl}…`
+                    : 'Cleared. Falling back to internal NC URL.';
+            } catch (err) {
+                statusPublicInline.textContent = 'Error: ' + err.message;
+            } finally {
+                btnSavePublic.disabled = false;
+            }
+        });
     }).catch(err => {
         showStatus('err', 'Could not load current status: ' + err.message);
     });

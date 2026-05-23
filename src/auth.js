@@ -166,6 +166,15 @@ function appApiAuthMiddleware(req, res, next) {
         })
         .catch(err => {
             console.warn(`[Auth] User lookup failed for ${decoded.userId}: ${err.message}`);
+            // When a browser hits the embedded SPA route (Accept: text/html)
+            // while bootstrap is in-flight (no tenant key) or NC OCS is
+            // briefly unreachable, returning raw JSON paints a useless error
+            // page. Serve the SPA shell instead so its error overlay can
+            // render with the diagnostics from /setup/diagnostics. Anything
+            // requesting JSON (XHR, fetch) still gets the structured 502.
+            if (req.accepts(['html', 'json']) === 'html' && !req.path.startsWith('/api/')) {
+                return next();
+            }
             res.status(502).json({ error: 'User lookup failed' });
         });
 }

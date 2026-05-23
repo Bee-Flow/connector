@@ -226,7 +226,7 @@ function getPendingState() { return pendingState; }
 // setup.js can both consume it without drifting.
 const REMEDIATION = {
     saas_unreachable:
-        'The Bee Flow service is not reachable from this Nextcloud. Test with `curl https://server.beeflow.ai/api/health` from the connector container and whitelist that hostname in your egress firewall.',
+        'The Bee Flow service is not reachable from this Nextcloud. Test with `curl https://server.beeflow.nl/api/health` from the connector container and whitelist that hostname in your egress firewall.',
     nc_not_publicly_reachable:
         'Bee Flow Cloud cannot reach this Nextcloud for user-sync callbacks. Set BEEFLOW_NC_PUBLIC_URL to your public NC URL, or switch to self-hosted mode via the setup picker.',
     admin_lookup_failed:
@@ -270,11 +270,27 @@ async function clearErrorFile() {
     lastErrorState = null;
 }
 
+// SaaS-side structured `code` values that map directly to a connector
+// category — preferred over string-matching on the error message because
+// it's stable across SaaS releases.
+const SAAS_CODE_TO_CATEGORY = {
+    nc_capabilities_unreachable: 'nc_not_publicly_reachable',
+    nc_capabilities_mismatch: 'nc_capabilities_mismatch',
+    missing_headers: 'connector_outdated',
+    invalid_admin_email: 'admin_email_invalid',
+    admin_email_conflict: 'admin_email_conflict',
+    too_many_pending_bindings: 'too_many_pending',
+    pending_admin_approval: 'awaiting_admin_approval',
+    org_create_failed: 'saas_transient',
+};
+
 // Categorise a thrown error into one of the well-known buckets that the
-// SPA's error overlay knows how to render. Anything we don't recognise
-// falls through as `unknown` — still surfaced, just without specific
-// remediation copy.
+// SPA's error overlay knows how to render. Prefers a structured `code`
+// set on the error (from a parsed SaaS response) and falls back to
+// message inspection. Anything we don't recognise falls through as
+// `unknown` — still surfaced, just without specific remediation copy.
 function categoriseError(err, phase) {
+    if (err?.code && SAAS_CODE_TO_CATEGORY[err.code]) return SAAS_CODE_TO_CATEGORY[err.code];
     const msg = String(err?.message || err || '');
     if (phase === 'capabilities' || /NC capabilities/i.test(msg)) return 'nc_not_publicly_reachable';
     if (phase === 'admin' || /admin/i.test(msg) && /No NC users|admin from user list/i.test(msg)) return 'admin_lookup_failed';
@@ -288,7 +304,10 @@ function categoriseError(err, phase) {
 // Record a bootstrap failure for surfacing to /heartbeat and /setup/diagnostics.
 // Always best-effort: any failure to persist the error itself is logged but
 // not re-thrown (we don't want failure-reporting to mask the real failure).
-async function recordBootstrapError(err, phase) {
+// `opts.remediation` overrides the static REMEDIATION copy when the SaaS
+// returned a more specific message (e.g. tunnel guidance for the current
+// NC URL).
+async function recordBootstrapError(err, phase, opts = {}) {
     const category = categoriseError(err, phase);
     const now = new Date().toISOString();
     const state = {
@@ -296,6 +315,7 @@ async function recordBootstrapError(err, phase) {
         category,
         phase: phase || 'unknown',
         error: String(err?.message || err || 'unknown'),
+        remediation: opts.remediation || err?.remediation || null,
         lastAttemptAt: now,
         nextRetryAt: new Date(Date.now() + 60_000).toISOString(),
     };
@@ -485,9 +505,17 @@ async function bootstrapIfNeeded() {
     }
 
     if (!res.ok) {
+        // Parse a structured SaaS response when present. The new server-side
+        // contract returns { error, code, remediation } so we can map to the
+        // right heartbeat category without string-matching the message.
         const errBody = await res.text();
-        const e = new Error(`Bootstrap rejected by SaaS (HTTP ${res.status}): ${errBody.slice(0, 200)}`);
-        await recordBootstrapError(e, 'saas_post');
+        let parsed = null;
+        try { parsed = JSON.parse(errBody); } catch (_) { /* not JSON */ }
+        const msg = parsed?.error || errBody.slice(0, 200);
+        const e = new Error(`Bootstrap rejected by SaaS (HTTP ${res.status}): ${msg}`);
+        if (parsed?.code) e.code = parsed.code;
+        if (parsed?.remediation) e.remediation = parsed.remediation;
+        await recordBootstrapError(e, 'saas_post', { remediation: parsed?.remediation });
         throw e;
     }
     const json = await res.json();

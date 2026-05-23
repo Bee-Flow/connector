@@ -7,7 +7,7 @@
  * Priority for the connector's effective `apiBaseUrl`:
  *   1. Explicit BEEFLOW_API_BASE_URL env (set via `occ app_api:app:setenv`)
  *   2. setup-config.json `apiBaseUrl` written by the in-app picker
- *   3. https://server.beeflow.ai (Bee Flow Cloud)
+ *   3. https://server.beeflow.nl (Bee Flow Cloud)
  *
  * The env-var explicit override stays first so that an admin who locks the
  * value via AppAPI can't be silently flipped from the in-app picker.
@@ -18,7 +18,7 @@ const path = require('path');
 
 const FILE_NAME = 'setup-config.json';
 const VALID_MODES = ['cloud', 'self-hosted', 'custom'];
-const CLOUD_URL = 'https://server.beeflow.ai';
+const CLOUD_URL = 'https://server.beeflow.nl';
 
 let cached = null;
 let storageDir = null;
@@ -59,6 +59,7 @@ function save({ mode, apiBaseUrl }) {
         throw new Error('apiBaseUrl must start with http:// or https://');
     }
     const next = {
+        ...(cached || {}),
         mode,
         apiBaseUrl: url,
         savedAt: new Date().toISOString(),
@@ -66,6 +67,30 @@ function save({ mode, apiBaseUrl }) {
     fs.writeFileSync(_filePath(), JSON.stringify(next, null, 2), { mode: 0o600 });
     cached = next;
     return cached;
+}
+
+// Persist the admin-supplied public NC URL — the one Bee Flow Cloud uses
+// to call back into this Nextcloud for ownership verification + runtime
+// callbacks. Lives in the same file as the apiBaseUrl picker. `null` to
+// clear (fall back to NEXTCLOUD_URL).
+function savePublicNcUrl(url) {
+    const v = url ? String(url).trim().replace(/\/+$/, '') : null;
+    if (v && !/^https?:\/\//.test(v)) {
+        throw new Error('publicNcUrl must start with http:// or https://');
+    }
+    const next = {
+        ...(cached || {}),
+        publicNcUrl: v,
+        savedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(_filePath(), JSON.stringify(next, null, 2), { mode: 0o600 });
+    cached = next;
+    return cached;
+}
+
+function chosenPublicNcUrl() {
+    if (cached && cached.publicNcUrl) return cached.publicNcUrl;
+    return null;
 }
 
 function clear() {
@@ -83,4 +108,4 @@ function chosenApiBaseUrl() {
     return null;
 }
 
-module.exports = { init, get, save, clear, chosenApiBaseUrl, CLOUD_URL, VALID_MODES };
+module.exports = { init, get, save, savePublicNcUrl, clear, chosenApiBaseUrl, chosenPublicNcUrl, CLOUD_URL, VALID_MODES };

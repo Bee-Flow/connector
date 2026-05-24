@@ -33,7 +33,7 @@
 #                                          # matching `connector_tenant_key_*`
 #                                          # row and every JWT will 401.
 #   API_BASE_URL=                         # default: http://bee-flow-server:3001
-#                                          override to e.g. https://api.beeflow.ai
+#                                          override to e.g. https://server.beeflow.nl
 #                                          to skip running the server locally
 #   WITH_SERVER=1                          # 0 to skip Postgres + RustFS + server
 #   SERVER_IMAGE=ghcr.io/bee-flow/beeflow:dev
@@ -104,7 +104,7 @@ NETWORK="bee-flow-net"     # shared bridge network — NC ↔ connector ↔ serv
 if [ "$WITH_SERVER" = "1" ]; then
     API_BASE_URL="${API_BASE_URL:-http://$SRV_NAME:$SERVER_PORT}"
 else
-    API_BASE_URL="${API_BASE_URL:-https://api.beeflow.ai}"
+    API_BASE_URL="${API_BASE_URL:-https://server.beeflow.nl}"
 fi
 
 # Connector dir = parent of this script. Works in both layouts:

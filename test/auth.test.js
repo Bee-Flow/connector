@@ -30,7 +30,7 @@ test('decode garbage returns null', () => {
 test('mintSaasJwt returns a JWT signed with tenant key', () => {
     const jwt = require('jsonwebtoken');
     const token = mintSaasJwt({ uid: 'alice', email: 'a@b', displayName: 'Alice' });
-    const decoded = jwt.verify(token, config.tenantKey, { audience: 'beeflow.ai' });
+    const decoded = jwt.verify(token, config.tenantKey, { audience: 'beeflow.nl' });
     assert.equal(decoded.sub, 'alice');
     assert.equal(decoded.email, 'a@b');
 });

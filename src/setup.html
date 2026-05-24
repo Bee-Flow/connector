@@ -196,7 +196,7 @@
             <div class="icon">☁️</div>
             <h3>Bee Flow Cloud</h3>
             <p>Hosted by Bee Flow B.V. Zero infra. Updates and uptime are taken care of.
-               Connects to <code>api.beeflow.ai</code>.</p>
+               Connects to <code>server.beeflow.nl</code>.</p>
         </div>
         <div class="card" id="card-self" data-mode="self-hosted">
             <div class="icon">🏠</div>
@@ -283,7 +283,15 @@
 
     let mode = null;
     let envLocked = false;
-    let cloudUrl = 'https://api.beeflow.ai';
+    let cloudUrl = 'https://server.beeflow.nl';
+
+    // When loaded through NC's AppAPI proxy the page lives under a path
+    // like `/index.php/apps/app_api/proxy/bee_flow/setup`. Absolute paths
+    // like `/setup/status` would hit NC at `:port/setup/status` (404 HTML
+    // → "Unexpected token '<'" in JSON.parse). Compute the connector mount
+    // prefix from the current URL so every fetch goes back through the
+    // signed proxy.
+    const BASE = window.location.pathname.replace(/\/setup\/?$/, '') + '/';
 
     function setMode(m) {
         mode = m;
@@ -331,7 +339,7 @@
         btnTest.disabled = true;
         statusInline.textContent = 'testing…';
         try {
-            const r = await fetch('/setup/test', {
+            const r = await fetch(BASE + 'setup/test', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ apiBaseUrl: url }),
@@ -360,7 +368,7 @@
         btnSave.disabled = true;
         statusInline.textContent = 'saving…';
         try {
-            const r = await fetch('/setup', {
+            const r = await fetch(BASE + 'setup', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
@@ -387,7 +395,7 @@
     });
 
     // Initial state
-    fetch('/setup/status').then(r => r.json()).then(s => {
+    fetch(BASE + 'setup/status').then(r => r.json()).then(s => {
         cloudUrl = s.cloudUrl || cloudUrl;
         metaActive.textContent = s.active;
         envLocked = !!s.envOverridden;
@@ -427,7 +435,7 @@
             statusPublicInline.textContent = 'Saving…';
             btnSavePublic.disabled = true;
             try {
-                const r = await fetch('/setup/public-nc-url', {
+                const r = await fetch(BASE + 'setup/public-nc-url', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ publicNcUrl: inputPublicNc.value.trim() }),

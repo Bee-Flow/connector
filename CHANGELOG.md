@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.10] - 2026-05-24
+
+### Fixed
+- `/setup` picker's "Save" button worked from the standalone URL but failed with `Save failed: Unexpected token '<'` when opened through NC's AppAPI proxy. The page used absolute paths like `/setup/test`, which the browser resolved against the NC origin instead of the proxy mount. Switched all fetches to a prefix derived from `window.location.pathname` so they go back through the signed proxy.
+- All references to the legacy `beeflow.ai` domain renamed to `beeflow.nl` (the active domain); the stale `api.beeflow.ai` placeholder in the picker is now the verified `server.beeflow.nl` SaaS endpoint.
+
 ## [0.1.9] - 2026-05-23
 
 ### Changed

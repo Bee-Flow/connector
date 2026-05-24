@@ -12,7 +12,7 @@
     <description><![CDATA[
 > ⚠️ **Public beta — testing in progress.** This is an early release. Expect rough edges, occasional breaking changes between versions, and please report issues at [github.com/Bee-Flow/connector/issues](https://github.com/Bee-Flow/connector/issues). Not yet recommended for production-critical workflows.
 
-> 📋 **Prerequisites:** Bee Flow is delivered as an **ExApp**, so installing it from this page only succeeds when your Nextcloud already has **AppAPI** enabled **and** a deploy daemon registered. Most managed setups (Nextcloud All-in-One, Hetzner Storage Share) already have this; vanilla self-hosted instances usually need a one-time `occ app_api:daemon:register` step. The 3-minute [Bee Flow install guide](https://docs.beeflow.ai/getting-started/nextcloud) walks you through both cases plus the NAT/reverse-proxy scenario.
+> 📋 **Prerequisites:** Bee Flow is delivered as an **ExApp**, so installing it from this page only succeeds when your Nextcloud already has **AppAPI** enabled **and** a deploy daemon registered. Most managed setups (Nextcloud All-in-One, Hetzner Storage Share) already have this; vanilla self-hosted instances usually need a one-time `occ app_api:daemon:register` step. The 3-minute [Bee Flow install guide](https://docs.beeflow.nl/getting-started/nextcloud) walks you through both cases plus the NAT/reverse-proxy scenario.
 
 **Bee Flow turns your Nextcloud into an AI workspace.**
 
@@ -30,7 +30,7 @@ Click the bee icon in your top bar and chat with an assistant that already knows
 
 This Nextcloud app is a thin connector. It runs as an ExApp container next to your Nextcloud and bridges the embedded Bee Flow web client (an open-source React SPA) to the hosted Bee Flow service. Browser → Nextcloud signed proxy → connector → Bee Flow API. Your Nextcloud session is the only credential.
 
-For self-hosters who want to run the entire stack on-premise: the connector, the SPA and the Bee Flow server are all open source ([Bee-Flow on GitHub](https://github.com/Bee-Flow)). The hosted service runs the same code under a [Sustainable Use Licence](https://beeflow.ai/license) and offers paid tiers for organisations that need automations, advanced analytics, DLP and SAML SSO.
+For self-hosters who want to run the entire stack on-premise: the connector, the SPA and the Bee Flow server are all open source ([Bee-Flow on GitHub](https://github.com/Bee-Flow)). The hosted service runs the same code under a [Sustainable Use Licence](https://beeflow.nl/license) and offers paid tiers for organisations that need automations, advanced analytics, DLP and SAML SSO.
 
 ## Data flow disclosure
 
@@ -41,7 +41,7 @@ When you act on a Nextcloud item, the connector sends the item to the Bee Flow s
 
 Bee Flow **does not** bulk-export file contents, mail bodies, calendars or contacts. The connector forwards individual requests; nothing is copied, mirrored or indexed by default.
 
-Full privacy policy: <https://beeflow.ai/privacy>.
+Full privacy policy: <https://beeflow.nl/privacy>.
 
 ## Getting started
 
@@ -50,11 +50,11 @@ Full privacy policy: <https://beeflow.ai/privacy>.
 3. The first time the organisation admin opens it, the onboarding wizard runs automatically — pick your user-sync mode and privacy settings.
 4. Other users see a "Setup in progress" screen until the admin finishes — then the chat opens for everyone in the chosen sync scope.
 
-A free **Community tier** (single user, basic chat, local knowledge base) is fully functional with no license key. To unlock automations, multi-user, DLP and other premium features, paste a license key from <https://beeflow.ai/pricing> into Settings → Organisation → License & Usage.
+A free **Community tier** (single user, basic chat, local knowledge base) is fully functional with no license key. To unlock automations, multi-user, DLP and other premium features, paste a license key from <https://beeflow.nl/pricing> into Settings → Organisation → License & Usage.
         ]]></description>
-    <version>0.1.9</version>
+    <version>0.1.10</version>
     <licence>AGPL-3.0-or-later</licence>
-    <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.ai">Bee Flow B.V.</author>
+    <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.nl">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>
     <!--
         Documentation URLs deliberately omitted; reviewers and users
@@ -74,7 +74,7 @@ A free **Community tier** (single user, basic chat, local knowledge base) is ful
     <category>integration</category>
     <category>workflow</category>
     <category>office</category>
-    <website>https://beeflow.ai</website>
+    <website>https://beeflow.nl</website>
     <bugs>https://github.com/Bee-Flow/connector/issues</bugs>
     <repository type="git">https://github.com/Bee-Flow/connector</repository>
     <!--

@@ -32,7 +32,7 @@ const FORM_SCHEME = {
     storage_type: 'external',
     title: 'Bee Flow',
     description: 'Choose between the hosted Bee Flow service (Cloud) and a self-hosted Bee Flow server. Changes apply within ~60s; the connector re-bootstraps the tenant key automatically.',
-    doc_url: 'https://beeflow.ai',
+    doc_url: 'https://beeflow.nl',
     fields: [
         {
             id: FIELD_MODE,

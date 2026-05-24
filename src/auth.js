@@ -121,7 +121,7 @@ function mintSaasJwt(user) {
         {
             algorithm: 'HS256',
             issuer: 'nextcloud-connector',
-            audience: 'beeflow.ai',
+            audience: 'beeflow.nl',
             expiresIn: config.jwtTtlSeconds,
         }
     );

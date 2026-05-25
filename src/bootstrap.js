@@ -459,18 +459,28 @@ async function bootstrapIfNeeded() {
 
     let res;
     try {
+        const headers = {
+            'Content-Type': 'application/json',
+            'X-Beeflow-Source': 'nextcloud-connector',
+            'X-Beeflow-NC-Instance-Id': caps.instanceId,
+            'X-Beeflow-NC-Base-Url': config.nextcloudPublicUrl || config.nextcloudUrl,
+            'X-Beeflow-NC-Admin-Uid': admin.uid,
+            'X-Beeflow-NC-Admin-Email': admin.email,
+            'X-Beeflow-NC-Admin-Display-Name': admin.displayName,
+            'X-Beeflow-Connector-Callback-Url': connectorCallbackUrl,
+        };
+        // Pairing-code branch: when the admin has handed us a code via env
+        // var, attach it. SaaS will redeem + bind to the existing org instead
+        // of falling through to email-match or fresh-org. The code is single-
+        // use; if the request returns OK we wipe the env var below so a
+        // restart doesn't re-redeem against a now-invalid code.
+        if (config.pairingCode) {
+            headers['X-Beeflow-Pairing-Code'] = config.pairingCode;
+            console.log(`[Bootstrap] Attaching pairing code ${config.pairingCode.slice(0, 4)}*** for redemption`);
+        }
         res = await fetch(`${config.apiBaseUrl}/auth/connector/bootstrap`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Beeflow-Source': 'nextcloud-connector',
-                'X-Beeflow-NC-Instance-Id': caps.instanceId,
-                'X-Beeflow-NC-Base-Url': config.nextcloudPublicUrl || config.nextcloudUrl,
-                'X-Beeflow-NC-Admin-Uid': admin.uid,
-                'X-Beeflow-NC-Admin-Email': admin.email,
-                'X-Beeflow-NC-Admin-Display-Name': admin.displayName,
-                'X-Beeflow-Connector-Callback-Url': connectorCallbackUrl,
-            },
+            headers,
             body: JSON.stringify({ themingName: caps.themingName, version: caps.version }),
             signal: AbortSignal.timeout(15_000),
         });
@@ -527,6 +537,13 @@ async function bootstrapIfNeeded() {
 
     await applyTenantKeyResponse({ ...json, ncVersion: caps.version }, caps.instanceId);
     await clearErrorFile();
+    // If we redeemed a pairing code, clear it from runtime config so a
+    // restart can't try to redeem it again (the SaaS will reject it on a
+    // second attempt anyway, but better to fail closed before the request).
+    if (config.pairingCode) {
+        console.log('[Bootstrap] Pairing code redeemed — clearing for future restarts');
+        config.pairingCode = null;
+    }
     console.log(`[Bootstrap] Provisioned org ${json.organizationId} (${json.organizationName}) — tenant key cached`);
 }
 

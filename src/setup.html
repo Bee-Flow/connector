@@ -267,6 +267,25 @@
     </p>
 </div>
 
+<div class="card">
+    <h2 style="margin-top: 0;">Tenant key diagnostic</h2>
+    <p>
+        Run this when sign-in fails with <em>“Connector token rejected: no matching tenant key”</em>
+        or you keep seeing <code>502 Bad Gateway</code> on <code>/api/*</code>. The connector asks
+        the SaaS what it has stored for this Nextcloud instance and compares fingerprints — no
+        secret material is exposed.
+    </p>
+    <div class="actions">
+        <button class="btn-secondary" id="btn-diagnose">Run diagnostic</button>
+        <span class="hint" id="status-diagnose-inline" style="margin: 0;"></span>
+    </div>
+    <pre id="diagnose-output"
+         style="display:none; margin-top: 12px; padding: 12px;
+                background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 6px;
+                font-size: 0.85em; max-height: 400px; overflow: auto;
+                white-space: pre-wrap; word-break: break-word;"></pre>
+</div>
+
 <script>
 (() => {
     const $ = (id) => document.getElementById(id);
@@ -454,6 +473,36 @@
     }).catch(err => {
         showStatus('err', 'Could not load current status: ' + err.message);
     });
+
+    const btnDiagnose = $('btn-diagnose');
+    const statusDiagnoseInline = $('status-diagnose-inline');
+    const diagnoseOutput = $('diagnose-output');
+    if (btnDiagnose) {
+        btnDiagnose.addEventListener('click', async () => {
+            statusDiagnoseInline.textContent = 'Running…';
+            btnDiagnose.disabled = true;
+            diagnoseOutput.style.display = 'none';
+            try {
+                const r = await fetch(BASE + 'setup/diagnose', { method: 'POST' });
+                const d = await r.json();
+                diagnoseOutput.textContent = JSON.stringify(d, null, 2);
+                diagnoseOutput.style.display = 'block';
+                if (d.match === 'fingerprints_match') {
+                    statusDiagnoseInline.textContent = '✅ Keys match — auth failure is elsewhere.';
+                } else if (typeof d.match === 'string') {
+                    statusDiagnoseInline.textContent = '⚠️ ' + d.match;
+                } else if (d.error) {
+                    statusDiagnoseInline.textContent = '❌ ' + d.error;
+                } else {
+                    statusDiagnoseInline.textContent = 'Done.';
+                }
+            } catch (err) {
+                statusDiagnoseInline.textContent = 'Error: ' + err.message;
+            } finally {
+                btnDiagnose.disabled = false;
+            }
+        });
+    }
 })();
 </script>
 </body>

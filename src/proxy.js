@@ -8,31 +8,37 @@
  */
 
 const { createProxyMiddleware, fixRequestBody } = require('http-proxy-middleware');
+const http = require('http');
+const https = require('https');
 const config = require('./config');
 
+// Custom agents with keep-alive disabled. http-proxy-middleware (and Node's
+// default Agent) cache TCP sockets per host; when the upstream container
+// gets a new IP (compose restart, rolling deploy, k8s pod rotation), the
+// cached socket points at the dead old IP and every request fails with
+// ECONNREFUSED until the connector is restarted manually. Forcing a fresh
+// connection per request guarantees DNS re-resolution and eliminates that
+// failure mode entirely. The throughput cost is negligible for a single-NC
+// connector and is the right trade-off for reliability.
+const httpAgent = new http.Agent({ keepAlive: false });
+const httpsAgent = new https.Agent({ keepAlive: false });
+
 function buildApiProxy() {
+    const isHttps = String(config.apiBaseUrl || '').startsWith('https://');
     return createProxyMiddleware({
         target: config.apiBaseUrl,
         changeOrigin: true,
+        agent: isHttps ? httpsAgent : httpAgent,
         // Critical for SSE on the chat endpoint — disables proxy buffering.
         selfHandleResponse: false,
         on: {
             proxyReq: (proxyReq, req) => {
+                proxyReq.removeHeader('cookie');
+                proxyReq.removeHeader('origin');
+                proxyReq.removeHeader('referer');
                 if (req.beeflow?.jwt) {
                     proxyReq.setHeader('Authorization', `Bearer ${req.beeflow.jwt}`);
                 }
-                // Cookies are scoped to the Nextcloud origin — they have no
-                // meaning to our SaaS and may carry session tokens that
-                // shouldn't leave the customer's perimeter.
-                proxyReq.removeHeader('cookie');
-                // Origin/Referer reflect the browser's view of NC, not our
-                // server-to-server call. The SaaS's CORS middleware rejects
-                // unknown browser origins; X-Beeflow-Source is the trust
-                // signal for this code path. Strip both so CORS treats this
-                // as a same-origin call.
-                proxyReq.removeHeader('origin');
-                proxyReq.removeHeader('referer');
-                // Forward the original NC user id for SaaS-side auditing.
                 if (req.beeflow?.user?.uid) {
                     proxyReq.setHeader('X-Beeflow-Source', 'nextcloud-connector');
                     proxyReq.setHeader('X-Beeflow-NC-Uid', req.beeflow.user.uid);

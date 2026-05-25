@@ -141,11 +141,14 @@ app.get(['/js/embed', '/js/embed.js'], (_req, res) => {
 // client-side routing.
 const publicDir = path.join(__dirname, '..', 'public');
 
-// Bee Flow icon for the Nextcloud top-menu entry — same asset the SPA uses
-// in the folded sidebar (BeeFlow-logo-Icon-2026.svg) so users see one
-// consistent brand mark across NC chrome and the embedded app.
+// Bee Flow icon for the Nextcloud top-menu entry. Shipped as a verbatim
+// public asset (agent-hub/public/app-icon.svg) so it lands at the bundle
+// root with a stable name — the SPA's own logo lives in src/assets/ and
+// is import-hashed by Vite. Keeping the two copies separate stops SPA
+// developers from accidentally referencing the public path as a string
+// literal (which would 404 inside the NC iframe).
 app.get('/img/app.svg', (_req, res) => {
-    const logoPath = path.join(publicDir, 'BeeFlow-logo-Icon-2026.svg');
+    const logoPath = path.join(publicDir, 'app-icon.svg');
     const fs3 = require('fs');
     fs3.access(logoPath, fs3.constants.R_OK, (err) => {
         if (err) {

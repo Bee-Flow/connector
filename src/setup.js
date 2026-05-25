@@ -18,9 +18,11 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 
+const crypto = require('crypto');
 const config = require('./config');
 const setupConfig = require('./setupConfig');
 const bootstrap = require('./bootstrap'); // for re-bootstrap on URL change
+const auth = require('./auth');
 
 const router = express.Router();
 
@@ -199,6 +201,89 @@ router.post('/', express.json(), async (req, res) => {
 
     const probeRes = await probe(saved.apiBaseUrl).catch(() => null);
     res.json({ saved, probe: probeRes, restartRequired: false });
+});
+
+// One-shot diagnostic: ask the SaaS what it has stored for *this* NC
+// instance and cross-check with our local cached tenant key. Use this when
+// /api/* returns "no matching tenant key" so we can pinpoint whether the
+// SaaS has no key, has an unrelated key, or has the right key but the
+// signature verification is failing for some other reason (clock skew,
+// encryption key rotation on the server pod, …).
+router.post('/diagnose', express.json(), async (_req, res) => {
+    const out = {
+        local: {
+            apiBaseUrl: config.apiBaseUrl,
+            organizationId: config.organizationId || null,
+            ncInstanceId: config.ncInstanceId || null,
+            hasTenantKey: !!config.tenantKey,
+            tenantKeyFingerprint: config.tenantKey
+                ? crypto.createHash('sha256').update(config.tenantKey).digest('hex').slice(0, 16)
+                : null,
+        },
+        saas: null,
+        match: null,
+        error: null,
+    };
+
+    let caps;
+    try {
+        caps = await bootstrap.fetchCapabilities();
+    } catch (e) {
+        out.error = `Could not read NC capabilities: ${e.message}`;
+        return res.status(200).json(out);
+    }
+    out.local.liveNcInstanceId = caps.instanceId;
+
+    // Sign a throw-away JWT with the local tenant key so the SaaS can tell
+    // us whether verification actually succeeds against the key it has on
+    // file. This is the smoking-gun check.
+    let testToken = null;
+    if (config.tenantKey) {
+        try {
+            testToken = auth.mintSaasJwt({
+                uid: 'diag-probe',
+                email: 'diag-probe@example.invalid',
+                displayName: 'diag-probe',
+            });
+        } catch (_) { /* tolerate — diag still useful without a token */ }
+    }
+
+    const ncBase = config.nextcloudPublicUrl || config.nextcloudUrl;
+    const target = `${config.apiBaseUrl}/auth/connector/diagnose`;
+    let saasRes;
+    try {
+        saasRes = await fetch(target, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Beeflow-Source': 'nextcloud-connector',
+                'X-Beeflow-NC-Instance-Id': caps.instanceId,
+                'X-Beeflow-NC-Base-Url': ncBase,
+            },
+            body: JSON.stringify(testToken ? { testToken } : {}),
+            signal: AbortSignal.timeout(15_000),
+        });
+    } catch (e) {
+        out.error = `SaaS diagnose unreachable: ${e.message}`;
+        return res.status(200).json(out);
+    }
+    const text = await saasRes.text();
+    let body;
+    try { body = JSON.parse(text); } catch (_) { body = { raw: text.slice(0, 500) }; }
+    out.saas = { status: saasRes.status, ...body };
+
+    // Compare fingerprints when both sides have one.
+    if (out.local.tenantKeyFingerprint && out.saas?.tenantKey?.fingerprint) {
+        out.match = out.local.tenantKeyFingerprint === out.saas.tenantKey.fingerprint
+            ? 'fingerprints_match'
+            : 'fingerprint_mismatch — local and SaaS hold different keys for this org';
+    } else if (!out.local.tenantKeyFingerprint) {
+        out.match = 'local has no cached tenant key — bootstrap has not completed';
+    } else if (!out.saas?.tenantKey?.exists) {
+        out.match = 'SaaS has no tenant key for this org — bootstrap never reached persist step';
+    }
+
+    return res.json(out);
 });
 
 module.exports = router;

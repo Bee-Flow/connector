@@ -59,6 +59,13 @@ const config = {
     // public API.
     apiBaseUrl: (process.env.BEEFLOW_API_BASE_URL || 'https://server.beeflow.nl').replace(/\/+$/, ''),
 
+    // One-shot pairing code for binding this NC to an existing Bee Flow org
+    // (instead of creating a new one). Admin sets this via
+    // `occ app_api:app:setenv bee_flow BEEFLOW_PAIRING_CODE <CODE>` after
+    // generating the code in the existing org's Settings → Organisation →
+    // Nextcloud Sync panel. Consumed once at bootstrap; clear after.
+    pairingCode: (process.env.BEEFLOW_PAIRING_CODE || '').trim().toUpperCase() || null,
+
     // ── Operational knobs ──────────────────────────────────────
     // JWT TTL — short on purpose. The SaaS treats every request as a new
     // bearer; we don't want a leaked token to be useful for long.

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.11] - 2026-05-25
+
+### Added
+- New `BEEFLOW_PAIRING_CODE` AppAPI environment variable so a Nextcloud admin can bind their instance to an existing Bee Flow organisation on first boot instead of auto-creating a new one. The code is consumed once during bootstrap and ignored afterwards.
+- `/setup/diagnostics` exposes tenant-key verification endpoints so admins can confirm the connector reached the SaaS with the correct organisation key without enabling debug logging.
+
 ## [0.1.10] - 2026-05-24
 
 ### Fixed

@@ -132,7 +132,35 @@ jobs:
             --arg sig "$signature" \
             --argjson nightly $([ "$NIGHTLY" = "1" ] && echo true || echo false) \
             '{download:$url, signature:$sig, nightly:$nightly}')
-          curl --fail-with-body -X POST https://apps.nextcloud.com/api/v1/apps/releases \
-            -H "Authorization: Token $NCAPPSTORE_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$payload"
+
+          # apps.nextcloud.com occasionally returns 5xx (site-wide outages and
+          # transient backend errors during release publish). Retry on 5xx with
+          # linear backoff. 409 means a release with this version was already
+          # registered server-side — treat as success so re-running the same
+          # tag is idempotent.
+          attempts=5
+          for i in $(seq 1 "$attempts"); do
+            http=$(curl -sS -o /tmp/ncresp.txt -w '%{http_code}' \
+              -X POST https://apps.nextcloud.com/api/v1/apps/releases \
+              -H "Authorization: Token $NCAPPSTORE_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$payload")
+            case "$http" in
+              2??)
+                echo "✓ registered ($http)"
+                exit 0 ;;
+              409)
+                echo "⚠ already registered (409) — accepting as success"
+                exit 0 ;;
+              5??)
+                echo "apps.nextcloud.com $http on attempt $i/$attempts — retrying"
+                sleep $((i * 30)) ;;
+              *)
+                echo "::error::apps.nextcloud.com returned $http (not retryable)"
+                cat /tmp/ncresp.txt
+                exit 1 ;;
+            esac
+          done
+          echo "::error::apps.nextcloud.com still 5xx after $attempts attempts"
+          cat /tmp/ncresp.txt
+          exit 1

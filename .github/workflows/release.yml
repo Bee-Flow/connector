@@ -131,11 +131,16 @@ jobs:
           NIGHTLY: ${{ vars.NCAPPSTORE_NIGHTLY || '1' }}
         run: |
           download_url="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ env.APP_ID }}.tar.gz"
-          signature=$(cat dist/${{ env.APP_ID }}.tar.gz.sig)
+          # `openssl base64 -A` already emits a single line and bash's $(…)
+          # strips trailing newlines, but tr -d is belt-and-suspenders against
+          # any future change to the signing step that could re-introduce
+          # whitespace and trip a strict server-side parser.
+          signature=$(tr -d '[:space:]' < "dist/${{ env.APP_ID }}.tar.gz.sig")
+          nightly_val=$([ "$NIGHTLY" = "1" ] && echo true || echo false)
           payload=$(jq -nc \
             --arg url "$download_url" \
             --arg sig "$signature" \
-            --argjson nightly $([ "$NIGHTLY" = "1" ] && echo true || echo false) \
+            --argjson nightly "$nightly_val" \
             '{download:$url, signature:$sig, nightly:$nightly}')
 
           # Probe a known-stable endpoint to distinguish a site-wide outage
@@ -171,6 +176,9 @@ jobs:
                 exit 0 ;;
               5??)
                 echo "apps.nextcloud.com $http on attempt $i/$attempts — retrying"
+                echo "--- response body ---"
+                cat /tmp/ncresp.txt
+                echo "--- end response ---"
                 sleep $((i * 30)) ;;
               *)
                 echo "::error::apps.nextcloud.com returned $http (not retryable)"

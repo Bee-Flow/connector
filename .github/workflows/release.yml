@@ -79,12 +79,12 @@ jobs:
             ${{ env.IMAGE }}:${{ steps.ver.outputs.version }}
             ${{ env.IMAGE }}:latest
           # Pin the frontend to hive `main`. Hive has its own version
-          # lifecycle (npm @beeflow/frontend, currently 1.x) decoupled from
-          # this connector's v0.1.x tags; trying to share tags caused hive
-          # release-workflow failures (`Tag X does not match package.json
-          # version Y`). For App Store audits the connector image is still
-          # reproducible because Docker buildx records the resolved hive
-          # commit SHA in the SBOM step below.
+          # lifecycle (1.x in agent-hub/package.json) decoupled from this
+          # connector's v0.1.x tags; trying to share tag strings caused
+          # hive release-workflow failures (`Tag X does not match
+          # package.json version Y`). For App Store audits the connector
+          # image is still reproducible because Docker buildx records the
+          # resolved hive commit SHA in the SBOM step below.
           build-args: |
             HIVE_REF=main
           # Reproducible builds matter for App Store audits.
@@ -113,6 +113,11 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          # Force published (not draft) and explicit name so the v0.1.11
+          # incident — where the release sat as Draft titled "v0.1.10" and
+          # the download URLs 404'd publicly — can't repeat.
+          draft: false
+          name: ${{ github.ref_name }}
           files: |
             dist/${{ env.APP_ID }}.tar.gz
             dist/${{ env.APP_ID }}.tar.gz.sig

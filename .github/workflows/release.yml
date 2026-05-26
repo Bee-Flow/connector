@@ -147,7 +147,7 @@ jobs:
           # from an auth/payload error. /api/v1/categories.json is unauthenticated
           # and changes independently of the apps backend, so it stays 200 even
           # when /api/v1/apps/<id> endpoints are 5xx.
-          probe=$(curl -sS -o /dev/null -w '%{http_code}' https://apps.nextcloud.com/api/v1/categories.json || echo "000")
+          probe=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' https://apps.nextcloud.com/api/v1/categories.json || echo "000")
           if ! [[ "$probe" =~ ^2 ]]; then
             echo "::warning::apps.nextcloud.com is unhealthy (categories probe → $probe)."
             echo "::warning::Skipping release registration; the GHCR image and GitHub Release are unaffected."
@@ -162,11 +162,11 @@ jobs:
           # tag is idempotent.
           attempts=5
           for i in $(seq 1 "$attempts"); do
-            http=$(curl -sS -o /tmp/ncresp.txt -w '%{http_code}' \
+            http=$(curl -sS --max-time 60 -o /tmp/ncresp.txt -w '%{http_code}' \
               -X POST https://apps.nextcloud.com/api/v1/apps/releases \
               -H "Authorization: Token $NCAPPSTORE_TOKEN" \
               -H "Content-Type: application/json" \
-              -d "$payload")
+              -d "$payload" || echo "000")
             case "$http" in
               2??)
                 echo "✓ registered ($http)"
@@ -174,10 +174,10 @@ jobs:
               409)
                 echo "⚠ already registered (409) — accepting as success"
                 exit 0 ;;
-              5??)
+              5??|000)
                 echo "apps.nextcloud.com $http on attempt $i/$attempts — retrying"
                 echo "--- response body ---"
-                cat /tmp/ncresp.txt
+                cat /tmp/ncresp.txt 2>/dev/null || echo "(no body — network failure)"
                 echo "--- end response ---"
                 sleep $((i * 30)) ;;
               *)

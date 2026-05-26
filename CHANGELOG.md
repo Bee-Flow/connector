@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.12] - 2026-05-26
+
+### Changed
+- App Store listing URLs corrected: homepage, website, pricing link, install guide, Sustainable Use Licence and privacy-policy links all point at the right surface now (`app.beeflow.nl` for the app pages, `docs.beeflow.ai` for documentation).
+
 ## [0.1.11] - 2026-05-25
 
 ### Added

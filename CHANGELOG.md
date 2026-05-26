@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.13] - 2026-05-26
+
+### Changed
+- Release workflow: capped the apps.nextcloud.com registration retry budget at 2 attempts (was 5) so a sustained outage at apps.nextcloud.com no longer holds a runner for ~7 minutes per release.
+
 ## [0.1.12] - 2026-05-26
 
 ### Changed

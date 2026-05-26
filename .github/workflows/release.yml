@@ -160,7 +160,7 @@ jobs:
           # linear backoff. 409 means a release with this version was already
           # registered server-side — treat as success so re-running the same
           # tag is idempotent.
-          attempts=5
+          attempts=2
           for i in $(seq 1 "$attempts"); do
             http=$(curl -sS --max-time 60 -o /tmp/ncresp.txt -w '%{http_code}' \
               -X POST https://apps.nextcloud.com/api/v1/apps/releases \

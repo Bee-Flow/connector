@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.16] - 2026-05-27
+
+### Changed
+- Move the "Sustainable Use Licence" link from `app.beeflow.nl/license` to `docs.beeflow.ai/licensing` (license terms belong on the docs site, not the app surface) and hyperlink "paid tiers" to `docs.beeflow.ai/licensing/tiers` so admins reading the listing can land directly on the tier comparison.
+
 ## [0.1.15] - 2026-05-27
 
 ### Changed

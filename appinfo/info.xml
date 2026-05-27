@@ -30,7 +30,7 @@ Click the bee icon in your top bar and chat with an assistant that already knows
 
 This Nextcloud app is a thin connector. It runs as an ExApp container next to your Nextcloud and bridges the embedded Bee Flow web client (an open-source React SPA) to the hosted Bee Flow service. Browser → Nextcloud signed proxy → connector → Bee Flow API. Your Nextcloud session is the only credential.
 
-For self-hosters who want to run the entire stack on-premise: the connector, the SPA and the Bee Flow server are all open source ([Bee-Flow on GitHub](https://github.com/Bee-Flow)). The hosted service runs the same code under a [Sustainable Use Licence](https://app.beeflow.nl/license) and offers paid tiers for organisations that need automations, advanced analytics, DLP and SAML SSO.
+For self-hosters who want to run the entire stack on-premise: the connector, the SPA and the Bee Flow server are all open source ([Bee-Flow on GitHub](https://github.com/Bee-Flow)). The hosted service runs the same code under a [Sustainable Use Licence](https://docs.beeflow.ai/licensing) and offers [paid tiers](https://docs.beeflow.ai/licensing/tiers) for organisations that need automations, advanced analytics, DLP and SAML SSO.
 
 ## Data flow disclosure
 
@@ -52,7 +52,7 @@ Full privacy policy: <https://app.beeflow.nl/privacy>.
 
 A free **Community tier** (single user, basic chat, local knowledge base) is fully functional with no license key. To unlock automations, multi-user, DLP and other premium features, paste a license key from <https://app.beeflow.nl/pricing> into Settings → Organisation → License & Usage.
         ]]></description>
-    <version>0.1.15</version>
+    <version>0.1.16</version>
     <licence>AGPL-3.0-or-later</licence>
     <author mail="tomkooy@beeflow.nl" homepage="https://app.beeflow.nl/">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>

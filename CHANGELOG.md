@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.15] - 2026-05-27
+
+### Changed
+- Re-add `BEEFLOW_NC_PUBLIC_URL` and `BEEFLOW_PAIRING_CODE` to the AppAPI env-vars block, **without** the empty `<default/>` tags that triggered the v0.1.11–v0.1.13 apps.nextcloud.com 500. Per the XSD `<default>` is optional, and omitting it is the correct shape for an env-var with no real default value.
+
 ## [0.1.14] - 2026-05-27
 
 ### Changed

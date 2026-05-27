@@ -268,6 +268,38 @@
 </div>
 
 <div class="card">
+    <h2 style="margin-top: 0;">Bind to existing organisation</h2>
+    <p>
+        Paste a pairing code generated in your Bee Flow admin panel
+        (<em>Settings → Organisation → Nextcloud pairing codes</em>) to bind this
+        Nextcloud install to that organisation instead of provisioning a new one.
+        Codes look like <code>XXXX-XXXX</code>, expire after 15 minutes, and can
+        be used once. The previous key is restored automatically if the code
+        is invalid or expired.
+    </p>
+    <label for="pairing-code-input"
+           style="display:block; font-size:13px; font-weight:600; margin: 12px 0 6px;">
+        Pairing code
+    </label>
+    <input id="pairing-code-input" type="text" placeholder="XXXX-XXXX"
+           maxlength="9" autocomplete="off" spellcheck="false"
+           style="width: 220px; padding: 10px 12px; font-size: 15px;
+                  border-radius: 8px; border: 1px solid var(--card-border);
+                  background: var(--bg); color: var(--text);
+                  font-family: monospace; letter-spacing: 0.1em;
+                  text-transform: uppercase;" />
+    <div class="actions">
+        <button class="btn-primary" id="btn-apply-pairing-code">Apply pairing code</button>
+        <span class="hint" id="status-pairing-inline" style="margin: 0;"></span>
+    </div>
+    <pre id="pairing-output"
+         style="display:none; margin-top: 12px; padding: 12px;
+                background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 6px;
+                font-size: 0.85em; max-height: 200px; overflow: auto;
+                white-space: pre-wrap; word-break: break-word;"></pre>
+</div>
+
+<div class="card">
     <h2 style="margin-top: 0;">Rotate tenant key</h2>
     <p>
         Drops the cached tenant key and asks the SaaS to mint a fresh one bound to the
@@ -493,6 +525,47 @@
     }).catch(err => {
         showStatus('err', 'Could not load current status: ' + err.message);
     });
+
+    const btnApplyPairing = $('btn-apply-pairing-code');
+    const inputPairing = $('pairing-code-input');
+    const statusPairingInline = $('status-pairing-inline');
+    const pairingOutput = $('pairing-output');
+    if (btnApplyPairing) {
+        btnApplyPairing.addEventListener('click', async () => {
+            const code = (inputPairing.value || '').toUpperCase().trim();
+            if (!/^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code)) {
+                statusPairingInline.textContent =
+                    '⚠️ Code must look like XXXX-XXXX (8 letters/digits + one dash).';
+                return;
+            }
+            statusPairingInline.textContent = 'Redeeming code…';
+            btnApplyPairing.disabled = true;
+            pairingOutput.style.display = 'none';
+            try {
+                const r = await fetch(BASE + 'setup/apply-pairing-code', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pairingCode: code }),
+                });
+                const d = await r.json();
+                pairingOutput.textContent = JSON.stringify(d, null, 2);
+                pairingOutput.style.display = 'block';
+                if (d.ok) {
+                    statusPairingInline.textContent =
+                        '✅ Bound to org ' + (d.organizationId || '?') + ' — reload the embedded app.';
+                    inputPairing.value = '';
+                } else {
+                    statusPairingInline.textContent =
+                        '❌ ' + (d.error || 'redemption failed') +
+                        (d.remediation ? ' — ' + d.remediation : '');
+                }
+            } catch (err) {
+                statusPairingInline.textContent = 'Error: ' + err.message;
+            } finally {
+                btnApplyPairing.disabled = false;
+            }
+        });
+    }
 
     const btnRotate = $('btn-rotate-key');
     const statusRotateInline = $('status-rotate-inline');

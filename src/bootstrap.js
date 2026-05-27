@@ -556,7 +556,7 @@ async function bootstrapIfNeeded() {
  *
  * Best-effort: errors are caught + logged, never thrown to the caller.
  */
-async function invalidateAndRebootstrap() {
+async function invalidateAndRebootstrap({ pairingCode } = {}) {
     // Snapshot the previous working state so we can roll back if the new
     // target's bootstrap fails. Without this, a typo in the settings panel
     // (or a Cloud-mode pick from a localhost-only NC sandbox) wipes the
@@ -567,6 +567,7 @@ async function invalidateAndRebootstrap() {
         organizationId: config.organizationId,
         ncInstanceId: config.ncInstanceId,
         cacheFile: null,
+        pairingCode: config.pairingCode,
     };
     const cachePath = path.join(config.persistentStorage, CACHE_FILE);
     try {
@@ -579,6 +580,9 @@ async function invalidateAndRebootstrap() {
         config.tenantKey = null;
         config.organizationId = null;
         config.ncInstanceId = null;
+        if (pairingCode) {
+            config.pairingCode = pairingCode;
+        }
         console.log('[Bootstrap] Invalidated cached tenant key after setup change — re-bootstrapping');
         await bootstrapIfNeeded();
         if (!config.tenantKey) {
@@ -591,6 +595,7 @@ async function invalidateAndRebootstrap() {
         config.tenantKey = prev.tenantKey;
         config.organizationId = prev.organizationId;
         config.ncInstanceId = prev.ncInstanceId;
+        config.pairingCode = prev.pairingCode;
         if (prev.cacheFile) {
             await fs.writeFile(cachePath, prev.cacheFile, { mode: 0o600 }).catch(() => {});
         }

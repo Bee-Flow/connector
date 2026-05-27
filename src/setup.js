@@ -235,6 +235,44 @@ router.post('/rotate-tenant-key', express.json(), async (req, res) => {
     }
 });
 
+// Bind this Nextcloud install to an existing Bee Flow organisation by
+// redeeming a one-shot pairing code minted in the SaaS admin UI. Without
+// this UI path, admins had to SSH into the NC host and set
+// BEEFLOW_PAIRING_CODE via `occ app_api:app:setenv` + container restart —
+// a flow no real Nextcloud admin would tolerate.
+const PAIRING_CODE_RE = /^[A-Z0-9]{4}-[A-Z0-9]{4}$/;
+router.post('/apply-pairing-code', express.json(), async (req, res) => {
+    const uid = req.beeflow?.user?.uid || 'unknown';
+    const raw = String(req.body?.pairingCode || '').toUpperCase().trim();
+    if (!PAIRING_CODE_RE.test(raw)) {
+        return res.status(400).json({
+            ok: false,
+            error: 'Invalid pairing code format',
+            remediation: 'Pairing codes look like XXXX-XXXX (8 letters/digits, one dash).',
+        });
+    }
+    console.log(`[Setup] pairing code applied by uid=${uid} (${raw.slice(0, 4)}***)`);
+    try {
+        await bootstrap.invalidateAndRebootstrap({ pairingCode: raw });
+        console.log(`[Setup] pairing code redeemed by uid=${uid} — org ${config.organizationId}`);
+        res.json({
+            ok: true,
+            organizationId: config.organizationId,
+            tenantKeyFingerprint: crypto.createHash('sha256')
+                .update(String(config.tenantKey))
+                .digest('hex')
+                .slice(0, 16),
+        });
+    } catch (err) {
+        console.warn(`[Setup] pairing code redemption FAILED for uid=${uid}: ${err.message}`);
+        res.status(502).json({
+            ok: false,
+            error: err.message,
+            remediation: err.remediation || 'The pairing code may be expired or already redeemed. Generate a new one in your Bee Flow admin panel and try again.',
+        });
+    }
+});
+
 // One-shot diagnostic: ask the SaaS what it has stored for *this* NC
 // instance and cross-check with our local cached tenant key. Use this when
 // /api/* returns "no matching tenant key" so we can pinpoint whether the

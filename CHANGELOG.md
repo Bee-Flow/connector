@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.18] - 2026-05-27
+
+### Added
+- Setup page now has a **Bind to existing organisation** card that accepts a pairing code (`XXXX-XXXX`) generated in the Bee Flow admin panel. Admins can re-point a fresh install at an existing Bee Flow organisation in two clicks instead of SSH-ing to the NC host to set `BEEFLOW_PAIRING_CODE` via `occ app_api:app:setenv` + container restart. The previous tenant key is restored automatically if the code is expired or already redeemed.
+
+### Changed
+- App Store listing URLs migrated from the `app.beeflow.nl` subdomain to the apex domain `beeflow.nl` (privacy policy, pricing, homepage, website, author homepage) so admins land directly on the marketing site instead of the auth-gated app shell.
+
 ## [0.1.17] - 2026-05-27
 
 ### Changed

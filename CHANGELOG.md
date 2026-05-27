@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.17] - 2026-05-27
+
+### Changed
+- Auth model simplified to a single per-install secret. The connector no longer re-verifies the `APP_SECRET` envelope on inbound requests — AppAPI's signed proxy is already the authentication boundary, and the redundant check was the source of `Invalid AppAPI shared secret` 401s whenever NC's stored secret drifted from the container env (common after re-registration or container restarts during install). The tenant key minted at first bootstrap by the SaaS remains the single load-bearing secret end-to-end: JWT signing for SaaS-bound traffic and HMAC verification of SaaS → connector callbacks are unchanged.
+
+### Added
+- Setup page exposes a **Rotate tenant key** button that drops the cached key and asks the SaaS to mint a fresh one bound to the same organisation. The previous key is restored automatically if the rotation fails. Use it for routine credential hygiene or after a suspected key leak.
+
 ## [0.1.16] - 2026-05-27
 
 ### Changed

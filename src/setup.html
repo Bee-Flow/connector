@@ -268,6 +268,26 @@
 </div>
 
 <div class="card">
+    <h2 style="margin-top: 0;">Rotate tenant key</h2>
+    <p>
+        Drops the cached tenant key and asks the SaaS to mint a fresh one bound to the
+        same organisation. Use this if the current key is suspected leaked, or when
+        rolling credentials as part of regular hygiene. The connector keeps the
+        previous key as a fallback if the rotation fails, so a momentary SaaS
+        outage can't strand the install.
+    </p>
+    <div class="actions">
+        <button class="btn-secondary" id="btn-rotate-key">Rotate tenant key</button>
+        <span class="hint" id="status-rotate-inline" style="margin: 0;"></span>
+    </div>
+    <pre id="rotate-output"
+         style="display:none; margin-top: 12px; padding: 12px;
+                background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 6px;
+                font-size: 0.85em; max-height: 200px; overflow: auto;
+                white-space: pre-wrap; word-break: break-word;"></pre>
+</div>
+
+<div class="card">
     <h2 style="margin-top: 0;">Tenant key diagnostic</h2>
     <p>
         Run this when sign-in fails with <em>“Connector token rejected: no matching tenant key”</em>
@@ -473,6 +493,40 @@
     }).catch(err => {
         showStatus('err', 'Could not load current status: ' + err.message);
     });
+
+    const btnRotate = $('btn-rotate-key');
+    const statusRotateInline = $('status-rotate-inline');
+    const rotateOutput = $('rotate-output');
+    if (btnRotate) {
+        btnRotate.addEventListener('click', async () => {
+            if (!confirm(
+                'Rotate the tenant key for this Nextcloud install?\n\n'
+              + 'The current key will be dropped and the SaaS will mint a fresh one. '
+              + 'All in-flight sessions will need to re-handshake (a brief reload). '
+              + 'On rotation failure the previous key is restored automatically.'
+            )) return;
+            statusRotateInline.textContent = 'Rotating…';
+            btnRotate.disabled = true;
+            rotateOutput.style.display = 'none';
+            try {
+                const r = await fetch(BASE + 'setup/rotate-tenant-key', { method: 'POST' });
+                const d = await r.json();
+                rotateOutput.textContent = JSON.stringify(d, null, 2);
+                rotateOutput.style.display = 'block';
+                if (d.ok) {
+                    statusRotateInline.textContent =
+                        '✅ Rotated — new fingerprint ' + d.tenantKeyFingerprint;
+                } else {
+                    statusRotateInline.textContent =
+                        '❌ ' + (d.error || 'rotation failed');
+                }
+            } catch (err) {
+                statusRotateInline.textContent = 'Error: ' + err.message;
+            } finally {
+                btnRotate.disabled = false;
+            }
+        });
+    }
 
     const btnDiagnose = $('btn-diagnose');
     const statusDiagnoseInline = $('status-diagnose-inline');

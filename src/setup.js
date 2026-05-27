@@ -203,6 +203,38 @@ router.post('/', express.json(), async (req, res) => {
     res.json({ saved, probe: probeRes, restartRequired: false });
 });
 
+// Rotate the per-install tenant key — drop the cached key + run a fresh
+// bootstrap against the same SaaS so the org binding survives but every
+// downstream signature changes. Surfaced via the "Rotate tenant key"
+// button in NC admin settings (declarativeSettings.js). Synchronous: the
+// caller blocks until SaaS responds so the UI can show success or the
+// concrete remediation in one click. invalidateAndRebootstrap() rolls back
+// to the previous key on failure so a momentary SaaS outage can't strand
+// the install.
+router.post('/rotate-tenant-key', express.json(), async (req, res) => {
+    const uid = req.beeflow?.user?.uid || 'unknown';
+    console.log(`[Setup] tenant-key rotation requested by uid=${uid}`);
+    try {
+        await bootstrap.invalidateAndRebootstrap();
+        console.log(`[Setup] tenant-key rotated by uid=${uid} — org ${config.organizationId}`);
+        res.json({
+            ok: true,
+            organizationId: config.organizationId,
+            tenantKeyFingerprint: crypto.createHash('sha256')
+                .update(String(config.tenantKey))
+                .digest('hex')
+                .slice(0, 16),
+        });
+    } catch (err) {
+        console.warn(`[Setup] tenant-key rotation FAILED for uid=${uid}: ${err.message}`);
+        res.status(502).json({
+            ok: false,
+            error: err.message,
+            remediation: err.remediation || 'Check connector logs for the SaaS response, then retry.',
+        });
+    }
+});
+
 // One-shot diagnostic: ask the SaaS what it has stored for *this* NC
 // instance and cross-check with our local cached tenant key. Use this when
 // /api/* returns "no matching tenant key" so we can pinpoint whether the

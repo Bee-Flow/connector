@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.14] - 2026-05-27
+
+### Changed
+- App Store metadata: temporarily removed `BEEFLOW_NC_PUBLIC_URL` and `BEEFLOW_PAIRING_CODE` from the `environment-variables` block in info.xml to isolate the cause of the persistent apps.nextcloud.com HTTP 500 on release submission (v0.1.10 with these absent registered fine; v0.1.11 onwards with them present consistently 500'd). The connector itself still reads these env vars at runtime — admins who need them can set them via the AppAPI deploy daemon's container env until they're re-added to the manifest.
+
 ## [0.1.13] - 2026-05-26
 
 ### Changed

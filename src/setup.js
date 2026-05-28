@@ -108,7 +108,8 @@ router.get('/diagnostics', (req, res) => {
 
     const hasTenantKey = !!config.tenantKey;
     let state = 'ok';
-    if (!hasTenantKey && pending && pending.status === 'pending') state = 'awaiting_admin_approval';
+    if (!hasTenantKey && pending && pending.status === 'awaiting_email_verification') state = 'awaiting_email_verification';
+    else if (!hasTenantKey && pending && pending.status === 'pending') state = 'awaiting_admin_approval';
     else if (!hasTenantKey && lastError && lastError.status === 'failed') state = 'failed';
     else if (!hasTenantKey) state = 'initialising';
 
@@ -118,7 +119,17 @@ router.get('/diagnostics', (req, res) => {
         apiBaseUrl: config.apiBaseUrl,
         organizationId: config.organizationId || null,
         ncInstanceId: config.ncInstanceId || null,
-        pending: pending ? {
+        // Non-sensitive details for the in-app verification screen. The pendingId
+        // is deliberately NOT exposed — the browser only ever sends the code to
+        // the connector-owned /setup/verify-email-code route, which uses the
+        // connector's own stored pending state.
+        verification: (pending && pending.status === 'awaiting_email_verification') ? {
+            maskedEmail: pending.maskedEmail || null,
+            expiresAt: pending.expiresAt || null,
+            organizationName: pending.organizationName || null,
+            emailSent: pending.emailSent !== false,
+        } : null,
+        pending: (pending && pending.status === 'pending') ? {
             pendingId: pending.pendingId,
             expiresAt: pending.expiresAt,
         } : null,
@@ -270,6 +281,52 @@ router.post('/apply-pairing-code', express.json(), async (req, res) => {
             error: err.message,
             remediation: err.remediation || 'The pairing code may be expired or already redeemed. Generate a new one in your Bee Flow admin panel and try again.',
         });
+    }
+});
+
+// Confirm the emailed verification code, entered by the admin in the embedded
+// Bee Flow view. Connector-owned (works before a tenant key exists) and reached
+// only through NC's AppAPI proxy, so the caller is an authenticated NC user; the
+// emailed 6-digit code (attempt-capped + rate-limited on the SaaS) is the proof
+// of authority. On success the connector caches the tenant key and the SPA can
+// reload into the full app.
+router.post('/verify-email-code', express.json(), async (req, res) => {
+    const code = String(req.body?.code || '').trim();
+    if (!/^\d{6}$/.test(code)) {
+        return res.status(400).json({ ok: false, code: 'invalid_code', error: 'Enter the 6-digit code from the email.' });
+    }
+    const uid = req.beeflow?.user?.uid || 'unknown';
+    try {
+        const result = await bootstrap.submitVerificationCode(code);
+        console.log(`[Setup] email verification confirmed by uid=${uid} — org ${result.organizationId}`);
+        return res.json({ ok: true, organizationId: result.organizationId, organizationName: result.organizationName });
+    } catch (err) {
+        const status = err.code === 'no_pending' ? 409
+            : err.status === 410 ? 410
+            : err.status === 429 ? 429
+            : err.status === 404 ? 404
+            : (err.status && err.status >= 500) || err.code === 'saas_unreachable' ? 502
+            : 400;
+        return res.status(status).json({
+            ok: false,
+            code: err.code || 'verify_failed',
+            error: err.message,
+            ...(typeof err.attemptsLeft === 'number' ? { attemptsLeft: err.attemptsLeft } : {}),
+        });
+    }
+});
+
+// Re-send the verification code to the same admin mailbox.
+router.post('/resend-email-code', express.json(), async (req, res) => {
+    try {
+        const result = await bootstrap.resendVerificationCode();
+        return res.json({ ok: true, maskedEmail: result.maskedEmail, expiresAt: result.expiresAt, emailSent: result.emailSent });
+    } catch (err) {
+        const status = err.code === 'no_pending' ? 409
+            : err.status === 410 ? 410
+            : err.status === 429 ? 429
+            : 502;
+        return res.status(status).json({ ok: false, code: err.code || 'resend_failed', error: err.message });
     }
 });
 

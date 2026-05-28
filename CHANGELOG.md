@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.22] - 2026-05-28
+
+### Added
+- Pairing with an existing Bee Flow organisation now completes entirely inside Nextcloud. When the Nextcloud admin's email domain matches an existing organisation, Bee Flow emails a 6-digit verification code that the admin enters in the embedded app to confirm the link — no external Bee Flow login or separate web page. Installs whose admin-email domain doesn't match any organisation continue to auto-create a fresh organisation with no prompt. The code is single-use, time-limited and attempt-capped; free webmail domains (gmail.com, outlook.com, …) never auto-match an unrelated organisation.
+
 ## [0.1.21] - 2026-05-28
 
 ### Fixed

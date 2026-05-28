@@ -62,7 +62,7 @@ async function readPendingFile() {
     try {
         const raw = await fs.readFile(p, 'utf8');
         const parsed = JSON.parse(raw);
-        if (parsed?.pendingId && parsed?.pollUrl) return parsed;
+        if (parsed?.pendingId && (parsed?.pollUrl || parsed?.verifyUrl)) return parsed;
     } catch { /* missing */ }
     return null;
 }
@@ -406,6 +406,91 @@ async function pollPendingBinding(pending) {
     await deletePendingFile();
 }
 
+// Resolve the in-flight verification pending from memory (preferred) or disk.
+async function currentVerificationPending() {
+    if (pendingState && pendingState.status === 'awaiting_email_verification') return pendingState;
+    const fromDisk = await readPendingFile();
+    if (fromDisk && (fromDisk.kind === 'verification' || fromDisk.verifyUrl)) return fromDisk;
+    return null;
+}
+
+// Submit the emailed code to the SaaS. On success the tenant key is cached and
+// the connector becomes fully operational. Throws a structured error (with
+// `code` and, for a wrong code, `attemptsLeft`) the SPA can render. Called from
+// the connector-owned /setup/verify-email-code route.
+async function submitVerificationCode(code) {
+    const pending = await currentVerificationPending();
+    if (!pending || !pending.verifyUrl) {
+        const e = new Error('No pending Nextcloud verification to confirm');
+        e.code = 'no_pending';
+        throw e;
+    }
+    let res;
+    try {
+        res = await fetch(`${config.apiBaseUrl}${pending.verifyUrl}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: String(code || '').trim() }),
+            signal: AbortSignal.timeout(15_000),
+        });
+    } catch (e) {
+        const err = new Error(`Could not reach Bee Flow to verify the code: ${e.message}`);
+        err.code = 'saas_unreachable';
+        throw err;
+    }
+    const json = await res.json().catch(() => ({}));
+    if (res.ok && json.tenantKey) {
+        await applyTenantKeyResponse(json, pending.ncInstanceId);
+        await clearErrorFile();
+        console.log(`[Bootstrap] Email verification succeeded — bound to org ${json.organizationId} (${json.organizationName})`);
+        return { ok: true, organizationId: json.organizationId, organizationName: json.organizationName };
+    }
+    const err = new Error(json.error || `Verification failed (HTTP ${res.status})`);
+    err.code = json.code || 'verify_failed';
+    err.status = res.status;
+    if (typeof json.attemptsLeft === 'number') err.attemptsLeft = json.attemptsLeft;
+    throw err;
+}
+
+// Ask the SaaS to email a fresh code (attempts reset, TTL extended). Updates the
+// stored pending state with the new expiry. Called from /setup/resend-email-code.
+async function resendVerificationCode() {
+    const pending = await currentVerificationPending();
+    if (!pending || !pending.resendUrl) {
+        const e = new Error('No pending Nextcloud verification to resend');
+        e.code = 'no_pending';
+        throw e;
+    }
+    let res;
+    try {
+        res = await fetch(`${config.apiBaseUrl}${pending.resendUrl}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: AbortSignal.timeout(15_000),
+        });
+    } catch (e) {
+        const err = new Error(`Could not reach Bee Flow to resend the code: ${e.message}`);
+        err.code = 'saas_unreachable';
+        throw err;
+    }
+    const json = await res.json().catch(() => ({}));
+    if (res.ok && json.ok) {
+        const updated = {
+            ...pending,
+            expiresAt: json.expiresAt || pending.expiresAt,
+            maskedEmail: json.maskedEmail || pending.maskedEmail,
+            emailSent: json.emailSent !== false,
+        };
+        pendingState = { status: 'awaiting_email_verification', ...updated };
+        await writePendingFile(updated);
+        return { ok: true, maskedEmail: updated.maskedEmail, expiresAt: updated.expiresAt, emailSent: updated.emailSent };
+    }
+    const err = new Error(json.error || `Resend failed (HTTP ${res.status})`);
+    err.code = json.code || 'resend_failed';
+    err.status = res.status;
+    throw err;
+}
+
 async function bootstrapIfNeeded() {
     if (!config.isAutoTenantKey) {
         console.log('[Bootstrap] BEEFLOW_TENANT_KEY explicitly set, skipping auto-bootstrap');
@@ -434,7 +519,16 @@ async function bootstrapIfNeeded() {
     const existingPending = await readPendingFile();
     if (existingPending) {
         const expiresMs = new Date(existingPending.expiresAt).getTime();
-        if (Number.isFinite(expiresMs) && Date.now() < expiresMs + POLL_GRACE_AFTER_EXPIRY_MS) {
+        const stillValid = Number.isFinite(expiresMs) && Date.now() < expiresMs + POLL_GRACE_AFTER_EXPIRY_MS;
+        if (stillValid && (existingPending.kind === 'verification' || existingPending.verifyUrl)) {
+            // Email-code verification waits on the admin entering the code in
+            // the embedded view — restore the state so the SPA re-renders the
+            // verification screen. No polling: the user action drives it.
+            pendingState = { status: 'awaiting_email_verification', ...existingPending };
+            console.log(`[Bootstrap] Resuming email verification ${existingPending.pendingId}`);
+            return;
+        }
+        if (stillValid && existingPending.pollUrl) {
             console.log(`[Bootstrap] Resuming pending binding ${existingPending.pendingId} (awaiting admin approval)`);
             pollPendingBinding(existingPending).catch(e => console.warn('[Bootstrap] Pending poll crashed:', e.message));
             return;
@@ -507,10 +601,37 @@ async function bootstrapIfNeeded() {
     }
 
     if (res.status === 202) {
-        // Adoption candidate — admin approval required. Stash poll state
-        // and let the connector continue running; the poller will fill in
-        // the tenant key once the admin approves in the SaaS UI.
         const json = await res.json();
+        // Same-domain match — confirm via an emailed code entered in the
+        // embedded view. No polling: the connector waits for the admin to
+        // submit the code through /setup/verify-email-code, which calls
+        // submitVerificationCode() below.
+        if (json.code === 'email_verification_required') {
+            if (!json.pendingId || !json.verifyUrl) {
+                const e = new Error('Bootstrap verification response missing pendingId/verifyUrl');
+                await recordBootstrapError(e, 'saas_response');
+                throw e;
+            }
+            const pending = {
+                kind: 'verification',
+                pendingId: json.pendingId,
+                verifyUrl: json.verifyUrl,
+                resendUrl: json.resendUrl,
+                expiresAt: json.expiresAt,
+                maskedEmail: json.maskedEmail || null,
+                organizationName: json.organizationName || null,
+                emailSent: json.emailSent !== false,
+                ncInstanceId: caps.instanceId,
+            };
+            await writePendingFile(pending);
+            pendingState = { status: 'awaiting_email_verification', ...pending };
+            await clearErrorFile(); // verification is a valid in-flight state
+            console.log(`[Bootstrap] Awaiting email verification (pending ${json.pendingId}, code sent to ${json.maskedEmail})`);
+            return;
+        }
+        // Adoption candidate — admin approval required (legacy). Stash poll
+        // state and let the connector continue running; the poller fills in
+        // the tenant key once the admin approves in the SaaS UI.
         if (!json.pendingId || !json.pollUrl) {
             const e = new Error('Bootstrap pending response missing pendingId/pollUrl');
             await recordBootstrapError(e, 'saas_response');
@@ -625,4 +746,6 @@ module.exports = {
     getLastErrorState,
     remediationFor,
     invalidateAndRebootstrap,
+    submitVerificationCode,
+    resendVerificationCode,
 };

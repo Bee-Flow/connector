@@ -33,6 +33,14 @@ function registerLifecycle(app) {
             lastError = bs.getLastErrorState?.() || null;
         } catch (_) { /* tolerate during module init */ }
 
+        if (pending && pending.status === 'awaiting_email_verification') {
+            return res.json({
+                status: 'ok',
+                bootstrap: 'awaiting_email_verification',
+                expiresAt: pending.expiresAt,
+            });
+        }
+
         if (pending && pending.status === 'pending') {
             return res.json({
                 status: 'ok',

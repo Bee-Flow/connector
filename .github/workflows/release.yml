@@ -4,6 +4,13 @@ name: release
 # been extracted to its own public repo and the Nextcloud signing cert has
 # been merged into github.com/nextcloud/app-certificate-requests.
 #
+# Build strategy: each architecture is built NATIVELY in parallel — amd64 on
+# ubuntu-latest, arm64 on the free ubuntu-24.04-arm runner (free because this
+# repo is public). No QEMU emulation. The per-arch images are pushed by digest
+# and stitched into a multi-arch manifest list in the `merge` job. Per-platform
+# GHA build cache keeps the expensive spa-build stage (hive clone + npm ci +
+# Vite build) warm across releases.
+#
 # Required GitHub Actions secrets (configure on the `release` environment):
 #   NC_APP_SIGNING_KEY  — RSA private key matching the merged cert
 #   NCAPPSTORE_TOKEN    — apps.nextcloud.com API token (Settings → API tokens)
@@ -23,11 +30,15 @@ env:
   # Must match <docker-install><image> in appinfo/info.xml so AppAPI pulls
   # the same image admins see referenced in the manifest.
   IMAGE: ghcr.io/bee-flow/connector
+  HIVE_REPO: Bee-Flow/hive
 
 jobs:
-  build-and-publish:
+  # ── prepare: resolve version + frontend ref, fail fast on metadata drift ──
+  prepare:
     runs-on: ubuntu-latest
-    environment: release
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      hive_sha: ${{ steps.hive.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,8 +63,100 @@ jobs:
             exit 1
           fi
 
-      - name: Set up QEMU (multi-arch emulation)
-        uses: docker/setup-qemu-action@v3
+      # Resolve hive main → an immutable commit SHA, ONCE. Both arch builds and
+      # the SBOM then reference the identical frontend commit, and the GHA cache
+      # key for the spa-build stage is stable for the whole release (pinning to
+      # the moving `main` ref instead would defeat reproducibility).
+      - name: Resolve hive main SHA
+        id: hive
+        run: |
+          sha=$(git ls-remote "https://github.com/${HIVE_REPO}.git" refs/heads/main | cut -f1)
+          if [ -z "$sha" ]; then echo "::error::could not resolve ${HIVE_REPO} main"; exit 1; fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "hive main → $sha"
+
+  # ── build: one native runner per arch, push by digest (no tags) ──
+  build:
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      # Don't let one arch flaking kill an already-finished arch; `merge`
+      # requires both via `needs`, so a partial failure still blocks release.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      # No setup-qemu-action: each job runs on its own native architecture.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          # Pin the frontend to the exact hive commit resolved in `prepare`.
+          build-args: |
+            HIVE_REF=${{ needs.prepare.outputs.hive_sha }}
+          cache-from: type=gha,scope=connector-${{ matrix.arch }}
+          cache-to: type=gha,scope=connector-${{ matrix.arch }},mode=max
+          # Reproducible builds matter for App Store audits.
+          provenance: true
+          sbom: true
+          # Push by digest only — no tags. Each arch produces an untagged image
+          # in GHCR; the merge job stitches them into the tagged manifest list.
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── merge: assemble the multi-arch manifest, then publish once ──
+  merge:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -65,31 +168,29 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push multi-arch image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          # amd64 covers most NC servers; arm64 covers Raspberry Pi / Apple
-          # Silicon / Graviton. App Store reviewers test both — image must
-          # support both or the listing review fails.
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ${{ env.IMAGE }}:${{ steps.ver.outputs.version }}
-            ${{ env.IMAGE }}:latest
-          # Pin the frontend to hive `main`. Hive has its own version
-          # lifecycle (1.x in agent-hub/package.json) decoupled from this
-          # connector's v0.1.x tags; trying to share tag strings caused
-          # hive release-workflow failures (`Tag X does not match
-          # package.json version Y`). For App Store audits the connector
-          # image is still reproducible because Docker buildx records the
-          # resolved hive commit SHA in the SBOM step below.
-          build-args: |
-            HIVE_REF=main
-          # Reproducible builds matter for App Store audits.
-          provenance: true
-          sbom: true
+      # Stitch the per-arch digests into one multi-arch manifest list, tagged
+      # :<version> and :latest. AppAPI pulls :latest (info.xml
+      # <image-tag>latest</image-tag>), so :latest MUST cover both arches.
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.IMAGE }}:${{ needs.prepare.outputs.version }} \
+            -t ${{ env.IMAGE }}:latest \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+
+      # Fail loudly if a platform is missing rather than silently shipping a
+      # single-arch :latest that breaks arm64 installs.
+      - name: Inspect manifest
+        run: |
+          docker buildx imagetools inspect ${{ env.IMAGE }}:${{ needs.prepare.outputs.version }}
+          for plat in linux/amd64 linux/arm64; do
+            if ! docker buildx imagetools inspect ${{ env.IMAGE }}:${{ needs.prepare.outputs.version }} \
+                --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}' \
+                | grep -qw "$plat"; then
+              echo "::error::manifest is missing $plat"; exit 1
+            fi
+          done
 
       - name: Build app tarball
         run: |

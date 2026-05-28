@@ -19,10 +19,10 @@
 #     docker build --build-arg HIVE_REPO=tomkooy/bee-flow-fork \
 #                  --build-arg HIVE_REF=feature/foo .
 
-# ── Stage 1: build the React SPA from Bee-Flow/hive ──────────────
-FROM node:22-alpine AS spa-build
+# ── Stage 1a: fetch the hive source at the pinned ref ────────────
+FROM node:22-alpine AS hive-src
 
-# git is enough — no SSH client, no credentials. Anonymous HTTPS clone
+# git is enough — no SSH client, no credentials. Anonymous HTTPS fetch
 # works once Bee-Flow/hive is public. While the repo is still private
 # you can supply a token via BuildKit secret:
 #   echo $GITHUB_TOKEN | docker build --secret id=gh_token,src=- ...
@@ -33,18 +33,36 @@ ARG HIVE_REPO=Bee-Flow/hive
 ARG HIVE_REF=main
 
 WORKDIR /spa
+# init+fetch+checkout (not `git clone --branch`): --branch only accepts a
+# branch or tag, but releases pin HIVE_REF to a commit SHA. GitHub's anonymous
+# HTTPS transport allows fetching an arbitrary SHA, and this form works equally
+# for a branch (the `main` default) or a tag.
 RUN --mount=type=secret,id=gh_token,required=false \
     if [ -s /run/secrets/gh_token ]; then \
         TOKEN=$(cat /run/secrets/gh_token); \
-        git clone --depth=1 --branch=${HIVE_REF} \
-            "https://x-access-token:${TOKEN}@github.com/${HIVE_REPO}.git" . ; \
+        REMOTE="https://x-access-token:${TOKEN}@github.com/${HIVE_REPO}.git"; \
     else \
-        git clone --depth=1 --branch=${HIVE_REF} \
-            "https://github.com/${HIVE_REPO}.git" . ; \
-    fi \
+        REMOTE="https://github.com/${HIVE_REPO}.git"; \
+    fi; \
+    git init -q . \
+    && git remote add origin "$REMOTE" \
+    && git fetch --depth=1 origin "${HIVE_REF}" \
+    && git checkout -q FETCH_HEAD \
     && rm -rf .git
 
+# ── Stage 1b: build the React SPA from the fetched source ────────
+FROM node:22-alpine AS spa-build
+WORKDIR /spa
+
+# Lockfile-only layer first: `npm ci` re-runs ONLY when hive's dependencies
+# change, not on every hive source commit. Releases pin HIVE_REF to a per-release
+# SHA, so the source layer below busts whenever hive `main` moves — but this
+# (slow) dependency layer stays cached as long as the lockfiles are identical.
+COPY --from=hive-src /spa/package.json /spa/package-lock.json ./
 RUN npm ci --no-audit --no-fund
+
+# Bring in the rest of the source (cheap layer; busts on every hive commit).
+COPY --from=hive-src /spa/ ./
 
 # When the SPA runs inside Nextcloud, all its API calls must traverse NC's
 # signed-proxy route (/index.php/apps/app_api/proxy/<app_id>/...). Setting

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.20] - 2026-05-28
+
+### Changed
+- Build pipeline only (no functional change to the app): the image is now built natively per architecture (no QEMU emulation) with per-platform layer caching, and the bundled frontend is pinned to an exact commit per release for reproducible builds.
+
 ## [0.1.19] - 2026-05-28
 
 ### Changed

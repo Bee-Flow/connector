@@ -162,26 +162,47 @@ async function fetchAdminUidsViaGroup() {
     } catch { return null; }
 }
 
+// Thrown when an admin user exists but none has an email address. A real
+// email is load-bearing: it's how the SaaS links this NC to the installer's
+// Bee Flow account (email-match adoption) and how the same person bypasses the
+// onboarding gate when they open the SPA. Synthesising `<uid>@example.local`
+// silently creates an orphan org that nobody can actually use, so we fail
+// loudly with actionable remediation instead.
+function adminNoEmailError() {
+    const e = new Error('The Nextcloud admin user has no email address configured');
+    e.code = 'admin_email_missing';
+    return e;
+}
+
+function pickAdmin(uid, info) {
+    return {
+        uid,
+        email: info.email,
+        displayName: info.displayname || info['display-name'] || uid,
+    };
+}
+
 async function fetchFirstAdmin() {
     // Fast path: ask NC for the admin-group membership directly. One round-
     // trip instead of `fetchAllUids` + N × `fetchUserInfo` (which on a 100-
-    // user instance was up to 1000s).
+    // user instance was up to 1000s). Return the first admin that has a real
+    // email — never synthesise one.
     const adminUids = await fetchAdminUidsViaGroup();
     if (adminUids) {
-        const uid = adminUids[0];
-        const info = await fetchUserInfo(uid);
-        return {
-            uid,
-            email: info?.email || `${uid}@example.local`,
-            displayName: info?.displayname || info?.['display-name'] || uid,
-        };
+        for (const uid of adminUids) {
+            const info = await fetchUserInfo(uid);
+            if (info?.email) return pickAdmin(uid, info);
+        }
+        // Admin group resolved but no member has an email — can't reliably
+        // link to a Bee Flow account.
+        throw adminNoEmailError();
     }
 
     // Slow-path fallback: AppAPI version doesn't expose /cloud/groups/admin/users.
     // Walk the user list in parallel batches of 5 instead of one-by-one.
     const uids = await fetchAllUids();
     if (uids.length === 0) throw new Error('No NC users visible to the ExApp');
-    let firstAny = null;
+    let sawAdminWithoutEmail = false;
     const BATCH_SIZE = 5;
     for (let i = 0; i < uids.length; i += BATCH_SIZE) {
         const batch = uids.slice(i, i + BATCH_SIZE);
@@ -190,27 +211,15 @@ async function fetchFirstAdmin() {
         ));
         for (const { uid, info } of infos) {
             if (!info) continue;
-            if (!firstAny) firstAny = { uid, info };
             const groups = info.groups || [];
             if (groups.includes('admin')) {
-                return {
-                    uid,
-                    email: info.email || `${uid}@example.local`,
-                    displayName: info.displayname || info['display-name'] || uid,
-                };
+                if (info.email) return pickAdmin(uid, info);
+                sawAdminWithoutEmail = true;
             }
         }
     }
-    // Fallback: no admin group reported — use first user. This is a fresh
-    // install corner case; the chosen user becomes the Bee Flow org_admin.
-    if (firstAny) {
-        return {
-            uid: firstAny.uid,
-            email: firstAny.info.email || `${firstAny.uid}@example.local`,
-            displayName: firstAny.info.displayname || firstAny.info['display-name'] || firstAny.uid,
-        };
-    }
-    throw new Error('Could not determine NC admin from user list');
+    if (sawAdminWithoutEmail) throw adminNoEmailError();
+    throw new Error('Could not determine an NC admin with an email address');
 }
 
 // Pending-state runtime visibility — heartbeat.js reads this to surface
@@ -231,6 +240,8 @@ const REMEDIATION = {
         'Bee Flow Cloud cannot reach this Nextcloud for user-sync callbacks. Set BEEFLOW_NC_PUBLIC_URL to your public NC URL, or switch to self-hosted mode via the setup picker.',
     admin_lookup_failed:
         'No admin user found in this Nextcloud. Add one with `occ user:add --group admin <uid>` then redeploy the connector.',
+    admin_email_missing:
+        'Your Nextcloud admin user has no email address. Set an email on the admin account (Settings → Users) and redeploy the connector, or bind this Nextcloud to an existing Bee Flow organisation with a pairing code.',
     saas_auth_rejected:
         'The Bee Flow service rejected our credentials. Check that this NC instance has not been disabled in your Bee Flow organisation.',
     tenant_already_provisioned:
@@ -291,6 +302,10 @@ const SAAS_CODE_TO_CATEGORY = {
 // `unknown` — still surfaced, just without specific remediation copy.
 function categoriseError(err, phase) {
     if (err?.code && SAAS_CODE_TO_CATEGORY[err.code]) return SAAS_CODE_TO_CATEGORY[err.code];
+    // Connector-local codes (set before the SaaS POST) take precedence over the
+    // phase-based buckets below — otherwise phase==='admin' would mislabel a
+    // missing-email failure as a generic admin_lookup_failed.
+    if (err?.code === 'admin_email_missing') return 'admin_email_missing';
     const msg = String(err?.message || err || '');
     if (phase === 'capabilities' || /NC capabilities/i.test(msg)) return 'nc_not_publicly_reachable';
     if (phase === 'admin' || /admin/i.test(msg) && /No NC users|admin from user list/i.test(msg)) return 'admin_lookup_failed';

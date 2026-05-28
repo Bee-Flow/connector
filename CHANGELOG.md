@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.21] - 2026-05-28
+
+### Fixed
+- Auto-pairing no longer creates an unusable, orphaned Bee Flow organisation when the Nextcloud admin account has no email address. The connector now requires a real admin email (so the install links to the correct Bee Flow account) and, if none is set, stops with a clear, actionable message instead of provisioning a broken org. To attach a Nextcloud to an existing Bee Flow organisation, use a pairing code.
+
 ## [0.1.20] - 2026-05-28
 
 ### Changed

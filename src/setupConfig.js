@@ -7,7 +7,7 @@
  * Priority for the connector's effective `apiBaseUrl`:
  *   1. Explicit BEEFLOW_API_BASE_URL env (set via `occ app_api:app:setenv`)
  *   2. setup-config.json `apiBaseUrl` written by the in-app picker
- *   3. https://server.beeflow.nl (Bee Flow Cloud)
+ *   3. https://server.dev.beeflow.ai (Bee Flow Cloud)
  *
  * The env-var explicit override stays first so that an admin who locks the
  * value via AppAPI can't be silently flipped from the in-app picker.
@@ -18,7 +18,7 @@ const path = require('path');
 
 const FILE_NAME = 'setup-config.json';
 const VALID_MODES = ['cloud', 'self-hosted', 'custom'];
-const CLOUD_URL = 'https://server.beeflow.nl';
+const CLOUD_URL = 'https://server.dev.beeflow.ai';
 
 let cached = null;
 let storageDir = null;

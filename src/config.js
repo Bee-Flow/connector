@@ -55,9 +55,9 @@ const config = {
     // Cache for auto-provisioned tenant key + org id. Written by bootstrap.js.
     organizationId: null,
     ncInstanceId: null,
-    // Override only for staging / on-prem. Production default points at our
-    // public API.
-    apiBaseUrl: (process.env.BEEFLOW_API_BASE_URL || 'https://server.beeflow.nl').replace(/\/+$/, ''),
+    // Override only for staging / on-prem. Default points at the Bee Flow dev
+    // environment.
+    apiBaseUrl: (process.env.BEEFLOW_API_BASE_URL || 'https://server.dev.beeflow.ai').replace(/\/+$/, ''),
 
     // One-shot pairing code for binding this NC to an existing Bee Flow org
     // (instead of creating a new one). Admin sets this via

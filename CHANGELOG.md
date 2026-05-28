@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.19] - 2026-05-28
+
+### Changed
+- Default Bee Flow API endpoint repointed from `server.beeflow.nl` to the dev environment `https://server.dev.beeflow.ai`. Affects the App Store env-var default (`BEEFLOW_API_BASE_URL`), the runtime fallback and the "Bee Flow Cloud" picker choice.
+
 ## [0.1.18] - 2026-05-27
 
 ### Added

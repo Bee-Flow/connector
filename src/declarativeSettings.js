@@ -31,7 +31,10 @@ const FORM_SCHEME = {
     section_id: 'ai', // Lives under /settings/admin/ai (Artificial Intelligence)
     storage_type: 'external',
     title: 'Bee Flow',
-    description: 'Choose between the hosted Bee Flow service (Cloud) and a self-hosted Bee Flow server. Changes apply within ~60s; the connector re-bootstraps the tenant key automatically.',
+    description: 'Choose between the hosted Bee Flow service (Cloud) and your own self-hosted Bee Flow server. '
+        + 'To self-host, run a Bee Flow server (see beeflow.nl/docs → Self-hosting; e.g. ./selfhost.sh) and enter its URL below. '
+        + 'Changes apply within ~60s; the connector re-bootstraps the tenant key automatically. '
+        + 'Licence keys that unlock paid features are entered inside Bee Flow (Admin → Licence), not here.',
     doc_url: 'https://beeflow.nl',
     fields: [
         {
@@ -48,7 +51,9 @@ const FORM_SCHEME = {
         {
             id: FIELD_URL,
             title: 'Self-hosted API URL',
-            description: 'Only used when "Self-hosted server" is selected. Example: http://bee-flow-server:3001',
+            description: 'Only used when "Self-hosted server" is selected. The base URL of your Bee Flow server '
+                + '(the SERVER address, not the web UI). Must be reachable from this Nextcloud. '
+                + 'Example: https://bee-flow.your-domain.com or http://bee-flow-server:3001',
             type: 'url',
             default: '',
             placeholder: 'https://bee-flow.your-domain.com',

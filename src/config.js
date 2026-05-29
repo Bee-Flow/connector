@@ -57,7 +57,7 @@ const config = {
     ncInstanceId: null,
     // Override only for staging / on-prem. Default points at the Bee Flow dev
     // environment.
-    apiBaseUrl: (process.env.BEEFLOW_API_BASE_URL || 'https://server.dev.beeflow.nl').replace(/\/+$/, ''),
+    apiBaseUrl: (process.env.BEEFLOW_API_BASE_URL || 'https://server.beeflow.nl').replace(/\/+$/, ''),
 
     // One-shot pairing code for binding this NC to an existing Bee Flow org
     // (instead of creating a new one). Admin sets this via

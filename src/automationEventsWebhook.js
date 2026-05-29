@@ -53,6 +53,24 @@ function mapEvent(eventType) {
     return null;
 }
 
+// mapEvent only sees the class name, but some classes are coarser than our
+// trigger taxonomy. This second pass inspects the payload to refine a generic
+// Deck CardUpdatedEvent ('deck.card.changed') into the higher-level events the
+// templates subscribe to. Best-effort: a single NC event may not carry prior
+// state, so 'moved' only fires when both the old and new stack id are present;
+// 'completed' is keyed off the archived flag (the common "done" signal).
+function refineEvent(event, raw) {
+    if (event === 'deck.card.changed') {
+        const card = raw?.card || raw?.cardData || {};
+        const archived = !!(card.archived ?? raw?.archived);
+        if (archived) return 'deck.card.completed';
+        const from = raw?.fromStackId ?? raw?.oldStackId ?? null;
+        const to = card.stackId ?? raw?.toStackId ?? raw?.stackId ?? null;
+        if (from != null && to != null && String(from) !== String(to)) return 'deck.card.moved';
+    }
+    return event;
+}
+
 // Best-effort actor extraction. Different NC event classes hand the user
 // id back in different shapes; tolerant parser keeps the wiring simple.
 function extractActor(payload) {
@@ -79,9 +97,25 @@ function extractFileFields(payload) {
 function normalisePayload(event, raw) {
     const actor = extractActor(raw);
     const datetime = raw?.datetime || raw?.timestamp || new Date().toISOString();
-    if (event.startsWith('file.') || event.startsWith('share.')) {
+    if (event.startsWith('file.')) {
         const f = extractFileFields(raw);
         return { ...f, actor, datetime, link: raw?.link || null };
+    }
+    if (event.startsWith('share.')) {
+        const f = extractFileFields(raw);
+        const share = raw?.share || raw?.shareData || raw || {};
+        const stRaw = share.shareType ?? share.share_type ?? raw?.shareType ?? null;
+        // NC share_type ints → the string the matcher (matchNextcloudShareGenericFilter)
+        // and the UI filter both use.
+        const ST = { 0: 'user', 1: 'group', 2: 'usergroup', 3: 'link', 4: 'email', 6: 'federated', 7: 'federated_group', 9: 'circle', 10: 'room', 11: 'deck', 12: 'sciencemesh' };
+        const shareType = typeof stRaw === 'number' ? (ST[stRaw] || String(stRaw)) : (stRaw || null);
+        return {
+            ...f,
+            shareId: share.id ?? raw?.shareId ?? raw?.id ?? null,
+            shareType,
+            actor, datetime,
+            link: raw?.link || share.token || null,
+        };
     }
     if (event.startsWith('calendar.')) {
         const e = raw?.event || raw?.calendarObject || {};
@@ -100,8 +134,10 @@ function normalisePayload(event, raw) {
             cardId: card.id || raw?.cardId || null,
             boardId: card.boardId || raw?.boardId || null,
             stackId: card.stackId || raw?.stackId || null,
+            fromStackId: raw?.fromStackId ?? raw?.oldStackId ?? null,
+            toStackId: card.stackId ?? raw?.toStackId ?? raw?.stackId ?? null,
             title: card.title || raw?.title || '',
-            archived: !!card.archived,
+            archived: !!(card.archived ?? raw?.archived),
             actor, datetime,
         };
     }
@@ -122,7 +158,7 @@ const router = express.Router();
 
 router.post('/webhook/automation', express.json({ limit: '512kb' }), async (req, res) => {
     const eventType = req.body?.eventType || req.body?.event;
-    const event = mapEvent(eventType);
+    const event = refineEvent(mapEvent(eventType), req.body);
     if (!event) {
         // Still 200 so NC doesn't keep retrying classes we don't care about.
         return res.json({ ignored: eventType });

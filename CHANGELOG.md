@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.27] - 2026-05-29
+
+### Changed
+- Default **Bee Flow Cloud** endpoint is now the production service `https://server.beeflow.nl` (was the development server `https://server.dev.beeflow.nl`). This affects the App Store env-var default (`BEEFLOW_API_BASE_URL`), the runtime fallback, the "Bee Flow Cloud" choice in the Nextcloud admin settings picker, and the `/setup` page. Installs that pinned `BEEFLOW_API_BASE_URL` or chose a self-hosted server are unaffected.
+
 ## [0.1.26] - 2026-05-29
 
 ### Fixed

@@ -52,7 +52,7 @@ Full privacy policy: <https://beeflow.nl/privacy>.
 
 A free **Community tier** (single user, basic chat, local knowledge base) is fully functional with no license key. To unlock automations, multi-user, DLP and other premium features, paste a license key from <https://beeflow.nl/pricing> into Settings → Organisation → License & Usage.
         ]]></description>
-    <version>0.1.26</version>
+    <version>0.1.27</version>
     <licence>AGPL-3.0-or-later</licence>
     <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.nl/">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>
@@ -130,7 +130,7 @@ A free **Community tier** (single user, basic chat, local knowledge base) is ful
                 <name>BEEFLOW_API_BASE_URL</name>
                 <display-name>Bee Flow API base URL (optional)</display-name>
                 <description>Where the connector sends API calls. Default points at the hosted Bee Flow service. Override only for staging or fully on-prem deployments.</description>
-                <default>https://server.dev.beeflow.nl</default>
+                <default>https://server.beeflow.nl</default>
             </variable>
             <variable>
                 <name>BEEFLOW_NC_PUBLIC_URL</name>

@@ -178,18 +178,46 @@ async function registerEmbedScript() {
 
 // Canonical list of events the connector subscribes to.
 //
-// Trimmed to the 5 user/group sync events with active SaaS-side consumers
-// (server/routes/webhooks/ncEvents.js → ncUserGroupSync). Automation /
-// files / calendar / deck / talk events were removed — their consumer
-// (server/routes/webhooks/automationEvents.js) doesn't exist yet, and
-// each subscription costs an OCS round-trip on every install. Re-add
-// individual events when their SaaS-side handler ships.
+// Two families:
+//   1. User/group sync (actionHandler webhook/nc-events → eventsWebhook.js →
+//      ncUserGroupSync). Index 0 MUST stay a user/group event — it's used as
+//      the capability probe by registerEventListeners().
+//   2. Automation event-bridge (actionHandler webhook/automation →
+//      automationEventsWebhook.js → SaaS POST /api/automation/events/nextcloud,
+//      which IS now live — server/routes/automation.js). Without these, no
+//      push-based NC trigger (share/calendar/deck/talk, file mutations) can
+//      fire; only the activity-feed pollers work.
+//
+// Class names are best-effort across NC/app versions. registerEventListeners()
+// fans out with per-event error tolerance, so a class an installed NC doesn't
+// recognise is skipped (counted as failed) without affecting the rest.
+// VERIFY the Deck/Talk class names on the target NC/app versions before
+// relying on push for those — see NC-ROUTINES-REMEDIATION-PLAN.md (WS-3).
 const SUBSCRIBED_EVENTS = [
     { eventType: 'OCP\\User\\Events\\UserCreatedEvent', actionHandler: 'webhook/nc-events' },
     { eventType: 'OCP\\User\\Events\\UserDeletedEvent', actionHandler: 'webhook/nc-events' },
     { eventType: 'OCP\\User\\Events\\UserChangedEvent', actionHandler: 'webhook/nc-events' },
     { eventType: 'OCP\\Group\\Events\\UserAddedEvent', actionHandler: 'webhook/nc-events' },
     { eventType: 'OCP\\Group\\Events\\UserRemovedEvent', actionHandler: 'webhook/nc-events' },
+    // ── Automation event-bridge → webhook/automation ──
+    // Files
+    { eventType: 'OCP\\Files\\Events\\Node\\NodeCreatedEvent', actionHandler: 'webhook/automation' },
+    { eventType: 'OCP\\Files\\Events\\Node\\NodeWrittenEvent', actionHandler: 'webhook/automation' },
+    { eventType: 'OCP\\Files\\Events\\Node\\NodeDeletedEvent', actionHandler: 'webhook/automation' },
+    { eventType: 'OCP\\Files\\Events\\Node\\NodeRenamedEvent', actionHandler: 'webhook/automation' },
+    // Shares
+    { eventType: 'OCP\\Share\\Events\\ShareCreatedEvent', actionHandler: 'webhook/automation' },
+    { eventType: 'OCP\\Share\\Events\\ShareDeletedEvent', actionHandler: 'webhook/automation' },
+    // Calendar (OCA\DAV)
+    { eventType: 'OCA\\DAV\\Events\\CalendarObjectCreatedEvent', actionHandler: 'webhook/automation' },
+    { eventType: 'OCA\\DAV\\Events\\CalendarObjectUpdatedEvent', actionHandler: 'webhook/automation' },
+    { eventType: 'OCA\\DAV\\Events\\CalendarObjectDeletedEvent', actionHandler: 'webhook/automation' },
+    // Deck (OCA\Deck) — CardUpdatedEvent is refined to completed/moved in the webhook
+    { eventType: 'OCA\\Deck\\Event\\CardCreatedEvent', actionHandler: 'webhook/automation' },
+    { eventType: 'OCA\\Deck\\Event\\CardUpdatedEvent', actionHandler: 'webhook/automation' },
+    { eventType: 'OCA\\Deck\\Event\\CardDeletedEvent', actionHandler: 'webhook/automation' },
+    // Talk (OCA\Talk / spreed)
+    { eventType: 'OCA\\Talk\\Events\\ChatMessageSentEvent', actionHandler: 'webhook/automation' },
 ];
 
 // Subscribe to NC user/group events so we can mirror them into Bee Flow

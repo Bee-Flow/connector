@@ -235,7 +235,7 @@ function getPendingState() { return pendingState; }
 // setup.js can both consume it without drifting.
 const REMEDIATION = {
     saas_unreachable:
-        'The Bee Flow service is not reachable from this Nextcloud. Test with `curl https://server.dev.beeflow.nl/api/health` from the connector container and whitelist that hostname in your egress firewall.',
+        'The Bee Flow service is not reachable from this Nextcloud. Test with `curl https://server.beeflow.nl/api/health` from the connector container and whitelist that hostname in your egress firewall.',
     nc_not_publicly_reachable:
         'Bee Flow Cloud cannot reach this Nextcloud for user-sync callbacks. Set BEEFLOW_NC_PUBLIC_URL to your public NC URL, or switch to self-hosted mode via the setup picker.',
     admin_lookup_failed:

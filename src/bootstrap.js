@@ -617,10 +617,10 @@ async function bootstrapIfNeeded() {
                 pendingId: json.pendingId,
                 verifyUrl: json.verifyUrl,
                 resendUrl: json.resendUrl,
+                retargetUrl: json.retargetUrl,
                 expiresAt: json.expiresAt,
                 maskedEmail: json.maskedEmail || null,
                 organizationName: json.organizationName || null,
-                emailSent: json.emailSent !== false,
                 ncInstanceId: caps.instanceId,
             };
             await writePendingFile(pending);
@@ -739,6 +739,58 @@ async function invalidateAndRebootstrap({ pairingCode } = {}) {
     }
 }
 
+// Is this NC uid in the admin group? Gates the in-app verification request so
+// only an admin can drive pairing.
+async function isNcAdmin(uid) {
+    try {
+        const info = await fetchUserInfo(uid);
+        const groups = info?.groups || [];
+        return Array.isArray(groups) && groups.includes('admin');
+    } catch { return false; }
+}
+
+// Send the verification code to the admin actually performing setup (the current
+// NC user in the embedded view) by re-pointing the pending binding at them — so
+// the code reaches the right person and they become the org admin on success.
+// Returns { maskedEmail, expiresAt, emailSent } or throws a structured error.
+async function requestVerificationCode({ uid, email, displayName }) {
+    const pending = await currentVerificationPending();
+    if (!pending) {
+        const e = new Error('No pending Nextcloud verification');
+        e.code = 'no_pending';
+        throw e;
+    }
+    const retargetUrl = pending.retargetUrl || `/auth/connector/bootstrap/pending/${pending.pendingId}/retarget`;
+    let res;
+    try {
+        res = await fetch(`${config.apiBaseUrl}${retargetUrl}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, uid, displayName }),
+            signal: AbortSignal.timeout(15_000),
+        });
+    } catch (e) {
+        const err = new Error(`Could not reach Bee Flow to send the code: ${e.message}`);
+        err.code = 'saas_unreachable';
+        throw err;
+    }
+    const json = await res.json().catch(() => ({}));
+    if (res.ok && json.ok) {
+        const updated = {
+            ...pending,
+            maskedEmail: json.maskedEmail || pending.maskedEmail,
+            expiresAt: json.expiresAt || pending.expiresAt,
+        };
+        pendingState = { status: 'awaiting_email_verification', ...updated };
+        await writePendingFile(updated);
+        return { ok: true, maskedEmail: updated.maskedEmail, expiresAt: updated.expiresAt, emailSent: json.emailSent !== false };
+    }
+    const err = new Error(json.error || `Could not send the code (HTTP ${res.status})`);
+    err.code = json.code || 'request_failed';
+    err.status = res.status;
+    throw err;
+}
+
 module.exports = {
     bootstrapIfNeeded,
     fetchCapabilities,
@@ -748,4 +800,6 @@ module.exports = {
     invalidateAndRebootstrap,
     submitVerificationCode,
     resendVerificationCode,
+    requestVerificationCode,
+    isNcAdmin,
 };

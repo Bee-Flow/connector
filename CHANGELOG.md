@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.23] - 2026-05-29
+
+### Fixed
+- The verification code is now emailed to the admin who actually opens Bee Flow to do the setup — not the first admin account found on the Nextcloud server. Whoever completes verification becomes the organisation's Bee Flow admin. The code is only sent after re-checking that the signed-in admin belongs to the organisation being linked.
+
+### Changed
+- Onboarding wizard: removed the "Choose your deployment" step (Cloud vs self-hosted is set once by the Nextcloud admin in the connector's setup page, not per organisation), and the subscription step can now be skipped when no paid plans are configured, so setup never gets stuck.
+- A plan flagged "Default plan for Nextcloud" is now applied as the organisation's active subscription on connect (previously it only adjusted enabled features) — set it on a free plan to give every Nextcloud-connected organisation a free default.
+
 ## [0.1.22] - 2026-05-28
 
 ### Added

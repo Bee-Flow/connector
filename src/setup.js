@@ -316,6 +316,36 @@ router.post('/verify-email-code', express.json(), async (req, res) => {
     }
 });
 
+// Send (or re-send) the verification code to the admin actually doing the setup
+// — the current NC user in the embedded view. Re-points the pending binding at
+// them so the code reaches the right person and they become the org admin on
+// success. NC-authenticated via AppAPI; gated to NC admins with an email.
+router.post('/request-verification-code', express.json(), async (req, res) => {
+    const current = req.beeflow?.user;
+    if (!current?.uid) {
+        return res.status(401).json({ ok: false, code: 'no_user', error: 'Could not identify your Nextcloud account. Refresh and try again.' });
+    }
+    if (!current.email) {
+        return res.status(400).json({ ok: false, code: 'no_email', error: 'Your Nextcloud account has no email address. Add one in Nextcloud (Settings → Users) to finish setup.' });
+    }
+    const admin = await bootstrap.isNcAdmin(current.uid);
+    if (!admin) {
+        return res.status(403).json({ ok: false, code: 'not_admin', error: 'Only a Nextcloud admin can finish connecting Bee Flow.' });
+    }
+    try {
+        const result = await bootstrap.requestVerificationCode({ uid: current.uid, email: current.email, displayName: current.displayName });
+        return res.json({ ok: true, maskedEmail: result.maskedEmail, expiresAt: result.expiresAt, emailSent: result.emailSent });
+    } catch (err) {
+        const status = err.code === 'no_pending' ? 409
+            : err.code === 'email_not_in_org' || err.status === 403 ? 403
+            : err.status === 410 ? 410
+            : err.status === 429 ? 429
+            : err.code === 'saas_unreachable' || (err.status && err.status >= 500) ? 502
+            : 400;
+        return res.status(status).json({ ok: false, code: err.code || 'request_failed', error: err.message });
+    }
+});
+
 // Re-send the verification code to the same admin mailbox.
 router.post('/resend-email-code', express.json(), async (req, res) => {
     try {

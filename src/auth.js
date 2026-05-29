@@ -169,7 +169,23 @@ function appApiAuthMiddleware(req, res, next) {
 
     fetchNextcloudUser(decoded.userId)
         .then(user => {
-            req.beeflow = { user, jwt: mintSaasJwt(user) };
+            let token;
+            try {
+                token = mintSaasJwt(user);
+            } catch (e) {
+                if (e.code !== 'TENANT_KEY_MISSING') throw e;
+                // Bootstrap/verification in flight (no tenant key yet).
+                // Connector-owned /setup routes still need to know which NC
+                // user is driving setup — expose the identity with a null jwt.
+                // Proxied SaaS calls can't work without a key, so they keep the
+                // same fallback as a lookup failure (SPA shell for navigations,
+                // 502 for XHR).
+                req.beeflow = { user, jwt: null };
+                if (req.path.startsWith('/setup')) return next();
+                if (req.accepts(['html', 'json']) === 'html' && !req.path.startsWith('/api/')) return next();
+                return res.status(502).json({ error: 'Tenant key not configured — bootstrap in progress' });
+            }
+            req.beeflow = { user, jwt: token };
             next();
         })
         .catch(err => {

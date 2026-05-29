@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.24] - 2026-05-29
+
+### Changed
+- Default Bee Flow Cloud endpoint moved to `https://server.dev.beeflow.nl` (from `server.dev.beeflow.ai`) — affects the App Store env-var default (`BEEFLOW_API_BASE_URL`), the runtime fallback and the "Bee Flow Cloud" picker choice.
+
+### Fixed
+- Embedded admin view: Settings → Organisation → Users now reflects the server's authoritative organisation membership, fixing cases where an organisation admin saw an incomplete member list.
+
 ## [0.1.23] - 2026-05-29
 
 ### Fixed

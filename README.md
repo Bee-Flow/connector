@@ -9,13 +9,13 @@ App ID: `bee_flow` · Compatible with Nextcloud 31–34 · Requires AppAPI ≥ 3
 ## Architecture
 
 ```
-Customer Nextcloud  ──► bee-flow-connector (this) ──► server.dev.beeflow.ai
+Customer Nextcloud  ──► bee-flow-connector (this) ──► server.dev.beeflow.nl
    (AppAPI signed                JWT (5 min,
     request, OCS user           HS256, signed
     lookup)                     with tenant key)
 ```
 
-The connector is the only thing the Nextcloud App Store sees. The hosted SaaS at `server.dev.beeflow.ai` stays proprietary and is reached only via the JWT-bearer proxy.
+The connector is the only thing the Nextcloud App Store sees. The hosted SaaS at `server.dev.beeflow.nl` stays proprietary and is reached only via the JWT-bearer proxy.
 
 ## Local development
 
@@ -40,7 +40,7 @@ Set programmatically via `occ`:
 
 ```bash
 sudo -u www-data php occ app_api:app:setenv bee_flow \
-    BEEFLOW_API_BASE_URL https://server.dev.beeflow.ai     # or your self-hosted URL
+    BEEFLOW_API_BASE_URL https://server.dev.beeflow.nl     # or your self-hosted URL
 ```
 
 The env-var path takes precedence over the picker — useful for IaC / GitOps lockdown. See [the docs](https://bee-flow.github.io/docs/connector/setup-picker/) for the full flow.

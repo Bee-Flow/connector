@@ -10,6 +10,19 @@
 set -e
 
 if [ -n "$HP_SHARED_KEY" ]; then
+    # HaRP / AppAPI may drop a private CA into the container when Nextcloud is
+    # reached over HTTPS with a non-public CA. Node's fetch (used for all
+    # outbound NC calls in bootstrap.js / heartbeat.js / ncProxy.js) does NOT
+    # read the OS trust store for *added* CAs unless told via NODE_EXTRA_CA_CERTS.
+    # Fold any mounted CA into the system bundle and point Node at it. No-op when
+    # nothing is mounted or NC is reached over plain HTTP internally.
+    if ls /usr/local/share/ca-certificates/*.crt >/dev/null 2>&1; then
+        update-ca-certificates 2>/dev/null || true
+    fi
+    if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
+        export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+    fi
+
     if [ -d "/certs/frp" ]; then
         cat > /tmp/frpc.toml <<EOF
 serverAddr = "$HP_FRP_ADDRESS"
@@ -52,7 +65,18 @@ unixPath = "/tmp/exapp.sock"
 EOF
     fi
     echo "[harp-start] launching frpc → ${HP_FRP_ADDRESS}:${HP_FRP_PORT}"
-    frpc -c /tmp/frpc.toml &
+    # Supervise frpc: if it crashes, the Node app stays up and the container
+    # still reports "healthy" (the healthcheck probes the local socket, not the
+    # tunnel), but it would be unreachable through HaRP. Restart on exit so the
+    # tunnel self-heals. loginFailExit=false already covers transient login
+    # failures; this covers hard crashes. Operators: grep logs for "frpc exited".
+    (
+        while true; do
+            frpc -c /tmp/frpc.toml
+            echo "[harp-start] frpc exited ($?) — restarting in 2s" >&2
+            sleep 2
+        done
+    ) &
 fi
 
 exec "$@"

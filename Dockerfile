@@ -100,22 +100,54 @@ COPY src ./src
 COPY appinfo ./appinfo
 COPY --from=spa-build /spa/dist ./public
 
-# HaRP integration: install frpc + ca-certificates (for update-ca-certificates,
-# which HaRP runs inside the container to install NC's CA bundle). The
+# HaRP integration: install the runtime deps. ca-certificates is needed for
+# update-ca-certificates (harp-start.sh folds any CA HaRP drops into the trust
+# store on first start); bash for the entrypoint; curl for the healthcheck
+# (busybox wget can't probe a unix socket, which HaRP mode requires). The
 # canonical HaRP ExApp pattern runs as root because HaRP writes into
 # /usr/local/share/ca-certificates, /etc/ssl/certs, and /certs/frp on first
 # start — paths that are root-owned. Container isolation comes from Docker's
 # namespace, not from a non-root UID inside the container.
-RUN apk add --no-cache frp bash curl ca-certificates
+RUN apk add --no-cache bash curl ca-certificates tar
+
+# frpc, pinned. We do NOT use Alpine's `frp` package — its version floats and
+# FRP requires a client compatible with HaRP's bundled frps; a mismatch fails
+# the tunnel handshake silently and the ExApp becomes unreachable. Pin to the
+# version the Nextcloud HaRP guide ships (0.61.1). 0.61.1 is an immutable
+# tagged GitHub asset, so the reproducible-build promise above is preserved.
+# Bump FRP_VERSION in lockstep when HaRP bumps its frps. TARGETARCH is provided
+# by BuildKit (both CI workflows build amd64 + arm64 natively).
+ARG TARGETARCH
+ARG FRP_VERSION=0.61.1
+RUN set -eux; \
+    case "$TARGETARCH" in \
+        amd64) frp_arch=amd64 ;; \
+        arm64) frp_arch=arm64 ;; \
+        *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${frp_arch}.tar.gz" -o /tmp/frp.tgz; \
+    tar -xzf /tmp/frp.tgz -C /tmp; \
+    install -m 0755 "/tmp/frp_${FRP_VERSION}_linux_${frp_arch}/frpc" /usr/local/bin/frpc; \
+    rm -rf /tmp/frp.tgz "/tmp/frp_${FRP_VERSION}_linux_${frp_arch}"; \
+    frpc --version
+
 COPY scripts/harp-start.sh /start.sh
 RUN chmod +x /start.sh
 
 # AppAPI injects APP_PORT; we default to 8080 for local dev.
 EXPOSE 8080
 
-# Healthcheck mirrors the /heartbeat contract Nextcloud uses.
+# Healthcheck mirrors the /heartbeat contract Nextcloud uses. Under HaRP the
+# app binds ONLY the unix socket /tmp/exapp.sock (no TCP listener), so probe
+# the socket there; otherwise probe the TCP port. curl (installed above)
+# supports --unix-socket; busybox wget does not. Shell form so the `if` runs
+# via /bin/sh -c with $HP_SHARED_KEY (injected by HaRP) visible at runtime.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD wget -qO- "http://127.0.0.1:${APP_PORT:-8080}/heartbeat" || exit 1
+    CMD if [ -n "$HP_SHARED_KEY" ]; then \
+            curl -fsS --unix-socket /tmp/exapp.sock http://localhost/heartbeat || exit 1; \
+        else \
+            curl -fsS "http://127.0.0.1:${APP_PORT:-8080}/heartbeat" || exit 1; \
+        fi
 
 ENTRYPOINT ["/start.sh"]
 CMD ["node", "src/server.js"]

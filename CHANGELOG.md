@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.26] - 2026-05-29
+
+### Fixed
+- The connector now runs correctly behind a **HaRP** deploy daemon (Nextcloud 32+). HaRP routes browser requests straight to the connector instead of tunnelling every call through Nextcloud's PHP process, which removes a source of intermittent dropped or stalled API calls: with the legacy daemon a long-lived chat stream plus the burst of requests the app makes on load could exhaust Nextcloud's PHP-FPM worker pool, so some calls would time out at random even though the connector and server were healthy.
+- Docker health check now probes the right endpoint in HaRP mode (the connector listens on a Unix socket there, not a TCP port), so HaRP-deployed containers no longer report falsely unhealthy.
+
+### Changed
+- The bundled FRP client is now pinned to the version HaRP expects (0.61.1) rather than tracking the distribution package, avoiding silent tunnel-handshake failures from a client/server version mismatch.
+- The Server-Sent-Events streaming workaround (connection-close framing) now only applies on the legacy manual / Docker-Socket-Proxy daemon, where Nextcloud's PHP proxy mangles chunked encoding. Under HaRP, streams use normal keep-alive chunked delivery.
+- The legacy `manual-install` / Docker-Socket-Proxy daemon remains fully supported on Nextcloud 31; HaRP is recommended for Nextcloud 32+.
+
 ## [0.1.25] - 2026-05-29
 
 ### Changed

@@ -81,15 +81,52 @@ function buildApiProxy() {
                 // across Node 16-22; tested in this environment.
                 const ct = proxyRes.headers['content-type'] || '';
                 if (ct.startsWith('text/event-stream')) {
+                    // Universally safe: disable intermediary buffering for SSE.
                     proxyRes.headers['x-accel-buffering'] = 'no';
                     proxyRes.headers['cache-control'] = 'no-cache, no-transform';
-                    delete proxyRes.headers['content-length'];
-                    delete proxyRes.headers['content-encoding'];
-                    delete proxyRes.headers['transfer-encoding'];
-                    proxyRes.headers['connection'] = 'close';
-                    if (res) {
-                        res.useChunkedEncodingByDefault = false;
-                        res.shouldKeepAlive = false;
+
+                    if (process.env.HP_SHARED_KEY) {
+                        // HaRP mode: the stream is browser → HAProxy → unix
+                        // socket — NC's PHP ExAppProxyController is NOT in the
+                        // path, so the double-chunking described below can't
+                        // happen. Let normal chunked streaming through and keep
+                        // the connection alive (close-framing would needlessly
+                        // tear down the tunnel socket per stream). Just drop a
+                        // stale content-encoding if the upstream set one.
+                        delete proxyRes.headers['content-encoding'];
+                    } else {
+                        // Manual / Docker-Socket-Proxy mode: NC's AppAPI proxy
+                        // (apps/app_api/lib/Controller/ExAppProxyController.php)
+                        // strips `Transfer-Encoding: chunked` unconditionally.
+                        // PHP/Apache then re-adds chunked encoding to a body
+                        // whose payload already contains the upstream chunk-size
+                        // hex headers, double-chunking the stream → Chrome aborts
+                        // with ERR_INVALID_CHUNKED_ENCODING.
+                        //
+                        // Fix: emit the connector→NC response with HTTP/1.1
+                        // connection-close framing — no Content-Length, no
+                        // Transfer-Encoding header at all. NC's strip predicate
+                        // checks `isset($responseHeaders['Transfer-Encoding'])`
+                        // first, so an absent header is a no-op and the body is
+                        // forwarded as raw bytes via fpassthru. Apache then adds
+                        // the single, well-formed chunked encoding the browser
+                        // actually receives. EventSource parses correctly.
+                        //
+                        // Mechanics: setting `useChunkedEncodingByDefault = false`
+                        // on Node's ServerResponse stops Node from auto-adding
+                        // `Transfer-Encoding: chunked` when a body is written
+                        // without Content-Length. With `Connection: close` and no
+                        // length headers, the message is framed by socket-close
+                        // (RFC 9112 §6.3). The flag is undocumented but stable
+                        // across Node 16-22; tested in this environment.
+                        delete proxyRes.headers['content-length'];
+                        delete proxyRes.headers['content-encoding'];
+                        delete proxyRes.headers['transfer-encoding'];
+                        proxyRes.headers['connection'] = 'close';
+                        if (res) {
+                            res.useChunkedEncodingByDefault = false;
+                            res.shouldKeepAlive = false;
+                        }
                     }
                 }
             },

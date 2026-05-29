@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.25] - 2026-05-29
+
+### Changed
+- Private-cloud deployments no longer show the "Pair a new Nextcloud" pairing-code panel (Settings → Organisation → Nextcloud Sync) — in those deployments pairing is managed by the provider. Generating a pairing code is also refused server-side in private-cloud mode.
+
 ## [0.1.24] - 2026-05-29
 
 ### Changed

@@ -10,8 +10,6 @@
     <name>Bee Flow</name>
     <summary>AI assistant for your Nextcloud — chat with Files, Mail, Calendar, Deck, Notes, Tasks, Contacts and Talk.</summary>
     <description><![CDATA[
-> ⚠️ **Public beta — testing in progress.** This is an early release. Expect rough edges, occasional breaking changes between versions, and please report issues at [github.com/Bee-Flow/connector/issues](https://github.com/Bee-Flow/connector/issues). Not yet recommended for production-critical workflows.
-
 > 📋 **Prerequisites:** Bee Flow is delivered as an **ExApp**, so installing it from this page only succeeds when your Nextcloud already has **AppAPI** enabled **and** a deploy daemon registered. Most managed setups (Nextcloud All-in-One, Hetzner Storage Share) already have this; vanilla self-hosted instances usually need a one-time `occ app_api:daemon:register` step. The 3-minute [Bee Flow install guide](https://docs.beeflow.ai/getting-started/nextcloud) walks you through both cases plus the NAT/reverse-proxy scenario.
 
 **Bee Flow turns your Nextcloud into an AI workspace.**
@@ -52,7 +50,7 @@ Full privacy policy: <https://beeflow.nl/privacy>.
 
 A free **Community tier** (single user, basic chat, local knowledge base) is fully functional with no license key. To unlock automations, multi-user, DLP and other premium features, paste a license key from <https://beeflow.nl/pricing> into Settings → Organisation → License & Usage.
         ]]></description>
-    <version>0.1.28</version>
+    <version>0.1.29</version>
     <licence>AGPL-3.0-or-later</licence>
     <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.nl/">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>

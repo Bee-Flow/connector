@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.29] - 2026-05-30
+
+### Changed
+- Removed the "Public beta — testing in progress" banner from the App Store description.
+
 ## [0.1.28] - 2026-05-30
 
 ### Changed

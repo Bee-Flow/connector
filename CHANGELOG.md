@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.28] - 2026-05-30
+
+### Changed
+- Clearer **Advanced deploy options** help text in the Nextcloud App Store so admins understand the choice before installing: the default "Bee Flow server" is **Bee Flow Cloud** (`https://server.beeflow.nl`) and installing with it **creates a new organisation hosted by Bee Flow B.V. (EU)**; to keep data on your own infrastructure, point it at a self-hosted server (Community tier is free). The tenant-key text now spells out that "auto" creates a new organisation at whichever server is configured.
+
 ## [0.1.27] - 2026-05-29
 
 ### Changed

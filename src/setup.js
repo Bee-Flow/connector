@@ -259,6 +259,39 @@ router.post('/rotate-tenant-key', express.json(), async (req, res) => {
     }
 });
 
+// Clear the connector's cached organisation binding and re-bootstrap from
+// scratch. Unlike "rotate" (which keeps the same org and just mints a new key),
+// this is the recovery action when the cached org is stale — e.g. the Bee Flow
+// organisation was deleted/recreated on the server side and the connector is
+// still holding a tenant key for an org that no longer exists (every SaaS call
+// then 401s). invalidateAndRebootstrap() deletes tenant-key.json +
+// pending-bootstrap.json, clears the in-memory binding, and re-bootstraps: if
+// the org still exists it re-binds to it, otherwise it provisions a fresh one.
+// Rollback to the previous key happens automatically if the re-bootstrap fails.
+router.post('/clear-cache', express.json(), async (req, res) => {
+    const uid = req.beeflow?.user?.uid || 'unknown';
+    console.log(`[Setup] organisation cache clear requested by uid=${uid}`);
+    try {
+        await bootstrap.invalidateAndRebootstrap();
+        console.log(`[Setup] organisation cache cleared by uid=${uid} — org ${config.organizationId}`);
+        res.json({
+            ok: true,
+            organizationId: config.organizationId,
+            organizationName: config.organizationName || null,
+            tenantKeyFingerprint: config.tenantKey
+                ? crypto.createHash('sha256').update(String(config.tenantKey)).digest('hex').slice(0, 16)
+                : null,
+        });
+    } catch (err) {
+        console.warn(`[Setup] organisation cache clear FAILED for uid=${uid}: ${err.message}`);
+        res.status(502).json({
+            ok: false,
+            error: err.message,
+            remediation: err.remediation || 'Check the connector logs for the Bee Flow server response, then retry.',
+        });
+    }
+});
+
 // Bind this Nextcloud install to an existing Bee Flow organisation by
 // redeeming a one-shot pairing code minted in the SaaS admin UI. Without
 // this UI path, admins had to SSH into the NC host and set

@@ -320,6 +320,28 @@
 </div>
 
 <div class="card">
+    <h2 style="margin-top: 0;">Clear organisation cache &amp; re-bootstrap</h2>
+    <p>
+        Drops the cached organisation binding (tenant key) and re-bootstraps from
+        scratch. Use this to recover when this Nextcloud is bound to a Bee Flow
+        organisation that was deleted or recreated on the server — the symptom is
+        that the app loads but every request fails with <code>401</code> or shows a
+        sign-in screen. If the organisation still exists the connector re-binds to
+        it; otherwise a fresh one is provisioned. The previous key is restored
+        automatically if the re-bootstrap fails.
+    </p>
+    <div class="actions">
+        <button class="btn-secondary" id="btn-clear-cache">Clear organisation cache</button>
+        <span class="hint" id="status-clear-cache-inline" style="margin: 0;"></span>
+    </div>
+    <pre id="clear-cache-output"
+         style="display:none; margin-top: 12px; padding: 12px;
+                background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 6px;
+                font-size: 0.85em; max-height: 200px; overflow: auto;
+                white-space: pre-wrap; word-break: break-word;"></pre>
+</div>
+
+<div class="card">
     <h2 style="margin-top: 0;">Tenant key diagnostic</h2>
     <p>
         Run this when sign-in fails with <em>“Connector token rejected: no matching tenant key”</em>
@@ -597,6 +619,41 @@
                 statusRotateInline.textContent = 'Error: ' + err.message;
             } finally {
                 btnRotate.disabled = false;
+            }
+        });
+    }
+
+    const btnClearCache = $('btn-clear-cache');
+    const statusClearCacheInline = $('status-clear-cache-inline');
+    const clearCacheOutput = $('clear-cache-output');
+    if (btnClearCache) {
+        btnClearCache.addEventListener('click', async () => {
+            if (!confirm(
+                'Clear the cached organisation and re-bootstrap?\n\n'
+              + 'The connector drops the cached tenant key and requests a fresh binding '
+              + 'from the Bee Flow server (30–60s). Use this when the organisation was '
+              + 'deleted or recreated on the server and sign-in keeps failing. The previous '
+              + 'key is restored automatically if the re-bootstrap fails.'
+            )) return;
+            statusClearCacheInline.textContent = 'Clearing…';
+            btnClearCache.disabled = true;
+            clearCacheOutput.style.display = 'none';
+            try {
+                const r = await fetch(BASE + 'setup/clear-cache', { method: 'POST' });
+                const d = await r.json();
+                clearCacheOutput.textContent = JSON.stringify(d, null, 2);
+                clearCacheOutput.style.display = 'block';
+                if (d.ok) {
+                    statusClearCacheInline.textContent =
+                        '✅ Cleared — org ' + (d.organizationId || '?') + ' re-bootstrapped.';
+                } else {
+                    statusClearCacheInline.textContent =
+                        '❌ ' + (d.error || 'clear failed');
+                }
+            } catch (err) {
+                statusClearCacheInline.textContent = 'Error: ' + err.message;
+            } finally {
+                btnClearCache.disabled = false;
             }
         });
     }

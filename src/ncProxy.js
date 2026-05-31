@@ -54,7 +54,13 @@ function verifyHmac(req) {
 
     const ncUid = String(req.headers['x-beeflow-nc-uid'] || '');
     const path = req.originalUrl || req.url;
-    const message = `${ts}\n${req.method}\n${path}\n${ncUid}`;
+    // WebDAV methods are tunnelled over POST + X-HTTP-Method-Override (NC's
+    // AppAPI proxy rejects raw PROPFIND/REPORT/… with 405). The SaaS signs the
+    // HMAC over the REAL method, so verify against the override when present —
+    // this also means the override can't be swapped without invalidating the
+    // signature.
+    const signedMethod = String(req.headers['x-http-method-override'] || req.method).toUpperCase();
+    const message = `${ts}\n${signedMethod}\n${path}\n${ncUid}`;
     const expected = crypto.createHmac('sha256', config.tenantKey).update(message).digest('hex');
     if (expected.length !== sig.length) return false;
     try {
@@ -90,12 +96,15 @@ function buildNcProxy() {
                     proxyReq.setHeader('OCS-APIRequest', 'true');
                 }
                 // Strip incoming auth + cookies — we authenticate with AppAPI
-                // shared-secret, not whatever the SaaS sent us.
+                // shared-secret, not whatever the SaaS sent us. Also strip the
+                // Bee Flow internal routing headers so they never leak to NC.
                 proxyReq.removeHeader('authorization');
                 proxyReq.removeHeader('cookie');
                 proxyReq.removeHeader('origin');
                 proxyReq.removeHeader('referer');
                 proxyReq.removeHeader('x-beeflow-sig'); // never leak HMAC sigs upstream
+                proxyReq.removeHeader('x-beeflow-nc-uid'); // internal impersonation hint
+                proxyReq.removeHeader('x-http-method-override'); // already applied to req.method
             },
             error: (err, req, res) => {
                 console.error(`[NcProxy] ${req.method} ${req.url}: ${err.message}`);
@@ -117,6 +126,15 @@ function mount(app) {
         }
         if (!verifyHmac(req)) {
             return res.status(401).json({ error: 'Missing or invalid X-Beeflow-Sig' });
+        }
+        // Restore the real WebDAV method from the tunnel BEFORE http-proxy builds
+        // the upstream request (changing proxyReq.method later is too late — the
+        // method is fixed when the ClientRequest is created). The signature was
+        // verified over this real method above, so this can't bypass auth.
+        const override = req.headers['x-http-method-override'];
+        if (override) {
+            req.method = String(override).toUpperCase();
+            delete req.headers['x-http-method-override'];
         }
         return proxy(req, res, next);
     });

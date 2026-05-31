@@ -1,7 +1,0 @@
-# Throwaway overlay for LOCAL testing only (not part of any release):
-# released image (SPA + frpc) + current connector source + undici, so we can
-# test on a local AIO without a full hive rebuild. Delete after testing.
-FROM ghcr.io/bee-flow/connector:latest
-COPY src/ /app/src/
-COPY scripts/harp-start.sh /start.sh
-RUN chmod +x /start.sh && npm install undici@6 --omit=dev --no-audit --no-fund

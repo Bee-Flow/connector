@@ -196,7 +196,13 @@ A free **Community tier** (single user, basic chat, local knowledge base) is ful
                  active SaaS URL; it stays ADMIN because both can leak
                  internal-network shape. -->
             <route><url>^setup\/?$</url><verb>GET,POST</verb><access_level>ADMIN</access_level></route>
-            <route><url>^setup\/(status|test|diagnostics)$</url><verb>GET,POST</verb><access_level>ADMIN</access_level></route>
+            <!-- Admin-only connector actions. Explicitly ADMIN-gated so they are
+                 NOT caught by the USER-level catch-all below: any of these would
+                 disrupt the whole organisation (clear/rotate the tenant key,
+                 repoint the server, redeem a pairing code). The email-verification
+                 endpoints stay USER (they run before a tenant key exists and are
+                 gated by the one-time emailed code). -->
+            <route><url>^setup\/(status|test|diagnostics|rotate-tenant-key|apply-pairing-code|public-nc-url|diagnose|clear-cache)$</url><verb>GET,POST</verb><access_level>ADMIN</access_level></route>
 
             <!-- Webhooks: NC events_listener -> connector -->
             <route><url>^webhook\/.*</url><verb>POST</verb><access_level>ADMIN</access_level></route>

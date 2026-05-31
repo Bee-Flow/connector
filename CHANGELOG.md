@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.31] - 2026-05-31
+
+### Fixed
+- **Nextcloud WebDAV-based tools now work** (Files, Calendar/CalDAV, Contacts/CardDAV). These call back into Nextcloud through its AppAPI proxy, which forwards standard HTTP methods but rejects WebDAV verbs (PROPFIND/PROPPATCH/REPORT/MKCOL/MOVE/COPY) with **405** — so "List files" and similar failed with `Nextcloud PROPFIND failed (405)`. The server↔connector calls now tunnel those verbs over `POST` + `X-HTTP-Method-Override`, and the connector restores the real method (verified over the same HMAC) before calling Nextcloud, where WebDAV works. OCS-based tools were unaffected. Per-user impersonation is unchanged: each request still acts only as the signed-in Nextcloud user.
+
+### Added
+- **Clear organisation cache & re-bootstrap** action on the connector Setup page (admin-only). Drops the cached tenant key and re-bootstraps — the recovery path when this Nextcloud is bound to a Bee Flow organisation that was deleted/recreated server-side (symptom: the app loads but every request 401s). Re-binds to the existing org if present, otherwise provisions a fresh one; rolls back automatically on failure.
+
+### Security
+- The connector's admin Setup actions (clear-cache, rotate tenant key, apply pairing code, repoint server, diagnose) are now explicitly **ADMIN-gated** in the ExApp manifest instead of falling through to the USER-level catch-all — a non-admin can no longer trigger org-wide resets. The email-verification endpoints stay USER-level (gated by the one-time emailed code, before a tenant key exists).
+- The connector now strips its internal routing headers (`X-Beeflow-NC-Uid`, `X-HTTP-Method-Override`) from requests before they reach Nextcloud.
+
 ## [0.1.30] - 2026-05-30
 
 ### Fixed

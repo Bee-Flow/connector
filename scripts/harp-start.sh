@@ -9,20 +9,30 @@
 
 set -e
 
-if [ -n "$HP_SHARED_KEY" ]; then
-    # HaRP / AppAPI may drop a private CA into the container when Nextcloud is
-    # reached over HTTPS with a non-public CA. Node's fetch (used for all
-    # outbound NC calls in bootstrap.js / heartbeat.js / ncProxy.js) does NOT
-    # read the OS trust store for *added* CAs unless told via NODE_EXTRA_CA_CERTS.
-    # Fold any mounted CA into the system bundle and point Node at it. No-op when
-    # nothing is mounted or NC is reached over plain HTTP internally.
-    if ls /usr/local/share/ca-certificates/*.crt >/dev/null 2>&1; then
-        update-ca-certificates 2>/dev/null || true
+# Decide the Nextcloud TLS posture before the connector makes any NC call.
+# Runs in ALL deploy modes (manual-install, HaRP FRP-tunnel, HaRP exapp_direct)
+# — Node's fetch (bootstrap.js / heartbeat.js / ncProxy.js) ignores the OS trust
+# store, so a self-signed / internal-CA Nextcloud would otherwise fail every
+# call and the app's top-bar icon would never register. ncTlsTrust.js does a
+# strict handshake first and only flags a relaxed posture when the cert does NOT
+# already verify; src/ncTls.js then applies it scoped to the Nextcloud origin
+# only, so valid public certs and the Bee Flow server channel keep full
+# verification. Never fatal: a failure here must not stop the connector booting.
+node /app/src/ncTlsTrust.js || echo "[harp-start] nc-tls-trust skipped (non-fatal)" >&2
+for _ncenv in "${APP_PERSISTENT_STORAGE:-/data}/nc-trust/env" /tmp/nc-trust/env; do
+    if [ -f "$_ncenv" ]; then
+        # Auto-export every KEY=VALUE the helper wrote (BEEFLOW_NC_TLS_INSECURE
+        # or BEEFLOW_NC_CA_FILE) so src/ncTls.js sees them.
+        set -a
+        # shellcheck disable=SC1090
+        . "$_ncenv"
+        set +a
+        echo "[harp-start] applied NC TLS posture from $_ncenv" >&2
+        break
     fi
-    if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
-        export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
-    fi
+done
 
+if [ -n "$HP_SHARED_KEY" ]; then
     if [ -d "/certs/frp" ]; then
         cat > /tmp/frpc.toml <<EOF
 serverAddr = "$HP_FRP_ADDRESS"

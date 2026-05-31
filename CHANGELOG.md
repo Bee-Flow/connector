@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.30] - 2026-05-30
+
+### Fixed
+- The connector now installs and shows its top-bar icon on Nextcloud instances served with a **self-signed or internal-CA TLS certificate** (common on local / on-prem setups, e.g. Nextcloud All-in-One behind a `tls internal` reverse proxy or a `*.nip.io` test domain). Previously every connector→Nextcloud call failed certificate verification, so bootstrap never completed and the top-bar entry never registered. On first start the connector now does a strict TLS handshake to Nextcloud and, **only when that certificate does not already verify**, relaxes verification **for the Nextcloud origin alone** (via an origin-scoped HTTP dispatcher). Valid public / Let's Encrypt certificates are untouched, and the Bee Flow server channel — and every other TLS peer — stays fully verified (a public self-signed certificate still correctly fails). A HaRP/OS-mounted Nextcloud CA, when present and valid, is pinned instead of relaxing. Runs in all deploy modes (manual-install, HaRP FRP-tunnel, HaRP direct).
+
+### Added
+- `BEEFLOW_NC_CA_CERT` (optional, advanced) — paste your Nextcloud's PEM CA/root to pin an explicit trust anchor (verification stays on) instead of relying on automatic first-start trust.
+- `BEEFLOW_NC_TLS_PIN` (optional, advanced, default `auto`) — set to `off` to disable automatic trust of a self-signed/internal Nextcloud certificate in security-strict environments (then only a valid certificate or `BEEFLOW_NC_CA_CERT` is accepted).
+- `/setup` diagnostics now report the Nextcloud TLS posture (`ncTls.mode`) and, on a self-signed/internal-CA Nextcloud, a warning that on an **AIO + HaRP** deployment the embedded app stays blank until HaRP and Nextcloud's own PHP also trust the certificate (the connector can only fix its own connector→Nextcloud hop).
+- `scripts/aio-trust-local-cert.sh` — local-testing helper that makes a Nextcloud All-in-One trust a self-signed/internal-CA certificate (adds the CA to the Nextcloud container and recreates the read-only HaRP container with `SSL_CERT_FILE`), so ExApps load their embedded UI on a local AIO+HaRP box. Not needed in production with a valid certificate.
+
 ## [0.1.29] - 2026-05-30
 
 ### Changed

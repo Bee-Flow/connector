@@ -32,6 +32,7 @@
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const crypto = require('crypto');
 const config = require('./config');
+const { ncHttpsAgent, ncTlsMode } = require('./ncTls');
 
 const ALLOWED_PREFIXES = ['/ocs/', '/remote.php/dav/', '/index.php/apps/'];
 
@@ -64,9 +65,16 @@ function verifyHmac(req) {
 }
 
 function buildNcProxy() {
+    const isHttps = String(config.nextcloudUrl || '').startsWith('https://');
     return createProxyMiddleware({
         target: config.nextcloudUrl,
         changeOrigin: true,
+        // Match the connector→NC TLS posture from ncTls.js for the reverse
+        // proxy too (http-proxy-middleware uses node http(s), not fetch). When
+        // NC has a self-signed/internal cert, `secure:false` + the relaxed
+        // agent let these calls through for the NC origin only; a pinned CA or
+        // a valid cert keeps `secure:true` so verification still happens.
+        ...(isHttps ? { agent: ncHttpsAgent, secure: ncTlsMode !== 'insecure' } : {}),
         // Strip the /nc prefix so /nc/ocs/v2.php/... → /ocs/v2.php/... upstream
         pathRewrite: { '^/nc': '' },
         on: {

@@ -23,6 +23,7 @@ const config = require('./config');
 const setupConfig = require('./setupConfig');
 const bootstrap = require('./bootstrap'); // for re-bootstrap on URL change
 const auth = require('./auth');
+const { ncTlsMode } = require('./ncTls'); // NC TLS posture for diagnostics
 
 const router = express.Router();
 
@@ -113,12 +114,24 @@ router.get('/diagnostics', (req, res) => {
     else if (!hasTenantKey && lastError && lastError.status === 'failed') state = 'failed';
     else if (!hasTenantKey) state = 'initialising';
 
+    // Nextcloud TLS posture. When the connector had to relax verification for
+    // the NC origin (self-signed / internal-CA cert), warn that on an AIO/HaRP
+    // deployment the embedded app will not load until HaRP and Nextcloud's own
+    // PHP also trust the certificate — the connector can only fix its own hop.
+    const ncTls = {
+        mode: ncTlsMode, // 'default' | 'insecure' | 'ca'
+        warning: ncTlsMode === 'insecure'
+            ? 'Nextcloud uses a self-signed or internal-CA certificate. The connector trusts it automatically, but on a Nextcloud AIO + HaRP deployment the embedded app will stay blank until HaRP and Nextcloud itself also trust this certificate. For local testing run the connector repo helper scripts/aio-trust-local-cert.sh; in production use a valid (publicly-trusted) certificate.'
+            : null,
+    };
+
     res.json({
         state,
         hasTenantKey,
         apiBaseUrl: config.apiBaseUrl,
         organizationId: config.organizationId || null,
         ncInstanceId: config.ncInstanceId || null,
+        ncTls,
         // Non-sensitive details for the in-app verification screen. The pendingId
         // is deliberately NOT exposed — the browser only ever sends the code to
         // the connector-owned /setup/verify-email-code route, which uses the

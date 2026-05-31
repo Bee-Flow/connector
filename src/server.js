@@ -18,6 +18,12 @@ const { appApiAuthMiddleware } = require('./auth');
 const { registerLifecycle } = require('./heartbeat');
 const { buildApiProxy } = require('./proxy');
 
+// Apply the Nextcloud TLS posture decided at boot (scripts/ncTlsTrust.js) BEFORE
+// any NC-bound fetch runs. No-op when the NC cert is publicly trusted; otherwise
+// installs an origin-scoped dispatcher that trusts the Nextcloud origin only
+// (the Bee Flow server channel and all other TLS stay verified). See ncTls.js.
+require('./ncTls').installNcDispatcher();
+
 const app = express();
 
 // Capture the raw body so the AppAPI signature can be verified against the

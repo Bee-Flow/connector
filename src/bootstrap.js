@@ -37,6 +37,28 @@ const POLL_INTERVAL_MS = 30_000;
 const POLL_JITTER_MS = 5_000;
 const POLL_GRACE_AFTER_EXPIRY_MS = 5 * 60_000;
 
+// Hostname of a Nextcloud base URL. MUST stay byte-identical to the SaaS copy
+// in server/auth/orgNaming.js (ncHostFromUrl) — the connector can't require
+// server code, so the logic is duplicated.
+function ncHostFromUrl(ncBaseUrl) {
+    try {
+        return new URL(ncBaseUrl).host || null;
+    } catch {
+        return null;
+    }
+}
+
+// Stable fallback id for Nextclouds that expose neither theming.instanceid nor
+// core.instanceid. Keyed on the NC host so it stays constant across NC upgrades
+// instead of drifting with the version string (which would silently re-provision
+// a duplicate org on the next cache-loss re-bootstrap). MUST match the SaaS copy
+// in server/auth/connectorBootstrap.js (stableInstanceIdFallback) byte-for-byte.
+function stableInstanceIdFallback(ncBaseUrl, themingName) {
+    const host = ncHostFromUrl(ncBaseUrl);
+    if (host) return `nc-host:${host}`;
+    return `nc:${themingName || 'nextcloud'}`;
+}
+
 async function readCache() {
     const cachePath = path.join(config.persistentStorage, CACHE_FILE);
     try {
@@ -93,9 +115,16 @@ async function fetchCapabilities() {
     const data = body?.ocs?.data;
     if (!data?.version) throw new Error('NC capabilities missing version data');
     const themingName = data?.capabilities?.theming?.name || 'Nextcloud';
-    const instanceId = data?.capabilities?.theming?.instanceid
-        || data?.capabilities?.core?.instanceid
-        || `${data?.version?.string || 'nc'}:${themingName}`;
+    let instanceId = data?.capabilities?.theming?.instanceid
+        || data?.capabilities?.core?.instanceid;
+    if (!instanceId) {
+        // No stable id from NC. Derive one from the public base URL host (the
+        // same value we send as X-Beeflow-NC-Base-Url and that the SaaS
+        // re-derives) so it doesn't change when NC is upgraded — which would
+        // otherwise create a duplicate org on the next re-bootstrap.
+        instanceId = stableInstanceIdFallback(config.nextcloudPublicUrl || config.nextcloudUrl, themingName);
+        console.warn(`[Bootstrap] NC exposes no theming/core instanceid; using stable host fallback '${instanceId}'`);
+    }
     return { instanceId, themingName, version: data?.version?.string || 'unknown' };
 }
 
@@ -246,6 +275,8 @@ const REMEDIATION = {
         'The Bee Flow service rejected our credentials. Check that this NC instance has not been disabled in your Bee Flow organisation.',
     tenant_already_provisioned:
         'This Nextcloud was bootstrapped previously and the tenant-key cache was lost. Recover the key from the Bee Flow admin UI, then set BEEFLOW_TENANT_KEY via `occ app_api:app:setenv`.',
+    pairing_required:
+        'This Bee Flow server does not auto-create organisations. Ask your Bee Flow organisation admin to generate a pairing code (Settings → Organisation → Pair a new Nextcloud), set it as BEEFLOW_PAIRING_CODE via `occ app_api:app:setenv bee_flow BEEFLOW_PAIRING_CODE <CODE>`, then redeploy the connector.',
     appstore_signature_invalid:
         'The downloaded connector tarball failed signature verification. Uninstall and reinstall from the App Store.',
     unknown:
@@ -293,6 +324,7 @@ const SAAS_CODE_TO_CATEGORY = {
     too_many_pending_bindings: 'too_many_pending',
     pending_admin_approval: 'awaiting_admin_approval',
     org_create_failed: 'saas_transient',
+    pairing_required: 'pairing_required',
 };
 
 // Categorise a thrown error into one of the well-known buckets that the
@@ -350,6 +382,11 @@ async function applyTenantKeyResponse(json, ncInstanceId) {
         organizationName: json.organizationName,
         ncInstanceId,
         ncVersion: json.ncVersion,
+        // Pin: remember which Bee Flow server provisioned this org so a later
+        // change to the default/picker URL can't silently repoint the connector
+        // and mint a second org elsewhere. Only an explicit reset
+        // (invalidateAndRebootstrap) drops this by deleting the cache.
+        boundApiBaseUrl: config.apiBaseUrl,
         provisionedAt: new Date().toISOString(),
     });
     await deletePendingFile();
@@ -502,6 +539,18 @@ async function bootstrapIfNeeded() {
         config.tenantKey = cached.tenantKey;
         config.organizationId = cached.organizationId || null;
         config.ncInstanceId = cached.ncInstanceId || null;
+        // Pin to the server this org was provisioned on. A changed default (or
+        // picker) URL must not silently move a bound connector to a different
+        // Bee Flow server — that would mint a second org there. An explicit
+        // BEEFLOW_API_BASE_URL env override still wins (deliberate admin lock);
+        // only an explicit reset (setup picker → invalidateAndRebootstrap, which
+        // deletes the cache) drops the pin.
+        if (cached.boundApiBaseUrl && !process.env.BEEFLOW_API_BASE_URL) {
+            if (config.apiBaseUrl !== cached.boundApiBaseUrl) {
+                console.warn(`[Bootstrap] Pinning to bound server ${cached.boundApiBaseUrl} (ignoring configured ${config.apiBaseUrl})`);
+            }
+            config.apiBaseUrl = cached.boundApiBaseUrl;
+        }
         await clearErrorFile();
         console.log(`[Bootstrap] Loaded cached tenant key for org ${cached.organizationId}`);
         return;
@@ -802,4 +851,6 @@ module.exports = {
     resendVerificationCode,
     requestVerificationCode,
     isNcAdmin,
+    stableInstanceIdFallback,
+    ncHostFromUrl,
 };

@@ -16,6 +16,7 @@
 
 const config = require('./config');
 const setupConfig = require('./setupConfig');
+const { withWarmupRetry } = require('./appApiClient');
 
 const FORM_ID = 'beeflow_admin';
 const FIELD_MODE = 'deployment_mode';
@@ -74,12 +75,12 @@ function appApiHeaders() {
 
 async function registerSettingsForm() {
     const url = `${config.nextcloudUrl}/ocs/v1.php/apps/app_api/api/v1/ui/settings`;
-    const res = await fetch(url, {
+    const res = await withWarmupRetry(() => fetch(url, {
         method: 'POST',
         headers: appApiHeaders(),
         body: JSON.stringify({ formScheme: FORM_SCHEME }),
         signal: AbortSignal.timeout(5_000),
-    });
+    }), { label: 'settings-form', budgetMs: 60_000 });
     if (!res.ok && res.status !== 409) {
         const body = await res.text().catch(() => '');
         throw new Error(`Settings form register HTTP ${res.status}: ${body.slice(0, 200)}`);

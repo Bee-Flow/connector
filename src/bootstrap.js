@@ -29,6 +29,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 const config = require('./config');
+const { withWarmupRetry } = require('./appApiClient');
 
 const CACHE_FILE = 'tenant-key.json';
 const PENDING_FILE = 'pending-bootstrap.json';
@@ -152,10 +153,13 @@ async function appApiOcsHeaders(asUid = '') {
 
 async function fetchAllUids() {
     const url = `${config.nextcloudUrl}/ocs/v2.php/apps/app_api/api/v1/users?format=json`;
-    const res = await fetch(url, {
-        headers: await appApiOcsHeaders(''),
+    // Tolerate the AppAPI auth warm-up window on a fresh install (~6s of 997)
+    // so the admin lookup that drives org provisioning converges in one pass.
+    const headers = await appApiOcsHeaders('');
+    const res = await withWarmupRetry(() => fetch(url, {
+        headers,
         signal: AbortSignal.timeout(10_000),
-    });
+    }), { label: 'users-list', budgetMs: 60_000 });
     if (!res.ok) throw new Error(`AppAPI users list HTTP ${res.status}`);
     const body = await res.json();
     const data = body?.ocs?.data;
@@ -165,10 +169,11 @@ async function fetchAllUids() {
 
 async function fetchUserInfo(uid) {
     const url = `${config.nextcloudUrl}/ocs/v2.php/cloud/users/${encodeURIComponent(uid)}?format=json`;
-    const res = await fetch(url, {
-        headers: await appApiOcsHeaders(uid),
+    const headers = await appApiOcsHeaders(uid);
+    const res = await withWarmupRetry(() => fetch(url, {
+        headers,
         signal: AbortSignal.timeout(10_000),
-    });
+    }), { label: 'user-info', budgetMs: 30_000 });
     if (!res.ok) return null;
     const body = await res.json();
     return body?.ocs?.data || null;

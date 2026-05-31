@@ -16,6 +16,7 @@
  */
 
 const config = require('./config');
+const { withWarmupRetry } = require('./appApiClient');
 
 function registerLifecycle(app) {
     app.get('/heartbeat', (req, res) => {
@@ -135,7 +136,7 @@ function appApiHeaders() {
 
 async function registerTopMenu() {
     const url = `${config.nextcloudUrl}/ocs/v1.php/apps/app_api/api/v1/ui/top-menu`;
-    const res = await fetch(url, {
+    const res = await withWarmupRetry(() => fetch(url, {
         method: 'POST',
         headers: appApiHeaders(),
         body: JSON.stringify({
@@ -145,7 +146,7 @@ async function registerTopMenu() {
             adminRequired: 0,
         }),
         signal: AbortSignal.timeout(5_000),
-    });
+    }), { label: 'top-menu', budgetMs: 60_000 });
     if (!res.ok && res.status !== 409) {
         const body = await res.text().catch(() => '');
         throw new Error(`TopMenu register HTTP ${res.status}: ${body.slice(0, 200)}`);
@@ -158,7 +159,7 @@ async function registerTopMenu() {
 // the SPA loads inside the Nextcloud chrome.
 async function registerEmbedScript() {
     const url = `${config.nextcloudUrl}/ocs/v1.php/apps/app_api/api/v1/ui/script`;
-    const res = await fetch(url, {
+    const res = await withWarmupRetry(() => fetch(url, {
         method: 'POST',
         headers: appApiHeaders(),
         body: JSON.stringify({
@@ -168,7 +169,7 @@ async function registerEmbedScript() {
             afterAppId: '',
         }),
         signal: AbortSignal.timeout(5_000),
-    });
+    }), { label: 'embed-script', budgetMs: 60_000 });
     if (!res.ok && res.status !== 409) {
         const body = await res.text().catch(() => '');
         throw new Error(`Script register HTTP ${res.status}: ${body.slice(0, 200)}`);
@@ -302,12 +303,12 @@ async function reportInitProgress(percent, errorMessage) {
     const body = errorMessage
         ? { progress: percent, error: errorMessage }
         : { progress: percent };
-    const res = await fetch(url, {
+    const res = await withWarmupRetry(() => fetch(url, {
         method: 'PUT',
         headers: appApiHeaders(),
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(5_000),
-    });
+    }), { label: 'init-status', budgetMs: 20_000 });
     if (!res.ok) {
         throw new Error(`Status report failed: HTTP ${res.status}`);
     }

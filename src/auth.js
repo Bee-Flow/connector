@@ -99,6 +99,11 @@ async function fetchNextcloudUser(uid) {
         uid: data.id,
         email: data.email || null,
         displayName: data.displayname || data.display_name || data.id,
+        // Membership of Nextcloud's built-in `admin` group. Surfaced as a signed
+        // `nc_admin` JWT claim (see mintSaasJwt) so the SaaS can let ANY Nextcloud
+        // admin through the org onboarding wizard — not just the single admin
+        // captured at bootstrap. `/cloud/users/{uid}` returns the user's groups.
+        isNcAdmin: Array.isArray(data.groups) && data.groups.includes('admin'),
     };
     _userCache.set(uid, { user, expiresAt: now + USER_CACHE_TTL_MS });
     // Bound the cache so churn on a busy NC instance can't leak memory.
@@ -116,7 +121,7 @@ function mintSaasJwt(user) {
         throw err;
     }
     return jwt.sign(
-        { sub: user.uid, email: user.email, name: user.displayName },
+        { sub: user.uid, email: user.email, name: user.displayName, nc_admin: !!user.isNcAdmin },
         config.tenantKey,
         {
             algorithm: 'HS256',

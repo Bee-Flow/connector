@@ -34,3 +34,17 @@ test('mintSaasJwt returns a JWT signed with tenant key', () => {
     assert.equal(decoded.sub, 'alice');
     assert.equal(decoded.email, 'a@b');
 });
+
+test('mintSaasJwt sets nc_admin:true for an NC admin (drives the SaaS onboarding carve-out)', () => {
+    const jwt = require('jsonwebtoken');
+    const token = mintSaasJwt({ uid: 'boss', email: 'boss@b', displayName: 'Boss', isNcAdmin: true });
+    const decoded = jwt.verify(token, config.tenantKey, { audience: 'beeflow.nl' });
+    assert.equal(decoded.nc_admin, true);
+});
+
+test('mintSaasJwt sets nc_admin:false for a non-admin (no onboarding bypass)', () => {
+    const jwt = require('jsonwebtoken');
+    const token = mintSaasJwt({ uid: 'alice', email: 'a@b', displayName: 'Alice', isNcAdmin: false });
+    const decoded = jwt.verify(token, config.tenantKey, { audience: 'beeflow.nl' });
+    assert.equal(decoded.nc_admin, false);
+});

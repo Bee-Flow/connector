@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.34] - 2026-05-31
+
+### Changed
+- **Any Nextcloud admin can now complete the Bee Flow setup wizard**, not just the one admin discovered at install. Each per-user request now carries a signed `nc_admin` claim derived from the user's Nextcloud `admin`-group membership, so every NC admin is recognised as an organisation admin and can run onboarding. The claim is signed with the per-install tenant key, so a non-admin cannot forge it. (Pairs with the matching Bee Flow server change; no action needed on existing installs.)
+
 ## [0.1.33] - 2026-05-31
 
 ### Fixed

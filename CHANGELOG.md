@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.32] - 2026-05-31
+
+### Fixed
+- **First install now connects reliably** (was: "Sign in to continue" with every request 403'ing). On a fresh install the connector triggered its SaaS bootstrap from several places at once (container start, the `/init` lifecycle hook, the settings poll) before the tenant-key cache was written, firing multiple parallel "provision" requests. Against a multi-replica Bee Flow server each request could mint a different tenant key, so the connector cached a different key than the server stored and every per-user request was rejected with **403**. Bootstrap is now **single-flighted**: concurrent callers share one in-flight provision, so exactly one tenant key is minted and the connector and server always agree. An explicit admin reset (Setup → clear cache / repoint server / apply pairing code) still forces a fresh provision.
+
 ## [0.1.31] - 2026-05-31
 
 ### Fixed

@@ -528,7 +528,26 @@ async function resendVerificationCode() {
     throw err;
 }
 
-async function bootstrapIfNeeded() {
+// Single-flight guard. bootstrapIfNeeded() is called from boot (server.js), the
+// /init lifecycle hook (heartbeat.js), the declarative-settings poll, and the
+// /setup/* routes. Because the tenant-key cache isn't written until a provision
+// completes, several of these fire CONCURRENTLY on a fresh install — the
+// connector was sending ~5 parallel "provision from SaaS" POSTs, which against a
+// multi-replica SaaS minted divergent tenant keys, so the connector cached a
+// different key than the SaaS stored and every per-user JWT 403'd. Collapsing
+// all concurrent callers onto one in-flight run means exactly one provision (one
+// mint) happens; once it caches the key, later calls take the fast cached path.
+let _bootstrapInFlight = null;
+function bootstrapIfNeeded() {
+    if (_bootstrapInFlight) return _bootstrapInFlight;
+    _bootstrapInFlight = (async () => {
+        try { return await _provisionFlow(); }
+        finally { _bootstrapInFlight = null; }
+    })();
+    return _bootstrapInFlight;
+}
+
+async function _provisionFlow() {
     if (!config.isAutoTenantKey) {
         console.log('[Bootstrap] BEEFLOW_TENANT_KEY explicitly set, skipping auto-bootstrap');
         return;
@@ -769,6 +788,12 @@ async function invalidateAndRebootstrap({ pairingCode } = {}) {
             config.pairingCode = pairingCode;
         }
         console.log('[Bootstrap] Invalidated cached tenant key after setup change — re-bootstrapping');
+        // Explicit admin reset must force a fresh provision, not piggy-back on an
+        // in-flight one (which may be mid-bind to the old target / without the
+        // pairing code). Clearing the single-flight guard is safe here: the SaaS
+        // mint is atomic, so even if this races a boot-time provision both
+        // converge on the same key.
+        _bootstrapInFlight = null;
         await bootstrapIfNeeded();
         if (!config.tenantKey) {
             // bootstrapIfNeeded swallows network errors and just logs; if we

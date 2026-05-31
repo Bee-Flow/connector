@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.33] - 2026-05-31
+
+### Fixed
+- **A fresh install now connects on the first try, even while Nextcloud's AppAPI auth is still warming up.** On a brand-new ExApp install, Nextcloud's AppAPI rejects the connector's shared-secret calls with `997 "AppAPI authentication failed"` for the first few seconds — its ExApp registration (and the secret it shares with the connector) hasn't propagated yet. The connector's install steps — admin-user lookup (which drives organisation provisioning), the top-menu / embedded-script / settings-form registrations, and init-status reporting — previously ran once and failed during that window, so the embedded app only came up if Nextcloud happened to re-run `/init` after auth had settled. When it didn't, the app stayed on "Sign in to continue" with every request 403'ing. These control-plane calls now **retry through the warm-up window** with capped exponential backoff (the 401/997 signature and transient network errors only), so a fresh install converges in a single pass. Real failures (404/409/500, a genuine 401 without the 997 marker, config errors) still fail fast, and per-request browser traffic is unaffected.
+
 ## [0.1.32] - 2026-05-31
 
 ### Fixed

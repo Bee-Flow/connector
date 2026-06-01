@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.35] - 2026-06-01
+
+### Changed
+- **Every Nextcloud admin is set up in Bee Flow at install, not just the one who installed.** On bootstrap the connector now discovers **all** members of Nextcloud's `admin` group that have an email and hands the full list to Bee Flow, which provisions each as an organisation admin. Previously only the first admin found was provisioned, so other admins could be blocked from the setup wizard. (Admins count as normal user seats; if the plan's seat cap is reached the extra admins are skipped and the install still succeeds. Older Bee Flow servers that don't yet understand the list fall back to the single primary admin — no breakage.)
+
 ## [0.1.34] - 2026-05-31
 
 ### Changed

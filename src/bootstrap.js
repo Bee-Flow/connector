@@ -216,20 +216,29 @@ function pickAdmin(uid, info) {
     };
 }
 
-async function fetchFirstAdmin() {
-    // Fast path: ask NC for the admin-group membership directly. One round-
-    // trip instead of `fetchAllUids` + N × `fetchUserInfo` (which on a 100-
-    // user instance was up to 1000s). Return the first admin that has a real
-    // email — never synthesise one.
+// Discover EVERY NC admin (member of the built-in `admin` group) that has a
+// real email — so the SaaS can provision them all as Bee Flow org_admins and
+// any admin (not just the one who installed) can onboard/use Bee Flow. Only
+// full `admin`-group members can install ExApps, so this group is the correct,
+// complete signal. The returned array is sorted by uid for a stable "primary"
+// (entry 0 — carried in the X-Beeflow-NC-Admin-* headers + pinned as the org's
+// nc_admin_uid). Never synthesise an email.
+async function fetchAdmins() {
+    const out = [];
+
+    // Fast path: ask NC for the admin-group membership directly, then fetch
+    // each member's info (the admin group is small — a handful of users — so
+    // the N lookups here are cheap, unlike walking every user in the slow path).
     const adminUids = await fetchAdminUidsViaGroup();
     if (adminUids) {
         for (const uid of adminUids) {
             const info = await fetchUserInfo(uid);
-            if (info?.email) return pickAdmin(uid, info);
+            if (info?.email) out.push(pickAdmin(uid, info));
         }
         // Admin group resolved but no member has an email — can't reliably
         // link to a Bee Flow account.
-        throw adminNoEmailError();
+        if (out.length === 0) throw adminNoEmailError();
+        return out.sort((a, b) => a.uid.localeCompare(b.uid));
     }
 
     // Slow-path fallback: AppAPI version doesn't expose /cloud/groups/admin/users.
@@ -247,13 +256,16 @@ async function fetchFirstAdmin() {
             if (!info) continue;
             const groups = info.groups || [];
             if (groups.includes('admin')) {
-                if (info.email) return pickAdmin(uid, info);
-                sawAdminWithoutEmail = true;
+                if (info.email) out.push(pickAdmin(uid, info));
+                else sawAdminWithoutEmail = true;
             }
         }
     }
-    if (sawAdminWithoutEmail) throw adminNoEmailError();
-    throw new Error('Could not determine an NC admin with an email address');
+    if (out.length === 0) {
+        if (sawAdminWithoutEmail) throw adminNoEmailError();
+        throw new Error('Could not determine an NC admin with an email address');
+    }
+    return out.sort((a, b) => a.uid.localeCompare(b.uid));
 }
 
 // Pending-state runtime visibility — heartbeat.js reads this to surface
@@ -611,7 +623,7 @@ async function _provisionFlow() {
 
     console.log('[Bootstrap] No cached tenant key; provisioning from SaaS...');
 
-    let caps, admin;
+    let caps, admins, admin;
     try {
         caps = await fetchCapabilities();
     } catch (err) {
@@ -619,7 +631,8 @@ async function _provisionFlow() {
         throw err;
     }
     try {
-        admin = await fetchFirstAdmin();
+        admins = await fetchAdmins();
+        admin = admins[0]; // primary (stable, sorted) — pinned as org.nc_admin_uid
     } catch (err) {
         await recordBootstrapError(err, 'admin');
         throw err;
@@ -663,7 +676,11 @@ async function _provisionFlow() {
         res = await fetch(`${config.apiBaseUrl}/auth/connector/bootstrap`, {
             method: 'POST',
             headers,
-            body: JSON.stringify({ themingName: caps.themingName, version: caps.version }),
+            // ncAdmins carries EVERY NC admin (with email) so the SaaS can
+            // provision them all as org_admins. The X-Beeflow-NC-Admin-* headers
+            // above still carry the primary (admins[0]) for backward compat with
+            // SaaS versions that predate ncAdmins.
+            body: JSON.stringify({ themingName: caps.themingName, version: caps.version, ncAdmins: admins }),
             signal: AbortSignal.timeout(15_000),
         });
     } catch (err) {

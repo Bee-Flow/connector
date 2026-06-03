@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.36] - 2026-06-01
+
+### Changed
+- **App Store listing copy only — no functional change.** Simplified the prerequisites note to lead with "install in one click from the App Store" (most Nextclouds, including All-in-One and managed/hosted setups, need no setup) and demoted the deploy-daemon detail to a short link. Made it explicit that the one-click install connects your Nextcloud to **Bee Flow Cloud**, our hosted service running on **Scaleway** with all servers located in **the Netherlands (EU)**, and added an EU data-residency line to the data-flow disclosure.
+
 ## [0.1.35] - 2026-06-01
 
 ### Changed

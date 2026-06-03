@@ -10,7 +10,7 @@
     <name>Bee Flow</name>
     <summary>AI assistant for your Nextcloud — chat with Files, Mail, Calendar, Deck, Notes, Tasks, Contacts and Talk.</summary>
     <description><![CDATA[
-> 📋 **Prerequisites:** Bee Flow is delivered as an **ExApp**, so installing it from this page only succeeds when your Nextcloud already has **AppAPI** enabled **and** a deploy daemon registered. Most managed setups (Nextcloud All-in-One, Hetzner Storage Share) already have this; vanilla self-hosted instances usually need a one-time `occ app_api:daemon:register` step. The 3-minute [Bee Flow install guide](https://docs.beeflow.ai/getting-started/nextcloud) walks you through both cases plus the NAT/reverse-proxy scenario.
+> ✅ **Install in one click from the Nextcloud App Store** — no setup needed on most Nextclouds, including Nextcloud All-in-One and other managed/hosted setups. A few self-managed servers first need AppAPI's deploy daemon enabled; the short [install guide](https://docs.beeflow.ai/getting-started/nextcloud) shows how.
 
 **Bee Flow turns your Nextcloud into an AI workspace.**
 
@@ -18,7 +18,7 @@ Click the bee icon in your top bar and chat with an assistant that already knows
 
 ## What you get
 
-- **One-click install, zero configuration.** Sign-in with your existing Nextcloud account — no second password, no app-passwords, no API keys to paste anywhere.
+- **One-click install, zero configuration.** The install connects your Nextcloud to **Bee Flow Cloud** — our hosted service, which runs on **Scaleway** with all servers located in **the Netherlands (EU)**. Sign in with your existing Nextcloud account — no second password, no app-passwords, no API keys to paste anywhere.
 - **An AI agent with context.** Bee Flow can read and act on **Files, Mail, Calendar, Contacts, Deck, Notes, Tasks, Talk, Activity** and **Notifications** — only on the items you explicitly point it at.
 - **Built-in privacy shield.** Detects emails, phone numbers, IBANs, BSNs and other sensitive data in your prompts and replaces them with placeholders before anything reaches the language model. The original values are restored in the reply, only on your screen.
 - **Multi-user from day one.** Mirrors your Nextcloud users and groups automatically. Admins decide which groups get which Bee Flow integrations — disable Talk for interns, enable everything for the leadership team.
@@ -39,6 +39,8 @@ When you act on a Nextcloud item, the connector sends the item to the Bee Flow s
 
 Bee Flow **does not** bulk-export file contents, mail bodies, calendars or contacts. The connector forwards individual requests; nothing is copied, mirrored or indexed by default.
 
+Bee Flow Cloud is hosted on **Scaleway**, with all servers located in **the Netherlands (EU)** — your data is processed and stored within the EU.
+
 Full privacy policy: <https://beeflow.nl/privacy>.
 
 ## Getting started
@@ -50,7 +52,7 @@ Full privacy policy: <https://beeflow.nl/privacy>.
 
 A free **Community tier** (single user, basic chat, local knowledge base) is fully functional with no license key. To unlock automations, multi-user, DLP and other premium features, paste a license key from <https://beeflow.nl/pricing> into Settings → Organisation → License & Usage.
         ]]></description>
-    <version>0.1.35</version>
+    <version>0.1.36</version>
     <licence>AGPL-3.0-or-later</licence>
     <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.nl/">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>

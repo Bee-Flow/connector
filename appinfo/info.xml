@@ -51,8 +51,12 @@ Full privacy policy: <https://beeflow.nl/privacy>.
 4. Other users see a "Setup in progress" screen until the admin finishes — then the chat opens for everyone in the chosen sync scope.
 
 A free **Community tier** (single user, basic chat, local knowledge base) is fully functional with no license key. To unlock automations, multi-user, DLP and other premium features, paste a license key from <https://beeflow.nl/pricing> into Settings → Organisation → License & Usage.
+
+## Support
+
+Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We support Bee Flow Cloud and can also help you get Bee Flow running on a self-managed or self-hosted Nextcloud.
         ]]></description>
-    <version>0.1.36</version>
+    <version>0.1.37</version>
     <licence>AGPL-3.0-or-later</licence>
     <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.nl/">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>

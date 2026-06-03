@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.37] - 2026-06-01
+
+### Changed
+- **App Store listing copy only — no functional change.** Added a Support section: users can email **info@beeflow.nl** for help with Bee Flow Cloud or with getting Bee Flow running on a self-managed / self-hosted Nextcloud.
+
 ## [0.1.36] - 2026-06-01
 
 ### Changed

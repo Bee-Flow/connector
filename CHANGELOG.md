@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.40] - 2026-06-01
+
+### Changed
+- **App Store listing copy only — no functional change.** Made the self-hosting option explicit: you can run Bee Flow fully on your own servers, with a link to the [self-hosting guide](https://docs.beeflow.ai/self-hosting) and a note to point this connector at your own Bee Flow server URL.
+
 ## [0.1.39] - 2026-06-01
 
 ### Changed

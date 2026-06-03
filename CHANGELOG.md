@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.38] - 2026-06-01
+
+### Changed
+- **App Store listing copy only — no functional change.** Removed pricing/payment references from the listing (the "unlock premium features / paste a license key / pricing" paragraph and the "paid tiers" line) to comply with the Nextcloud App Store's policy on directly offering paid services.
+
 ## [0.1.37] - 2026-06-01
 
 ### Changed

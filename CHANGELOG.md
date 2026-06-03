@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.39] - 2026-06-01
+
+### Changed
+- **App Store listing copy only — no functional change.** Made the "How it works" section state explicitly that the connector connects to **Bee Flow Cloud**, our hosted service running on **Scaleway** with all servers located in **the Netherlands (EU)** (reinforcing the same note already in the one-click-install and data-flow sections).
+
 ## [0.1.38] - 2026-06-01
 
 ### Changed

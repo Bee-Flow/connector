@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.41] - 2026-06-05
+
+### Fixed
+- **Write actions through the connector now work.** App actions that send a JSON body (Deck cards, Notes, Mail, user status, Talk) were reaching Nextcloud with an empty body, because the request body was consumed during signature verification and not forwarded. The parsed body is now re-streamed to Nextcloud, so these write actions carry their payload through the proxy.
+
 ## [0.1.40] - 2026-06-01
 
 ### Changed

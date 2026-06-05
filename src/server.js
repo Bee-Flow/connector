@@ -16,7 +16,7 @@ const path = require('path');
 const config = require('./config');
 const { appApiAuthMiddleware } = require('./auth');
 const { registerLifecycle } = require('./heartbeat');
-const { buildApiProxy } = require('./proxy');
+const { buildApiProxy, buildEmbedProxy, isSpaShellPath } = require('./proxy');
 
 // Apply the Nextcloud TLS posture decided at boot (scripts/ncTlsTrust.js) BEFORE
 // any NC-bound fetch runs. No-op when the NC cert is publicly trusted; otherwise
@@ -142,9 +142,10 @@ app.get(['/js/embed', '/js/embed.js'], (_req, res) => {
 `);
 });
 
-// Static SPA — built by the agent-hub package and copied into /public at
-// container build time (see Dockerfile). Falls through to index.html for
-// client-side routing.
+// The SPA bundle baked into /public at container build time (see Dockerfile).
+// As of the embed-proxy change this is the OFFLINE FALLBACK only — the primary
+// path proxies the shell from the cloud `/embed/` build (below), so a frontend
+// deploy reaches the embedded view without a connector release.
 const publicDir = path.join(__dirname, '..', 'public');
 
 // Bee Flow icon for the Nextcloud top-menu entry. Shipped as a verbatim
@@ -171,6 +172,24 @@ app.get('/img/app.svg', (_req, res) => {
         res.type('image/svg+xml');
         fs3.createReadStream(logoPath).pipe(res);
     });
+});
+// SPA SHELL → proxy to the cloud `/embed/` build (always-fresh), with the
+// baked /public as fallback. SPA_SHELL is the bundle subset of the connector-
+// owned paths; the connector-LOCAL routes (/setup, /js/embed, /img/app.svg)
+// were already handled above, so they never reach here. Client-side routes
+// (e.g. /agents) are NOT in SPA_SHELL and stay proxied to the SaaS API by the
+// gate above — unchanged. On embed-proxy error the handler invokes the
+// stashed req.__shellNext, falling through to express.static(/public) and the
+// baked index.html catch-all below.
+//
+// Edge: if the cloud flaps mid-page-load (index.html from cloud, a later asset
+// falls back to a different baked hash → 404), a reload recovers.
+const embedProxy = buildEmbedProxy();
+app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    if (!isSpaShellPath(req.url)) return next();
+    req.__shellNext = next;
+    return embedProxy(req, res, next);
 });
 app.use(express.static(publicDir, { index: false, fallthrough: true }));
 

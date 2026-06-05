@@ -23,6 +23,24 @@ const config = require('./config');
 const httpAgent = new http.Agent({ keepAlive: false });
 const httpsAgent = new https.Agent({ keepAlive: false });
 
+// The SPA "shell" — index.html + hashed /assets + logos/favicon — is the
+// subset of connector-owned paths that make up the front-end bundle. These
+// are proxied to the cloud `/embed/` build (buildEmbedProxy). The connector-
+// LOCAL paths (/setup, /js/embed, /img/app.svg) are handled by their own
+// routes in server.js and never reach the shell proxy; client-side SPA routes
+// (e.g. /agents) are NOT shell paths and stay proxied to the SaaS API.
+const SPA_SHELL = /^\/(assets\/|js\/|img\/|favicon|BeeFlow-logo|bee-flow-logo|index\.html$|$)/;
+
+function isSpaShellPath(urlPath) {
+    return SPA_SHELL.test(String(urlPath).split('?')[0]);
+}
+
+// Map a connector-local shell path onto the cloud's `/embed/` storage prefix:
+// `/` → `/embed/`, `/assets/x.js` → `/embed/assets/x.js`.
+function rewriteToEmbed(p) {
+    return '/embed' + p;
+}
+
 function buildApiProxy() {
     const isHttps = String(config.apiBaseUrl || '').startsWith('https://');
     return createProxyMiddleware({
@@ -142,4 +160,49 @@ function buildApiProxy() {
     });
 }
 
-module.exports = { buildApiProxy };
+// Proxy for the embedded SPA SHELL (index.html + hashed /assets, logos,
+// favicon). The shell used to be baked into this image at /public; we now
+// fetch it from the cloud frontend's `/embed/` build so a frontend deploy
+// reaches the embedded view without a connector release. The SPA itself is
+// still built with --base=/index.php/apps/app_api/proxy/<appId>/, so every
+// asset + API URL the browser resolves routes back through NC → connector —
+// only the bytes' origin moves from /public to the cloud.
+//
+// pathRewrite prepends `/embed`: the connector sees the NC-proxy-stripped
+// path (`/`, `/assets/x.js`, `/bee-flow-logo.png`) and maps it onto the
+// cloud's `/embed/` storage prefix (`/embed/`, `/embed/assets/x.js`, …).
+//
+// On ANY upstream error (cloud unreachable, 5xx) the handler calls the
+// captured `next()` so the request falls through to the retained
+// express.static(/public) + baked index.html — the offline fallback. We
+// stash next on req.__shellNext because http-proxy-middleware's error hook
+// doesn't receive it.
+function buildEmbedProxy() {
+    const isHttps = String(config.embedBaseUrl || '').startsWith('https://');
+    return createProxyMiddleware({
+        target: config.embedBaseUrl,
+        changeOrigin: true,
+        agent: isHttps ? httpsAgent : httpAgent,
+        pathRewrite: rewriteToEmbed,
+        on: {
+            proxyReq: (proxyReq) => {
+                // These belong to Nextcloud, not the cloud frontend host.
+                proxyReq.removeHeader('cookie');
+                proxyReq.removeHeader('origin');
+                proxyReq.removeHeader('referer');
+            },
+            error: (err, req, res) => {
+                // Fall through to the baked /public bundle rather than 502.
+                console.warn(`[EmbedProxy] ${req.method} ${req.url}: ${err.message} — falling back to baked /public`);
+                if (!res.headersSent && typeof req.__shellNext === 'function') {
+                    return req.__shellNext();
+                }
+                if (!res.headersSent) {
+                    res.status(502).json({ error: 'Bee Flow UI is temporarily unavailable. Please try again.' });
+                }
+            },
+        },
+    });
+}
+
+module.exports = { buildApiProxy, buildEmbedProxy, isSpaShellPath, rewriteToEmbed };

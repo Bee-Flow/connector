@@ -59,6 +59,16 @@ const config = {
     // environment.
     apiBaseUrl: (process.env.BEEFLOW_API_BASE_URL || 'https://server.beeflow.nl').replace(/\/+$/, ''),
 
+    // Upstream for the embedded SPA SHELL (index.html + hashed assets). The
+    // connector proxies the shell from the cloud frontend host's `/embed/`
+    // build instead of baking it into the image, so a frontend deploy reaches
+    // the embedded view without a connector release. Distinct from apiBaseUrl:
+    // the API lives on the server pod (server.beeflow.nl) while the static
+    // shell is served by the frontend front-door (beeflow.nl). Self-hosters
+    // who point apiBaseUrl at their own server should also set this to their
+    // frontend host. The baked /public bundle remains the offline fallback.
+    embedBaseUrl: (process.env.BEEFLOW_EMBED_BASE_URL || 'https://beeflow.nl').replace(/\/+$/, ''),
+
     // One-shot pairing code for binding this NC to an existing Bee Flow org
     // (instead of creating a new one). Admin sets this via
     // `occ app_api:app:setenv bee_flow BEEFLOW_PAIRING_CODE <CODE>` after

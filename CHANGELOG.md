@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.44] - 2026-06-05
+
+### Changed
+- **The embedded app now always reflects the latest Bee Flow web client — no connector update needed.** The in-Nextcloud UI used to be baked into the connector image at build time, so new features shipped to Bee Flow only appeared in the embedded view after a full connector release that every Nextcloud then had to update to. The connector now proxies the app shell from Bee Flow Cloud (the same way it already proxies API calls), so a web-client deploy reaches the embedded view immediately. The bundled copy is kept as an offline fallback, served automatically if the cloud is unreachable.
+
 ## [0.1.43] - 2026-06-05
 
 ### Fixed

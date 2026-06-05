@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.42] - 2026-06-05
+
+### Fixed
+- **The Bee Flow logo now shows on the in-Nextcloud apps overview tile.** The tile preview pointed at an SVG, which Nextcloud's app list can't render (SVG previews are off by default), so it fell back to a generic gear icon. The hero screenshot and its thumbnail are now raster PNGs.
+
 ## [0.1.41] - 2026-06-05
 
 ### Fixed

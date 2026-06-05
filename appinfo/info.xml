@@ -54,7 +54,7 @@ Full privacy policy: <https://beeflow.nl/privacy>.
 
 Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We support Bee Flow Cloud and can also help you get Bee Flow running on a self-managed or self-hosted Nextcloud.
         ]]></description>
-    <version>0.1.41</version>
+    <version>0.1.42</version>
     <licence>AGPL-3.0-or-later</licence>
     <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.nl/">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>
@@ -84,9 +84,15 @@ Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We su
         order given. The first entry doubles as the listing hero image,
         so the brand logo goes first. small-thumbnail supplies the preview
         used on the app-list overview tile.
+        IMPORTANT: small-thumbnail MUST be a raster PNG/JPG — Nextcloud's
+        in-product apps list cannot render an SVG thumbnail (SVG preview is
+        disabled by default) and falls back to a generic gear icon. The
+        apps.nextcloud.com web page renders SVG inline, which is why a wrong
+        SVG thumbnail looks fine there but blank in-product. Keep a raster
+        bee-flow-logo.png / bee-flow-logo-thumb.png here.
         Reference: https://docs.nextcloud.com/server/latest/developer_manual/app_development/info.html
     -->
-    <screenshot small-thumbnail="https://raw.githubusercontent.com/Bee-Flow/connector/main/img/bee-flow-logo.svg">https://raw.githubusercontent.com/Bee-Flow/connector/main/img/bee-flow-logo.svg</screenshot>
+    <screenshot small-thumbnail="https://raw.githubusercontent.com/Bee-Flow/connector/main/img/bee-flow-logo-thumb.png">https://raw.githubusercontent.com/Bee-Flow/connector/main/img/bee-flow-logo.png</screenshot>
     <screenshot small-thumbnail="https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/01-chat.png">https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/01-chat.png</screenshot>
     <screenshot small-thumbnail="https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/02-agents.png">https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/02-agents.png</screenshot>
     <screenshot small-thumbnail="https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/03-agent-editor.png">https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/03-agent-editor.png</screenshot>

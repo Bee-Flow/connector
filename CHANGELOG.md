@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [0.1.43] - 2026-06-05
+
+### Fixed
+- **Calendar (and other) write actions through the connector now work.** Creating/updating/deleting calendar events failed because the request path contains an `@` (event UIDs end in `@host`, and calendars can be named like emails such as `name@domain`). The proxy in front of the connector percent-decodes the URL (`%40` → `@`) before the signature is verified, so the callback HMAC no longer matched. The signature is now computed over the **decoded** path on both ends, making it invariant to the proxy's encoding; reads were unaffected and keep working.
+
 ## [0.1.42] - 2026-06-05
 
 ### Fixed

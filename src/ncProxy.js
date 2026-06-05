@@ -53,21 +53,33 @@ function verifyHmac(req) {
     if (Math.abs(now - ts) > config.sigSkewSeconds) return false;
 
     const ncUid = String(req.headers['x-beeflow-nc-uid'] || '');
-    const path = req.originalUrl || req.url;
+    const rawPath = req.originalUrl || req.url;
+    // The SaaS signs the HMAC over the DECODED path, because the NC/HaRP proxy
+    // in front of this route percent-decodes the URL before we see it (e.g.
+    // `%40` → `@`) — signing the encoded form broke the signature for any path
+    // with reserved chars (calendar event UIDs end in `@host`; calendars can be
+    // named like emails). We verify against the decoded path; we also still
+    // accept the raw path so an older SaaS keeps working during rollout. The
+    // two collapse to one candidate when the path has no percent-escapes.
+    let decodedPath = rawPath;
+    try { decodedPath = decodeURIComponent(rawPath); } catch { /* keep raw */ }
     // WebDAV methods are tunnelled over POST + X-HTTP-Method-Override (NC's
     // AppAPI proxy rejects raw PROPFIND/REPORT/… with 405). The SaaS signs the
     // HMAC over the REAL method, so verify against the override when present —
     // this also means the override can't be swapped without invalidating the
     // signature.
     const signedMethod = String(req.headers['x-http-method-override'] || req.method).toUpperCase();
-    const message = `${ts}\n${signedMethod}\n${path}\n${ncUid}`;
-    const expected = crypto.createHmac('sha256', config.tenantKey).update(message).digest('hex');
-    if (expected.length !== sig.length) return false;
-    try {
-        return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(sig, 'hex'));
-    } catch {
-        return false;
+    let sigBuf;
+    try { sigBuf = Buffer.from(sig, 'hex'); } catch { return false; }
+    const candidates = decodedPath === rawPath ? [rawPath] : [decodedPath, rawPath];
+    for (const path of candidates) {
+        const message = `${ts}\n${signedMethod}\n${path}\n${ncUid}`;
+        const expected = Buffer.from(crypto.createHmac('sha256', config.tenantKey).update(message).digest('hex'), 'hex');
+        if (expected.length === sigBuf.length && crypto.timingSafeEqual(expected, sigBuf)) {
+            return true;
+        }
     }
+    return false;
 }
 
 function buildNcProxy() {

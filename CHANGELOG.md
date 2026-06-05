@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [1.0.0] - 2026-06-05
+
+### Changed
+- **First stable release — general availability.** Bee Flow for Nextcloud graduates to the stable App Store channel. No code changes since 0.1.44; this release marks the 1.0 milestone. What's in it: the embedded app always reflects the latest Bee Flow web client (the connector proxies the app shell from Bee Flow Cloud, with the bundled copy kept as an offline fallback), and all Files / Calendar / Contacts / Tasks / Mail / Deck / Notes / Talk write actions work through the connector.
+
 ## [0.1.44] - 2026-06-05
 
 ### Changed

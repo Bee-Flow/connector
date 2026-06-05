@@ -29,7 +29,7 @@
  *   /nc/index.php/apps/*    → /index.php/apps/...       (Mail, Deck, Notes, Talk, etc.)
  */
 
-const { createProxyMiddleware } = require('http-proxy-middleware');
+const { createProxyMiddleware, fixRequestBody } = require('http-proxy-middleware');
 const crypto = require('crypto');
 const config = require('./config');
 const { ncHttpsAgent, ncTlsMode } = require('./ncTls');
@@ -105,6 +105,12 @@ function buildNcProxy() {
                 proxyReq.removeHeader('x-beeflow-sig'); // never leak HMAC sigs upstream
                 proxyReq.removeHeader('x-beeflow-nc-uid'); // internal impersonation hint
                 proxyReq.removeHeader('x-http-method-override'); // already applied to req.method
+                // express.json() (mounted globally before this proxy) consumes
+                // application/json bodies, so without this the upstream request
+                // would carry an empty body. Re-stream the parsed body — mirrors
+                // proxy.js. Only populated for JSON requests; DAV/text/urlencoded
+                // bodies stream untouched (req.body is empty → no-op).
+                if (req.body && Object.keys(req.body).length) fixRequestBody(proxyReq, req);
             },
             error: (err, req, res) => {
                 console.error(`[NcProxy] ${req.method} ${req.url}: ${err.message}`);

@@ -54,7 +54,7 @@ Full privacy policy: <https://beeflow.nl/privacy>.
 
 Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We support Bee Flow Cloud and can also help you get Bee Flow running on a self-managed or self-hosted Nextcloud.
         ]]></description>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
     <licence>AGPL-3.0-or-later</licence>
     <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.nl/">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>
@@ -139,6 +139,12 @@ Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We su
                 <display-name>Bee Flow server — Cloud (default) or self-hosted</display-name>
                 <description>Where the connector sends API calls. The default, https://server.beeflow.nl, is Bee Flow Cloud: installing with this default creates a new Bee Flow organisation hosted by Bee Flow B.V. (EU) and your data is stored there. To self-host instead and keep data on your own infrastructure, run your own Bee Flow server (the Community tier is free) and enter its URL here. See https://beeflow.nl.</description>
                 <default>https://server.beeflow.nl</default>
+            </variable>
+            <variable>
+                <name>BEEFLOW_EMBED_BASE_URL</name>
+                <display-name>Bee Flow frontend — Cloud (default) or self-hosted</display-name>
+                <description>Where the connector loads the embedded Bee Flow app (the SPA shell — index.html + assets) from. This is SEPARATE from "Bee Flow server" above, which is the API. The default, https://beeflow.nl, is Bee Flow Cloud's frontend. If you point "Bee Flow server" at your own / a non-Cloud environment, also set this to the matching frontend host (e.g. https://dev.beeflow.nl) so the embedded app is the same build as your server — otherwise the embed runs the Cloud frontend against your API and can look out of date. Leave at the default to use the Cloud frontend.</description>
+                <default>https://beeflow.nl</default>
             </variable>
             <variable>
                 <name>BEEFLOW_NC_PUBLIC_URL</name>

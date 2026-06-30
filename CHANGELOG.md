@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [1.0.1] - 2026-06-30
+
+### Added
+- **"Bee Flow frontend" deploy option (`BEEFLOW_EMBED_BASE_URL`).** The embedded app's frontend (SPA shell) host is now settable in the App Store deploy options, alongside the existing "Bee Flow server" (API) field. Self-hosters who point the server at their own / a non-Cloud environment can now point the embedded UI at the matching frontend host (e.g. `https://dev.beeflow.nl`) so the embed runs the same build as their server. Defaults to `https://beeflow.nl` (Bee Flow Cloud) — unchanged behaviour when left at the default.
+
 ## [1.0.0] - 2026-06-05
 
 ### Changed

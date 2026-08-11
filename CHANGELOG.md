@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [1.0.2] - 2026-08-11
+
+### Fixed
+- **Sending a chat message could fail silently.** The reply appeared as an empty message with no error — nothing on screen said anything had gone wrong. Several separate causes have been fixed:
+  - **Compressed replies were corrupted.** If any hop in front of the Bee Flow server compressed the streamed reply, the connector forwarded the compressed bytes but removed the header that tells the browser to decompress them, so the browser saw unreadable data and showed nothing. The connector now asks the Bee Flow server not to compress streamed replies, and no longer strips that header if a reply arrives compressed anyway.
+  - **Messages could be rejected before reaching Bee Flow.** Depending on how Nextcloud forwarded the request, the connector could produce a request that describes its own length in two contradictory ways, which the Bee Flow server is required to reject. Sending a message, renaming a chat and other write actions could fail as a result. The request is now always framed one way.
+  - **Renaming a chat (and other `PATCH` actions) never worked in Nextcloud.** Nextcloud's app proxy cannot forward `PATCH` requests at all, so these silently failed only inside the embedded app. They are now sent in a form Nextcloud can forward, and restored by the connector before reaching Bee Flow.
+- **The message input box could be cut off at the bottom of the window.** The embedded frame's height assumed Nextcloud's toolbar is exactly 50px tall. Where it isn't — a Nextcloud version with a different layout, browser zoom, or an extra navigation row — the difference was taken off the bottom of the app, hiding the composer and making it look as if messages could not be sent. The frame now measures its own position and re-measures on resize.
+- **A stalled Bee Flow server left requests hanging forever.** If the server accepted a request but never answered, the connector waited indefinitely with nothing shown to the user. It now gives up after 60 seconds (configurable via `BEEFLOW_UPSTREAM_HEADERS_TIMEOUT_MS`) while still allowing chat replies to stream for as long as they need.
+- **Requests could be forwarded without credentials during setup.** While the tenant key was still being provisioned, or if the Nextcloud user lookup failed, API calls from the app were mistaken for ordinary page loads and passed on to Bee Flow with no authentication instead of reporting the problem. They now fail with a clear error, and only genuine page loads fall back to the app shell.
+
+### Changed
+- **App route definitions updated for newer Nextcloud releases.** Nextcloud's AppAPI changed how it matches an app's declared routes and kept the old behaviour only as a deprecated fallback. The route list now matches both forms, so the connector keeps working when that fallback is removed — without it, health checks, install hooks and Bee Flow's callbacks into Nextcloud would have started failing after a Nextcloud upgrade.
+
 ## [1.0.1] - 2026-06-30
 
 ### Added

@@ -48,6 +48,30 @@ const LIFECYCLE_PATHS = new Set(['/heartbeat', '/init', '/enabled']);
 // mint a SaaS JWT.
 const ANON_OK = /^\/(assets\/|js\/|img\/|index\.html$|favicon|$)|\.(svg|png|jpe?g|gif|webp|ico|css|js|woff2?|ttf|otf|eot|map)$/i;
 
+/**
+ * Is this a top-level page load (so serving the SPA shell instead of a JSON
+ * error is the helpful answer), or an API call the SPA made itself?
+ *
+ * This used to be `req.accepts(['html','json']) === 'html'`, which is wrong for
+ * fetch(): the SPA's authFetch sets no Accept header, so the browser sends
+ * `Accept: *&#47;*`, and content negotiation resolves that to the FIRST offered
+ * type — 'html'. Every XHR therefore looked like a navigation, so the guarded
+ * "502 bootstrap in progress" branches below were unreachable and the request
+ * was forwarded to the SaaS with no Authorization header instead.
+ *
+ * `Sec-Fetch-Mode: navigate` is set by the browser itself, cannot be spoofed by
+ * page script, and is exactly this question. Where it is absent (very old
+ * browsers, server-to-server), fall back to a GET that explicitly asked for
+ * HTML — never a bare `*&#47;*`.
+ */
+function isDocumentNavigation(req) {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return false;
+    const mode = req.headers['sec-fetch-mode'];
+    if (mode) return mode === 'navigate';
+    const accept = String(req.headers.accept || '');
+    return accept.includes('text/html');
+}
+
 function decodeAuthHeader(header) {
     if (!header || typeof header !== 'string') return null;
     let decoded;
@@ -187,7 +211,7 @@ function appApiAuthMiddleware(req, res, next) {
                 // 502 for XHR).
                 req.beeflow = { user, jwt: null };
                 if (req.path.startsWith('/setup')) return next();
-                if (req.accepts(['html', 'json']) === 'html' && !req.path.startsWith('/api/')) return next();
+                if (isDocumentNavigation(req)) return next();
                 return res.status(502).json({ error: 'Tenant key not configured — bootstrap in progress' });
             }
             req.beeflow = { user, jwt: token };
@@ -201,7 +225,7 @@ function appApiAuthMiddleware(req, res, next) {
             // page. Serve the SPA shell instead so its error overlay can
             // render with the diagnostics from /setup/diagnostics. Anything
             // requesting JSON (XHR, fetch) still gets the structured 502.
-            if (req.accepts(['html', 'json']) === 'html' && !req.path.startsWith('/api/')) {
+            if (isDocumentNavigation(req)) {
                 return next();
             }
             res.status(502).json({ error: 'User lookup failed' });
@@ -210,6 +234,7 @@ function appApiAuthMiddleware(req, res, next) {
 
 module.exports = {
     appApiAuthMiddleware,
+    isDocumentNavigation,
     decodeAuthHeader,
     fetchNextcloudUser,
     mintSaasJwt,

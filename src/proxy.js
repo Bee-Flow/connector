@@ -12,6 +12,37 @@ const http = require('http');
 const https = require('https');
 const config = require('./config');
 
+// How long the SaaS may take to send RESPONSE HEADERS before we give up.
+// Deliberately not a whole-request timeout: an SSE chat turn legitimately
+// streams for minutes, and the headers arrive within the first moment. Once
+// they do, the timer is cleared and the body streams for as long as it needs.
+// Without this a SaaS that accepts the socket and never answers left the
+// browser hanging forever on a request that shows no error anywhere.
+const RESPONSE_HEADERS_TIMEOUT_MS = parseInt(
+    process.env.BEEFLOW_UPSTREAM_HEADERS_TIMEOUT_MS || '60000', 10);
+
+// Requests whose body express.json() has already consumed and parsed. Only
+// those may be re-serialised by fixRequestBody.
+//
+// express.json() assigns `req.body = {}` BEFORE it checks the content-type
+// (body-parser: `req.body = req.body || {}` precedes `shouldParse`), so a
+// multipart/form-data upload arrives here with a TRUTHY-but-empty req.body
+// while its raw stream is still unread. The old `if (req.body)` guard
+// therefore handed uploads to fixRequestBody too, whose multipart branch
+// re-encodes `{}` into an empty document.
+//
+// Measured against the pinned http-proxy-middleware the upload still survives
+// (fixRequestBody bails while req.readableLength is non-zero, and the piped
+// body wins even when it is zero) — so this is a latent hazard rather than an
+// observed bug. Gating on the content-type express.json() actually parses
+// makes correctness ours instead of a transitive dependency's internals.
+// test/chatStream.regression.test.js pins the behaviour either way.
+function hasParsedJsonBody(req) {
+    const ct = String(req.headers['content-type'] || '').toLowerCase();
+    if (!ct.includes('json')) return false;
+    return !!req.body && typeof req.body === 'object';
+}
+
 // Custom agents with keep-alive disabled. http-proxy-middleware (and Node's
 // default Agent) cache TCP sockets per host; when the upstream container
 // gets a new IP (compose restart, rolling deploy, k8s pod rotation), the
@@ -54,6 +85,44 @@ function buildApiProxy() {
                 proxyReq.removeHeader('cookie');
                 proxyReq.removeHeader('origin');
                 proxyReq.removeHeader('referer');
+
+                // Never let the connector→SaaS hop be compressed.
+                //
+                // The browser's `Accept-Encoding: gzip, deflate, br` is copied
+                // onto this request verbatim, so any compressing hop in front
+                // of the SaaS may gzip the SSE chat stream. This proxy cannot
+                // decompress it (it pipes bytes through untouched), and the
+                // response half used to DELETE the `Content-Encoding` header —
+                // which handed the browser gzip bytes labelled `text/event-
+                // stream`. The SSE reader then matched zero `data:` lines and
+                // rendered a blank assistant reply with no error at all.
+                //
+                // This hop is connector→SaaS over the operator's own network,
+                // where compression buys almost nothing, so asking for
+                // identity removes the whole failure mode at the source. The
+                // browser→Nextcloud hop still compresses normally.
+                proxyReq.setHeader('accept-encoding', 'identity');
+
+                // A parsed body has to be re-serialised (below), which means
+                // this request gets a Content-Length. Drop any inherited
+                // chunked framing first: http-proxy copies the inbound headers
+                // onto the outbound request, so `Transfer-Encoding: chunked` +
+                // fixRequestBody's `Content-Length` produced a message framed
+                // BOTH ways. RFC 9112 §6.1 requires rejecting that, and Node
+                // does — 400, route handler never invoked. Nextcloud's AppAPI
+                // proxy makes this the normal case, not an edge case: it drops
+                // content-length from the forwarded headers
+                // (ExAppProxyController::buildHeadersWithExclude) and streams
+                // php://input through Guzzle, which then frames it chunked.
+                if (hasParsedJsonBody(req)) proxyReq.removeHeader('transfer-encoding');
+
+                // Give up if the SaaS never sends response headers. Cleared in
+                // proxyRes, so a long SSE body is unaffected.
+                proxyReq.setTimeout(RESPONSE_HEADERS_TIMEOUT_MS, () => {
+                    proxyReq.destroy(new Error(
+                        `upstream sent no response headers within ${RESPONSE_HEADERS_TIMEOUT_MS}ms`));
+                });
+
                 if (req.beeflow?.jwt) {
                     proxyReq.setHeader('Authorization', `Bearer ${req.beeflow.jwt}`);
                 }
@@ -68,9 +137,30 @@ function buildApiProxy() {
                     proxyReq.setHeader('X-Beeflow-NC-Instance-Id', config.ncInstanceId);
                 }
                 proxyReq.setHeader('X-Beeflow-NC-Base-Url', config.nextcloudUrl);
-                if (req.body) fixRequestBody(proxyReq, req);
+
+                // Nextcloud's AppAPI has no PATCH proxy route at all — its
+                // routes.php only registers ExAppGet/Post/Put/Delete and
+                // AppAPIService::requestToExAppInternal's match() has no
+                // 'PATCH' arm. So the SPA sends PATCH as POST plus this
+                // header when it runs inside Nextcloud; restore the real
+                // method here, before the SaaS sees it.
+                const override = req.headers['x-http-method-override'];
+                if (override && req.method === 'POST') {
+                    const verb = String(override).toUpperCase();
+                    if (verb === 'PATCH') {
+                        proxyReq.method = verb;
+                        proxyReq.removeHeader('x-http-method-override');
+                    }
+                }
+
+                if (hasParsedJsonBody(req)) fixRequestBody(proxyReq, req);
             },
             proxyRes: (proxyRes, req, res) => {
+                // Headers arrived — the connect-phase timer has done its job.
+                // Anything after this point is body streaming, which must be
+                // allowed to take as long as the model needs. proxyRes.req is
+                // the OUTBOUND request the timer was armed on.
+                try { proxyRes.req?.setTimeout?.(0); } catch (_) { /* best effort */ }
                 // SSE pass-through.
                 //
                 // NC's AppAPI proxy (apps/app_api/lib/Controller/
@@ -103,15 +193,23 @@ function buildApiProxy() {
                     proxyRes.headers['x-accel-buffering'] = 'no';
                     proxyRes.headers['cache-control'] = 'no-cache, no-transform';
 
+                    // NOTE: `content-encoding` is deliberately NOT touched here.
+                    // Deleting it while forwarding the bytes untouched is what
+                    // turned a compressed stream into binary garbage labelled
+                    // `text/event-stream` — a 200 whose body yields zero SSE
+                    // events, i.e. a blank assistant reply with no error. The
+                    // request half now asks the SaaS for `identity`, so a
+                    // compressed SSE body should not arise at all; if one still
+                    // does, forwarding its header intact lets the browser
+                    // decode it correctly instead of silently corrupting it.
+
                     if (process.env.HP_SHARED_KEY) {
-                        // HaRP mode: the stream is browser → HAProxy → unix
-                        // socket — NC's PHP ExAppProxyController is NOT in the
-                        // path, so the double-chunking described below can't
-                        // happen. Let normal chunked streaming through and keep
-                        // the connection alive (close-framing would needlessly
-                        // tear down the tunnel socket per stream). Just drop a
-                        // stale content-encoding if the upstream set one.
-                        delete proxyRes.headers['content-encoding'];
+                        // HaRP mode: the connector is reached over the HaRP
+                        // tunnel rather than through PHP's fpassthru, so the
+                        // re-chunking worked around below does not apply here.
+                        // Let normal chunked streaming through and keep the
+                        // connection alive — close-framing would needlessly
+                        // tear down the tunnel socket once per stream.
                     } else {
                         // Manual / Docker-Socket-Proxy mode: NC's AppAPI proxy
                         // (apps/app_api/lib/Controller/ExAppProxyController.php)
@@ -138,7 +236,6 @@ function buildApiProxy() {
                         // (RFC 9112 §6.3). The flag is undocumented but stable
                         // across Node 16-22; tested in this environment.
                         delete proxyRes.headers['content-length'];
-                        delete proxyRes.headers['content-encoding'];
                         delete proxyRes.headers['transfer-encoding'];
                         proxyRes.headers['connection'] = 'close';
                         if (res) {

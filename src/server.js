@@ -135,9 +135,36 @@ app.get(['/js/embed', '/js/embed.js'], (_req, res) => {
     content.innerHTML = '';
     var iframe = document.createElement('iframe');
     iframe.src = OC.generateUrl('/apps/app_api/proxy/${config.appId}/');
-    iframe.style.cssText = 'width:100%;height:calc(100vh - 50px);border:0;display:block;';
+    // Height was hardcoded to calc(100vh - 50px), i.e. an assumption that
+    // Nextcloud's chrome above #content is exactly 50px. It is not, and the
+    // difference is paid by the BOTTOM of the frame — which is where the chat
+    // composer lives. Measured against real NC shells the frame overshot its
+    // slot by 4-44px (body gap in NC 28+, taller header under browser zoom, an
+    // app-navigation row), clipping the input box out of view; users read that
+    // as "I can't send a message".
+    //
+    // Measure the frame's own top offset instead of guessing it, and re-measure
+    // on resize so zoom and orientation changes stay correct.
+    iframe.style.cssText = 'width:100%;border:0;display:block;';
     iframe.allow = 'clipboard-read; clipboard-write';
     content.appendChild(iframe);
+
+    function fit() {
+        var top = iframe.getBoundingClientRect().top;
+        // Clamp: a mid-layout measurement can briefly read past the viewport.
+        var h = Math.max(320, Math.round(window.innerHeight - top));
+        iframe.style.height = h + 'px';
+    }
+    fit();
+    window.addEventListener('resize', fit);
+    window.addEventListener('orientationchange', fit);
+    // NC's own chrome settles after our script runs (app menu, banners), so
+    // re-measure once the layout has quiesced.
+    if (typeof ResizeObserver === 'function') {
+        try { new ResizeObserver(fit).observe(content); } catch (e) { /* older browsers */ }
+    }
+    setTimeout(fit, 0);
+    setTimeout(fit, 250);
 })();
 `);
 });

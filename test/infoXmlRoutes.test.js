@@ -100,6 +100,11 @@ const EXPECTED = [
     ['setup/rotate-tenant-key', 'POST', ACCESS.ADMIN],
     ['setup/diagnostics', 'GET', ACCESS.ADMIN],
     ['webhook/nc-events', 'POST', ACCESS.ADMIN],
+    // Nextcloud `webhook_listeners` deliveries. PUBLIC because the calling
+    // background job has no user session; the X-Beeflow-Hook-Secret header is
+    // what authenticates it. A USER/ADMIN level here silently kills every push
+    // trigger — the exact failure mode this whole rewrite exists to fix.
+    ['hooks/nextcloud', 'POST', ACCESS.PUBLIC],
     // Ordinary SPA traffic.
     ['api/health', 'GET', ACCESS.USER],
     ['auth/user', 'GET', ACCESS.USER],

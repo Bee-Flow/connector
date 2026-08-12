@@ -18,10 +18,16 @@
  * derives from the Bee Flow JWT — the SaaS already knows the NC uid for
  * each connector-authenticated user (see server/auth/connectorJwt.js).
  *
- * Inbound auth check: the SaaS authenticates to the connector with HMAC of
- * (timestamp + path + body) using the tenant key. Anyone else hitting /nc/*
- * gets 401. Without this, a malicious SPA could call /nc/* directly and
- * impersonate any NC user.
+ * Inbound auth check: the SaaS authenticates to the connector with an HMAC of
+ * (timestamp + method + path + ncUid + sha256(body)) using the tenant key.
+ * Anyone else hitting /nc/* gets 401. Without this, a malicious SPA could call
+ * /nc/* directly and impersonate any NC user.
+ *
+ * The body hash is load-bearing, not decoration. Every write verb is tunnelled
+ * over POST + X-HTTP-Method-Override (AppAPI's proxy rejects raw PROPFIND /
+ * PUT / MOVE …), so a signature that covered only method+path would be a
+ * five-minute licence to overwrite that exact file with arbitrary content. A
+ * replay cache closes the matching hole for byte-identical retries.
  *
  * Routes proxied (everything else returns 404):
  *   /nc/ocs/*               → /ocs/...                  (provisioning, capabilities, etc.)
@@ -29,12 +35,31 @@
  *   /nc/index.php/apps/*    → /index.php/apps/...       (Mail, Deck, Notes, Talk, etc.)
  */
 
-const { createProxyMiddleware, fixRequestBody } = require('http-proxy-middleware');
+const express = require('express');
+const { createProxyMiddleware } = require('http-proxy-middleware');
 const crypto = require('crypto');
 const config = require('./config');
 const { ncHttpsAgent, ncTlsMode } = require('./ncTls');
 
 const ALLOWED_PREFIXES = ['/ocs/', '/remote.php/dav/', '/index.php/apps/'];
+
+const EMPTY_BODY_SHA256 = crypto.createHash('sha256').update('').digest('hex');
+
+function bodyHashOf(req) {
+    const body = req.body;
+    if (Buffer.isBuffer(body) && body.length) {
+        return crypto.createHash('sha256').update(body).digest('hex');
+    }
+    return EMPTY_BODY_SHA256;
+}
+
+// On replay: there is deliberately no signature-dedup cache here. Two
+// legitimate identical requests in the same second (parallel reads of the same
+// path for the same user, or a throttle retry) produce the same signature, so
+// a dedup cache rejects real traffic. Now that the signature covers
+// sha256(body), a replay can only reproduce a request that already succeeded —
+// it cannot substitute different content. Adding true replay protection means
+// a client nonce in the signed message, not deduping the signature itself.
 
 // Constant-time HMAC verification of `<ts>.<sig>` using tenant key.
 // The SaaS sends `X-Beeflow-Sig: <unixSeconds>.<hexHmac>`. Skew tolerance
@@ -69,14 +94,21 @@ function verifyHmac(req) {
     // this also means the override can't be swapped without invalidating the
     // signature.
     const signedMethod = String(req.headers['x-http-method-override'] || req.method).toUpperCase();
-    let sigBuf;
-    try { sigBuf = Buffer.from(sig, 'hex'); } catch { return false; }
-    const candidates = decodedPath === rawPath ? [rawPath] : [decodedPath, rawPath];
-    for (const path of candidates) {
-        const message = `${ts}\n${signedMethod}\n${path}\n${ncUid}`;
-        const expected = Buffer.from(crypto.createHmac('sha256', config.tenantKey).update(message).digest('hex'), 'hex');
-        if (expected.length === sigBuf.length && crypto.timingSafeEqual(expected, sigBuf)) {
-            return true;
+    // Buffer.from(str, 'hex') never throws — it truncates at the first invalid
+    // pair — so the length comparison below is what rejects malformed input.
+    const sigBuf = Buffer.from(sig, 'hex');
+    if (sigBuf.length !== 32) return false;
+
+    const paths = decodedPath === rawPath ? [rawPath] : [decodedPath, rawPath];
+    // v2 binds the body; v1 is the pre-body-hash form, accepted for one release
+    // so a SaaS/connector version skew doesn't break customers mid-rollout.
+    // Remove the v1 suffix once every deployed server signs v2.
+    const suffixes = [`\n${bodyHashOf(req)}`, ''];
+    for (const path of paths) {
+        for (const suffix of suffixes) {
+            const message = `${ts}\n${signedMethod}\n${path}\n${ncUid}${suffix}`;
+            const expected = crypto.createHmac('sha256', config.tenantKey).update(message).digest();
+            if (crypto.timingSafeEqual(expected, sigBuf)) return true;
         }
     }
     return false;
@@ -117,12 +149,19 @@ function buildNcProxy() {
                 proxyReq.removeHeader('x-beeflow-sig'); // never leak HMAC sigs upstream
                 proxyReq.removeHeader('x-beeflow-nc-uid'); // internal impersonation hint
                 proxyReq.removeHeader('x-http-method-override'); // already applied to req.method
-                // express.json() (mounted globally before this proxy) consumes
-                // application/json bodies, so without this the upstream request
-                // would carry an empty body. Re-stream the parsed body — mirrors
-                // proxy.js. Only populated for JSON requests; DAV/text/urlencoded
-                // bodies stream untouched (req.body is empty → no-op).
-                if (req.body && Object.keys(req.body).length) fixRequestBody(proxyReq, req);
+                // We consumed the request stream to hash the body for the HMAC
+                // (express.raw, mounted in mount() below), so replay the exact
+                // bytes upstream. Raw bytes — not a parsed-and-re-serialised
+                // object: this path carries WebDAV file uploads, and
+                // round-tripping a .json file through JSON.parse/stringify
+                // rewrites its formatting and rejects any file that isn't valid
+                // JSON.
+                if (Buffer.isBuffer(req.body)) {
+                    proxyReq.removeHeader('transfer-encoding');
+                    proxyReq.setHeader('Content-Length', req.body.length);
+                    if (req.body.length) proxyReq.write(req.body);
+                    proxyReq.end();
+                }
             },
             error: (err, req, res) => {
                 console.error(`[NcProxy] ${req.method} ${req.url}: ${err.message}`);
@@ -136,7 +175,12 @@ function buildNcProxy() {
 
 function mount(app) {
     const proxy = buildNcProxy();
-    app.use('/nc', (req, res, next) => {
+    // Buffer the body as raw bytes for every content type. Two reasons: the
+    // HMAC covers sha256(body), and WebDAV uploads must reach Nextcloud
+    // byte-for-byte. The limit matches what the global JSON parser used to
+    // impose on this path, plus headroom for file uploads.
+    const rawBody = express.raw({ type: () => true, limit: '100mb' });
+    app.use('/nc', rawBody, (req, res, next) => {
         // Allowed-prefix check after pathRewrite would happen too late; do it here.
         const stripped = req.url.split('?')[0];
         if (!ALLOWED_PREFIXES.some(p => stripped.startsWith(p))) {

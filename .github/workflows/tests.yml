@@ -1,0 +1,43 @@
+# Unit tests for the connector.
+#
+# WHY THIS EXISTS: this repo's only workflow used to be the image build, so a
+# pull request could go green on "the container compiles" while the code inside
+# it was broken. That is not hypothetical here — the connector spent months
+# subscribing to Nextcloud events through an AppAPI interface Nextcloud had
+# removed, dropping every delivery while reporting itself healthy. The tests
+# that would have caught it were written; nothing ran them.
+#
+# No Postgres, no network, no Nextcloud: these are unit tests over the
+# connector's own logic (HMAC verification, route allow-lists, webhook envelope
+# parsing, Talk signature checks, Task Processing registration). Keep it that
+# way — anything needing a live Nextcloud belongs in a manual workflow.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Unit tests
+        # Both are read at import time; these are throwaway values and every
+        # test that needs a real secret sets its own.
+        env:
+          APP_SECRET: ci-test-secret
+          NEXTCLOUD_URL: http://nextcloud.invalid
+        run: node --test test/*.test.js

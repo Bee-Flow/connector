@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
-## [Unreleased]
+## [1.2.0] - 2026-08-12
 
 ### Added
 - **Bee Flow can now answer Nextcloud's Assistant agent, not just its writing tools.** Bee Flow registers as the provider behind Assistant's agent — the tab where you ask it to actually find and do things, rather than rewrite a paragraph. Because Nextcloud hands the provider the identity of the person asking, anything Bee Flow looks up is looked up as them: nobody sees a file they could not already open. For now the assistant can only read — searching, fetching and summarising. Actions that change something are deliberately withheld until Nextcloud's "are you sure?" step is wired up, so it cannot alter anything on your behalf without asking.

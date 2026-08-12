@@ -1,0 +1,252 @@
+# Nightly connector image.
+#
+# WHY: `latest` is what an App Store install pulls (appinfo/info.xml pins
+# <image-tag>latest</image-tag>), and `latest` only moves on a tagged release.
+# That leaves nothing between "unreleased main" and "everyone gets it" — so
+# work that wants real-Nextcloud exercise before it reaches customers has
+# nowhere to live. This publishes that middle channel.
+#
+# WHAT AN ADMIN INSTALLS: point AppAPI at the `nightly` tag instead of `latest`
+# (Administration → AppAPI → the app's deploy options, or `occ app_api:app:register`
+# with an image override). The tag moves; pin `nightly-<connector>-<hive>` for a
+# build that never changes under you.
+#
+# The image embeds the frontend, cloned from Bee-Flow/hive at build time, so a
+# nightly is identified by BOTH commits. Nothing changed in either → no build:
+# the content-identity tag already exists and the run exits early rather than
+# burning two native runners to produce a byte-identical image.
+#
+# Deliberately does NOT touch apps.nextcloud.com. Publishing a nightly to the
+# App Store's nightly channel additionally needs a pre-release <version> in
+# info.xml and <image-tag>nightly</image-tag> in the packaged tarball, which is
+# a separate change; see the note at the end of the summary step.
+name: nightly
+
+on:
+  schedule:
+    # 03:00 UTC — after the working day in EU, before it starts again.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Build even when neither connector nor hive has moved'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/bee-flow/connector
+  HIVE_REPO: Bee-Flow/hive
+
+jobs:
+  # ── prepare: resolve both commits, decide whether there is anything to do ──
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      hive_sha: ${{ steps.ids.outputs.hive_sha }}
+      ident: ${{ steps.ids.outputs.ident }}
+      datestamp: ${{ steps.ids.outputs.datestamp }}
+      should_build: ${{ steps.skip.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve connector + hive commits
+        id: ids
+        run: |
+          set -euo pipefail
+          hive_sha=$(git ls-remote "https://github.com/${HIVE_REPO}.git" refs/heads/main | cut -f1)
+          if [ -z "$hive_sha" ]; then
+            echo "::error::could not resolve ${HIVE_REPO} main"; exit 1
+          fi
+          c7=$(echo "${{ github.sha }}" | cut -c1-7)
+          h7=$(echo "$hive_sha" | cut -c1-7)
+          {
+            echo "hive_sha=$hive_sha"
+            # Content identity: the pair of commits that fully determine the
+            # image. Date is intentionally NOT part of it — two nightlies of
+            # the same code are the same image.
+            echo "ident=nightly-$c7-$h7"
+            echo "datestamp=nightly-$(date -u +%Y%m%d)"
+          } >> "$GITHUB_OUTPUT"
+          echo "connector ${{ github.sha }} + hive $hive_sha"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip when nothing moved
+        id: skip
+        run: |
+          set -uo pipefail
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "forced"; echo "should_build=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if docker buildx imagetools inspect "${IMAGE}:${{ steps.ids.outputs.ident }}" >/dev/null 2>&1; then
+            echo "${IMAGE}:${{ steps.ids.outputs.ident }} already exists — neither repo moved."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── build: one native runner per arch, pushed by digest, no tags ──
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      # One arch flaking must not discard the other's finished work; `merge`
+      # needs both, so a partial failure still blocks the nightly.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      # No QEMU: each job is already on its own architecture.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          # Pin the frontend to the exact commit `prepare` resolved, so both
+          # arches embed the identical SPA and the tag means one thing.
+          build-args: |
+            HIVE_REF=${{ needs.prepare.outputs.hive_sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            nl.beeflow.hive.revision=${{ needs.prepare.outputs.hive_sha }}
+          # Shares the release workflow's cache scope on purpose — the
+          # expensive stage is hive clone + npm ci + Vite build, and a nightly
+          # warms it for the next release just as well.
+          cache-from: type=gha,scope=connector-${{ matrix.arch }}
+          cache-to: type=gha,scope=connector-${{ matrix.arch }},mode=max
+          provenance: true
+          sbom: true
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── merge: one multi-arch manifest, three tags ──
+  merge:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: nightly-digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # :nightly moves. :nightly-<c7>-<h7> is the content identity the skip
+      # check reads. :nightly-<date> is for humans reporting "the 12 Aug build".
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            -t ${{ env.IMAGE }}:nightly \
+            -t ${{ env.IMAGE }}:${{ needs.prepare.outputs.ident }} \
+            -t ${{ env.IMAGE }}:${{ needs.prepare.outputs.datestamp }} \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+
+      # A single-arch :nightly that silently breaks every arm64 tester is the
+      # exact failure this channel exists to catch early, not to cause.
+      - name: Inspect manifest
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect ${{ env.IMAGE }}:nightly
+          for plat in linux/amd64 linux/arm64; do
+            if ! docker buildx imagetools inspect ${{ env.IMAGE }}:nightly \
+                --format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}} {{end}}' \
+                | grep -qw "$plat"; then
+              echo "::error::nightly manifest is missing $plat"; exit 1
+            fi
+          done
+
+      - name: Summary
+        run: |
+          {
+            echo "### Nightly published"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| connector | \`${{ github.sha }}\` |"
+            echo "| hive | \`${{ needs.prepare.outputs.hive_sha }}\` |"
+            echo "| moving tag | \`${{ env.IMAGE }}:nightly\` |"
+            echo "| pinned tag | \`${{ env.IMAGE }}:${{ needs.prepare.outputs.ident }}\` |"
+            echo "| dated tag | \`${{ env.IMAGE }}:${{ needs.prepare.outputs.datestamp }}\` |"
+            echo
+            echo "Install by overriding the image tag in AppAPI's deploy options —"
+            echo "an App Store install pulls \`latest\`, which only a tagged release moves."
+            echo
+            echo "> To offer this through the App Store's own nightly channel instead,"
+            echo "> the packaged \`info.xml\` needs a pre-release \`<version>\` and"
+            echo "> \`<image-tag>nightly</image-tag>\`. Not done here: it changes what"
+            echo "> a *release* tarball means, and is worth doing deliberately."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Makes "nothing to do" visible in the Actions list instead of looking like
+  # a workflow that mysteriously ran no jobs.
+  skipped:
+    needs: prepare
+    if: needs.prepare.outputs.should_build != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          {
+            echo "### Nightly skipped"
+            echo
+            echo "Neither the connector nor hive has moved since"
+            echo "\`${{ env.IMAGE }}:${{ needs.prepare.outputs.ident }}\` was built."
+            echo "Re-run with **force** to rebuild anyway."
+          } >> "$GITHUB_STEP_SUMMARY"

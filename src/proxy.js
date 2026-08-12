@@ -60,7 +60,7 @@ const httpsAgent = new https.Agent({ keepAlive: false });
 // LOCAL paths (/setup, /js/embed, /img/app.svg) are handled by their own
 // routes in server.js and never reach the shell proxy; client-side SPA routes
 // (e.g. /agents) are NOT shell paths and stay proxied to the SaaS API.
-const SPA_SHELL = /^\/(assets\/|js\/|img\/|favicon|BeeFlow-logo|bee-flow-logo|index\.html$|$)/;
+const SPA_SHELL = /^\/(assets\/|js\/|img\/|favicon|app-icon\.svg$|BeeFlow-logo|bee-flow-logo|index\.html$|$)/;
 
 function isSpaShellPath(urlPath) {
     return SPA_SHELL.test(String(urlPath).split('?')[0]);

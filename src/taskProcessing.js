@@ -48,6 +48,20 @@ const TP_API = '/ocs/v2.php/taskprocessing';
 
 const PROVIDER_PREFIX = 'bee_flow';
 
+// Nextcloud's OCP\TaskProcessing\EShapeType, by its integer backing value.
+// AppAPI's provider registration validates each shape entry as
+// { name, description, shape_type:<int> } — passing the PHP enum's *name*
+// (e.g. 'ListOfTexts') is rejected with HTTP 400 "should be an array and must
+// have name, description and shape_type keys", which silently dropped the one
+// provider that has a non-empty shape (the agent) and left the Assistant with
+// "No provider found". Keep in sync with
+// https://github.com/nextcloud/server/blob/master/lib/public/TaskProcessing/EShapeType.php
+const EShapeType = {
+    Number: 0, Text: 1, Image: 2, Audio: 3, Video: 4, File: 5, Enum: 6,
+    ListOfNumbers: 10, ListOfTexts: 11, ListOfImages: 12,
+    ListOfAudios: 13, ListOfVideos: 14, ListOfFiles: 15,
+};
+
 /**
  * Task types we implement. Each becomes one registered provider.
  *
@@ -98,8 +112,8 @@ const TASK_TYPES = [
         expectedRuntime: 60,
         // Assistant reads optionalInputShape['memories'] to decide whether it
         // may pass prior context, so declaring it is what turns that on.
-        optionalInputShape: [{ name: 'memories', description: 'Relevant prior context', type: 'ListOfTexts' }],
-        optionalOutputShape: [{ name: 'sources', description: 'Sources used to answer', type: 'ListOfTexts' }],
+        optionalInputShape: [{ name: 'memories', description: 'Relevant prior context', shape_type: EShapeType.ListOfTexts }],
+        optionalOutputShape: [{ name: 'sources', description: 'Sources used to answer', shape_type: EShapeType.ListOfTexts }],
     },
 ];
 
@@ -171,16 +185,30 @@ async function registerTaskProcessing() {
             body: JSON.stringify({ provider: providerDefinition(taskType), customTaskType: null }),
             signal: AbortSignal.timeout(5_000),
         }), { label: `tp-${taskType.id}`, budgetMs: 20_000 });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+            // Carry the response body: a failed registration is almost always
+            // Nextcloud rejecting one specific provider (unknown task type,
+            // malformed shape), and "1 failed" with no id told nobody which one
+            // or why — which for the agent type is the difference between the
+            // Assistant showing its chat and showing "No provider found".
+            const body = await res.text().catch(() => '');
+            throw new Error(`HTTP ${res.status}${body ? `: ${body.slice(0, 300)}` : ''}`);
+        }
         return taskType.id;
     }));
 
     const registered = results.filter(r => r.status === 'fulfilled').length;
-    const failed = results.length - registered;
+    const failures = results
+        .map((r, i) => ({ r, id: TASK_TYPES[i].id }))
+        .filter(x => x.r.status === 'rejected');
+    const failed = failures.length;
     if (registered > 0) _registered = true;
     console.log(`[TaskProcessing] ${registered}/${TASK_TYPES.length} providers registered`
-        + (failed ? ` (${failed} failed — Nextcloud may predate the Task Processing API)` : ''));
-    return { ok: failed === 0, registered, failed };
+        + (failed ? ` (${failed} failed)` : ''));
+    for (const { id, r } of failures) {
+        console.warn(`[TaskProcessing] provider '${id}' failed to register: ${r.reason?.message || r.reason}`);
+    }
+    return { ok: failed === 0, registered, failed, failedIds: failures.map(f => f.id) };
 }
 
 async function unregisterTaskProcessing() {

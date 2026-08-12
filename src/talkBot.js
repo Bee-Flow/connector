@@ -164,9 +164,11 @@ function mapActivity(body) {
     if (!body || typeof body !== 'object') return null;
     const token = body.target?.id || body.object?.id || null;
     const roomName = body.target?.name || body.object?.name || null;
-    // actor.id is "<type>/<id>", e.g. "users/ada-lovelace".
+    // actor.id is "<type>/<id>", e.g. "users/ada-lovelace" or "bots/42".
     const actorRaw = String(body.actor?.id || '');
-    const actor = actorRaw.includes('/') ? actorRaw.slice(actorRaw.indexOf('/') + 1) : (actorRaw || null);
+    const slash = actorRaw.indexOf('/');
+    const actorType = slash > 0 ? actorRaw.slice(0, slash) : null;
+    const actor = slash >= 0 ? actorRaw.slice(slash + 1) : (actorRaw || null);
 
     if (body.type === 'Create' && body.object?.name === 'message') {
         // object.content is a JSON string with {message, parameters}; the
@@ -186,6 +188,7 @@ function mapActivity(body) {
                 roomToken: token,
                 roomName,
                 actor,
+                actorType,
                 actorName: body.actor?.name || null,
                 message,
                 parameters,
@@ -218,6 +221,146 @@ function mapActivity(body) {
     return null;
 }
 
+// ── @mention → agent answer ─────────────────────────────────────────────────
+//
+// The bot forwards every message to the SaaS routines engine (below). ON TOP of
+// that, when a HUMAN @mentions "Bee Flow" in a conversation the bot is in, we
+// answer inline: strip the mention, run the Nextcloud agent task type (read-only
+// tools scoped to the mentioning user, the same provider the Assistant uses),
+// and post the reply back through Talk's bot API. This is the "@ in Talk"
+// experience — no routine to build.
+//
+// Fire-and-forget by design: an agent turn can take many seconds, and Talk needs
+// a prompt 200 on the webhook or it marks the bot unhealthy. So the webhook
+// answers immediately and the reply is posted out-of-band.
+
+const AGENT_TASK_TYPE = 'core:contextagent:interaction';
+
+// Does this message @mention the bot? Prefer Talk's structured mention
+// parameters (the accurate "@" signal); fall back to the bot name appearing in
+// the raw text so it still works if a delivery omits parameters.
+function mentionsBot(payload) {
+    const params = payload?.parameters;
+    if (params && typeof params === 'object') {
+        for (const v of Object.values(params)) {
+            if (v && typeof v === 'object'
+                && String(v.name || '').toLowerCase() === BOT_NAME.toLowerCase()) {
+                return true;
+            }
+        }
+    }
+    return /(^|\s)@?bee\s*flow\b/i.test(String(payload?.message || ''));
+}
+
+// Recover the question from a mention message: drop Talk's {mention-…}
+// placeholders and a literal "@Bee Flow", collapse whitespace.
+function extractQuestion(payload) {
+    return String(payload?.message || '')
+        .replace(/\{mention-[^}]*\}/g, ' ')
+        .replace(/@?\bbee\s*flow\b/ig, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+// Ask the SaaS agent, reusing the same signed execute endpoint the Task
+// Processing providers use. Returns the answer text (possibly empty).
+async function askSaaSAgent({ question, ncUid, roomToken }) {
+    const apiPath = '/api/nextcloud/task-processing/execute';
+    const body = JSON.stringify({
+        taskType: AGENT_TASK_TYPE,
+        // conversation_token keys the agent's per-thread memory; one thread per
+        // room so a follow-up mention continues the same conversation.
+        input: { input: question, conversation_token: `talk:${roomToken}` },
+        ncUid: ncUid || null,
+    });
+    const ts = Math.floor(Date.now() / 1000);
+    const sig = crypto.createHmac('sha256', config.tenantKey)
+        .update(`${ts}\nPOST\n${apiPath}\n${body}`).digest('hex');
+    const res = await fetch(`${config.apiBaseUrl}${apiPath}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Beeflow-Source': 'nextcloud-connector',
+            'X-Beeflow-NC-Instance-Id': config.ncInstanceId,
+            'X-Beeflow-Sig': `${ts}.${sig}`,
+        },
+        body,
+        signal: AbortSignal.timeout(120_000),
+    });
+    if (!res.ok) {
+        throw new Error(`SaaS ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
+    }
+    const data = await res.json().catch(() => null);
+    const out = data?.output;
+    if (out && typeof out === 'object') return String(out.output || '').trim();
+    return typeof out === 'string' ? out.trim() : '';
+}
+
+// Post a message back to a conversation as the bot. Auth is the bot signature
+// over RANDOM + message (spreed docs/bots.md), NOT a user session.
+async function _sendBotMessage(token, msg, replyTo) {
+    const secret = loadSecret();
+    if (!secret) throw new Error('no bot secret — cannot post');
+    // The signature covers RANDOM + the message content only (spreed
+    // docs/bots.md), NOT the JSON envelope, so replyTo/referenceId are outside it.
+    const random = crypto.randomBytes(32).toString('hex');
+    const signature = crypto.createHmac('sha256', secret).update(random + msg).digest('hex');
+    const referenceId = crypto.createHash('sha256').update(`${random}:${msg}`).digest('hex');
+    const url = `${config.nextcloudUrl}/ocs/v2.php/apps/spreed/api/v1/bot/${encodeURIComponent(token)}/message`;
+    const bodyObj = { message: msg, referenceId };
+    if (Number.isFinite(Number(replyTo)) && Number(replyTo) > 0) bodyObj.replyTo = Number(replyTo);
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'OCS-APIRequest': 'true',
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'X-Nextcloud-Talk-Bot-Random': random,
+            'X-Nextcloud-Talk-Bot-Signature': signature,
+        },
+        body: JSON.stringify(bodyObj),
+        signal: AbortSignal.timeout(10_000),
+    });
+    return res;
+}
+
+async function postBotMessage(token, message, replyTo) {
+    const msg = String(message || '').slice(0, 32000);
+    if (!msg) return;
+    let res = await _sendBotMessage(token, msg, replyTo);
+    // A stale/invalid replyTo (deleted message, or one the bot can't see) makes
+    // Talk 400 the whole post. The answer matters more than the threading, so
+    // drop replyTo and try once more before giving up.
+    if (!res.ok && replyTo != null && res.status === 400) {
+        res = await _sendBotMessage(token, msg, null);
+    }
+    if (!res.ok) {
+        throw new Error(`bot message HTTP ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
+    }
+}
+
+async function handleMention(payload) {
+    const roomToken = payload?.roomToken;
+    if (!roomToken) return;
+    const question = extractQuestion(payload);
+    if (!question) {
+        await postBotMessage(roomToken,
+            'Hi! Mention me with a question — e.g. "@Bee Flow what changed in my calendar today?"',
+            payload.messageId).catch(e => console.warn(`[TalkBot] reply failed: ${e.message}`));
+        return;
+    }
+    try {
+        const answer = await askSaaSAgent({ question, ncUid: payload.actor, roomToken });
+        await postBotMessage(roomToken, answer || 'I could not find an answer to that.', payload.messageId);
+        console.log(`[TalkBot] answered @mention in room ${roomToken} (uid=${payload.actor})`);
+    } catch (err) {
+        console.warn(`[TalkBot] @mention answer failed for room ${roomToken}: ${err.message}`);
+        await postBotMessage(roomToken,
+            'Sorry — I could not answer that just now. Please try again in a moment.',
+            payload.messageId).catch(() => {});
+    }
+}
+
 const router = express.Router();
 
 // express.raw, not express.json: the signature covers the exact bytes Talk
@@ -239,6 +382,17 @@ router.post(BOT_ROUTE, express.raw({ type: () => true, limit: '256kb' }), async 
 
     if (!config.tenantKey || !config.ncInstanceId) {
         return res.status(503).json({ error: 'Connector not yet bootstrapped' });
+    }
+
+    // "@ in Talk": a human @mentioning the bot gets an inline agent answer, on
+    // top of (not instead of) the routines forward below. Only humans, never a
+    // bot's own messages — that would be an answer-to-my-own-answer loop.
+    // Fire-and-forget so the webhook still returns promptly.
+    if (mapped.event === 'talk.message.received'
+        && mapped.payload.actorType === 'users'
+        && mentionsBot(mapped.payload)) {
+        handleMention(mapped.payload)
+            .catch(err => console.warn(`[TalkBot] handleMention crashed: ${err.message}`));
     }
 
     const payloadBody = JSON.stringify({
@@ -280,4 +434,7 @@ module.exports.verifyTalkSignature = verifyTalkSignature;
 module.exports.mapActivity = mapActivity;
 module.exports.loadSecret = loadSecret;
 module.exports.saveSecret = saveSecret;
+module.exports.mentionsBot = mentionsBot;
+module.exports.extractQuestion = extractQuestion;
 module.exports.BOT_ROUTE = BOT_ROUTE;
+module.exports.BOT_NAME = BOT_NAME;

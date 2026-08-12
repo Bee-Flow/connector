@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [1.3.0] - 2026-08-12
+
+### Added
+- **Ask Bee Flow directly in a Talk conversation.** Add the "Bee Flow" bot to a conversation, then mention it — "@Bee Flow, what changed in my calendar today?" — and it answers inline, using Nextcloud's Assistant agent with read-only access scoped to your own account. The bot only ever sees conversations a moderator has added it to. (Nextcloud does not list bots in the "@" autocomplete, so type the name; the mention still works.)
+
+### Fixed
+- **Bee Flow now actually appears as Nextcloud's Assistant agent.** The agent provider introduced in 1.2.0 was rejected by Nextcloud on registration because of a metadata mismatch, so the Assistant showed "No provider found" and its agent tab had no backend. The registration is corrected, and a failed provider registration now reports which provider and why instead of a bare count.
+- **The Bee Flow icon is back in the Files right-click menu.** The entries pointed at an icon path the connector did not serve, so they appeared without the bee. They now show the icon.
+- **The self-hosted server address in Settings no longer fights an address set at install time.** When both were set and disagreed, the connector repeatedly tried to switch targets and briefly dropped its connection on each attempt. An address supplied at install now takes precedence while it is set, and the Settings picker is informational.
+
 ## [1.2.0] - 2026-08-12
 
 ### Added

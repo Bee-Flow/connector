@@ -125,7 +125,25 @@ function _resolveTargetUrl(values) {
 
 let _lastApplied = null;
 
+let _envPinLogged = false;
+
 async function applyStoredValuesIfChanged() {
+    // Precedence: an explicit BEEFLOW_API_BASE_URL env var is a deliberate
+    // admin lock and wins over the picker — the same rule bootstrap and
+    // server.js already enforce (server.js only applies a stored apiBaseUrl
+    // when the env is unset). Without this guard the poll fought the env pin:
+    // it kept trying to switch to the stored value every interval, and each
+    // attempt invalidated the tenant key before failing and rolling back —
+    // e.g. a `http://localhost:3001` typed into the form on a box whose
+    // container reaches the host at a LAN IP, which strands the app keyless
+    // for the width of every retry.
+    if (process.env.BEEFLOW_API_BASE_URL) {
+        if (!_envPinLogged) {
+            console.log(`[Settings] BEEFLOW_API_BASE_URL is set (${process.env.BEEFLOW_API_BASE_URL}) — the admin picker is informational and will not repoint the connector.`);
+            _envPinLogged = true;
+        }
+        return;
+    }
     let values;
     try {
         values = await _readStoredValues();

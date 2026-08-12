@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [Unreleased]
+
+### Added
+- **Bee Flow can now answer Nextcloud's Assistant agent, not just its writing tools.** Bee Flow registers as the provider behind Assistant's agent — the tab where you ask it to actually find and do things, rather than rewrite a paragraph. Because Nextcloud hands the provider the identity of the person asking, anything Bee Flow looks up is looked up as them: nobody sees a file they could not already open. For now the assistant can only read — searching, fetching and summarising. Actions that change something are deliberately withheld until Nextcloud's "are you sure?" step is wired up, so it cannot alter anything on your behalf without asking.
+- **Bee Flow in the file right-click menu.** "Ask Bee Flow about this", "Summarise with Bee Flow" and "Run a Bee Flow routine…" appear when you right-click a file, and work on a whole multi-selection at once. Summarise only appears on files that contain text. These open Bee Flow; carrying the selected file straight into the conversation is still to come.
+- **Deck triggers work.** Routines can now start when a card is created, changed, deleted, moved to another list, or marked done. This has been offered in the automation builder for months and could not fire — Bee Flow believed Nextcloud had no way to notify it about Deck, which stopped being true when Deck 1.18.0 shipped. Two of the built-in example routines depended on it and were quietly dead.
+
+### Fixed
+- **Assistant requests no longer queue behind one another.** Bee Flow handled one AI task at a time per instance, so a second person asking anything waited for the first to finish. It now handles several at once.
+- **A request to Bee Flow can no longer hang forever.** If Bee Flow stopped responding mid-request, Nextcloud was never told, and the task sat marked "scheduled" — a spinner with nothing behind it. Requests now give up on a deadline that fits the kind of work, and report a failure the user can see and act on. The message also now distinguishes "this took too long, try again" from "something is broken, ask your administrator".
+- **Requests are no longer missed when several people ask at once.** Nextcloud only notifies an app that work is waiting when nothing of that kind is already running, so the second simultaneous request generated no notification at all and waited for the next one to arrive. Bee Flow now also checks for waiting work on its own, frequently while busy and rarely when idle.
+
 ## [1.1.0] - 2026-08-12
 
 ### Fixed

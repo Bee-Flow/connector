@@ -17,13 +17,24 @@ const config = require('../src/config');
 const wl = require('../src/webhookListeners');
 const hook = require('../src/automationEventsWebhook');
 
+// Deck classes verified to implement IWebhookCompatibleEvent upstream
+// (deck@HEAD lib/Event/ACardEvent.php:16). Its `Session*Event` and
+// `ABoardImportGetAllowedEvent` do NOT, so Deck cannot be allowed wholesale.
+// AAclEvent and BoardUpdatedEvent are compatible but intentionally unregistered
+// — Bee Flow has no catalogue entry for board or ACL changes yet.
+const DECK_WEBHOOK_COMPATIBLE = new Set([
+    'OCA\\Deck\\Event\\CardCreatedEvent',
+    'OCA\\Deck\\Event\\CardUpdatedEvent',
+    'OCA\\Deck\\Event\\CardDeletedEvent',
+]);
+
 test('only webhook-compatible event classes are registered', () => {
     // WebhooksEventListener::serializeEvent() calls getWebhookSerializable()
     // unconditionally, so registering a class that does not implement
-    // IWebhookCompatibleEvent fatals inside a Nextcloud background job.
-    // Verified upstream: Share, Deck, Talk, User and Group events do NOT
-    // implement it. Keep them out.
-    const forbidden = ['\\Share\\', '\\Deck\\', '\\Talk\\', '\\User\\Events\\', '\\Group\\Events\\'];
+    // IWebhookCompatibleEvent fatals inside a Nextcloud background job — where
+    // the admin never sees it. Verified upstream: Share, Talk, User and Group
+    // events do NOT implement it. Keep them out.
+    const forbidden = ['\\Share\\', '\\Talk\\', '\\User\\Events\\', '\\Group\\Events\\'];
     for (const entry of wl.EVENTS) {
         for (const frag of forbidden) {
             assert.ok(
@@ -31,6 +42,33 @@ test('only webhook-compatible event classes are registered', () => {
                 `${entry.class} is not an IWebhookCompatibleEvent — it cannot be webhooked`,
             );
         }
+        // Deck is per-class rather than per-namespace: most of it is fine,
+        // some of it fatals.
+        if (entry.class.includes('\\Deck\\')) {
+            assert.ok(
+                DECK_WEBHOOK_COMPATIBLE.has(entry.class),
+                `${entry.class} is not a verified-compatible Deck event — check it implements `
+                + 'IWebhookCompatibleEvent before registering it',
+            );
+        }
+    }
+});
+
+test('Deck card events are registered — the "Deck exposes nothing" era is over', () => {
+    // This assertion exists because the opposite belief outlived the fact by
+    // three months: ACardEvent has implemented IWebhookCompatibleEvent since
+    // Deck v1.18.0 (2026-05-03), while our own comment still said Deck had no
+    // webhookable events at all. Five catalogue events and two shipped
+    // templates were dead the whole time.
+    for (const cls of DECK_WEBHOOK_COMPATIBLE) {
+        assert.ok(wl.EVENT_BY_CLASS[cls], `${cls} should be registered`);
+    }
+    assert.equal(wl.EVENT_BY_CLASS['OCA\\Deck\\Event\\CardCreatedEvent'], 'deck.card.created');
+    assert.equal(wl.EVENT_BY_CLASS['OCA\\Deck\\Event\\CardUpdatedEvent'], 'deck.card.changed');
+    assert.equal(wl.EVENT_BY_CLASS['OCA\\Deck\\Event\\CardDeletedEvent'], 'deck.card.deleted');
+    // Deck ships as an optional app; a missing class must not fail the batch.
+    for (const e of wl.EVENTS.filter(x => x.class.includes('\\Deck\\'))) {
+        assert.equal(e.optional, true, `${e.class} must be optional — Deck may not be installed`);
     }
 });
 
@@ -246,4 +284,136 @@ test('the delivery handler does not forward an authentication block', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'automationEventsWebhook.js'), 'utf8');
     const body = src.slice(src.indexOf('const body = JSON.stringify'), src.indexOf('const ts = Math.floor'));
     assert.ok(!body.includes('authentication'), 'the forwarded body must not carry credentials');
+});
+
+// ── Deck card payloads and derived transitions ──────────────────────────────
+//
+// Deck fires ONE class for every card mutation and serialises only the current
+// card (ACardEvent::getWebhookSerializable). `cardBefore` exists on the PHP
+// object and never reaches the wire, so "moved" and "completed" have to be
+// recovered from the last state the connector saw. The rule these tests pin is
+// the one that matters operationally: a cache miss must produce a false
+// NEGATIVE, never a false positive — a `completed` trigger that re-fires on
+// every later edit of a finished card is a trigger people switch off.
+
+const deckEnvelope = (card) => ({
+    event: { class: 'OCA\\Deck\\Event\\CardUpdatedEvent', card },
+    user: { uid: 'alice', displayName: 'Alice' },
+    time: 1770000000,
+});
+
+test('deck card payload exposes the fields a routine filters on', () => {
+    const payload = hook.normalisePayload('deck.card.changed', deckEnvelope({
+        id: 42, title: 'Ship it', description: 'desc', stackId: 7, boardId: 3,
+        done: '2026-08-12T09:00:00+00:00', archived: false, duedate: '2026-08-20T00:00:00+00:00',
+        labels: [{ title: 'urgent' }, { title: 'ops' }],
+        assignedUsers: [{ participant: { uid: 'bob' } }],
+    }));
+    assert.equal(payload.cardId, 42);
+    assert.equal(payload.title, 'Ship it');
+    assert.equal(payload.stackId, 7);
+    assert.equal(payload.boardId, 3);
+    // `done` stays the timestamp rather than becoming a boolean: "when was it
+    // finished" is more useful downstream, and it is still truthy.
+    assert.equal(payload.done, '2026-08-12T09:00:00+00:00');
+    assert.deepEqual(payload.labels, ['urgent', 'ops']);
+    assert.deepEqual(payload.assignedUsers, ['bob']);
+    assert.equal(payload.actor, 'alice');
+});
+
+test('a card seen for the first time yields no transition, only the change', () => {
+    hook._resetCardState();
+    const payload = hook.normalisePayload('deck.card.changed', deckEnvelope({
+        id: 1, stackId: 2, done: '2026-08-12T09:00:00+00:00',
+    }));
+    // Already done on first sight — but we cannot know it just transitioned.
+    assert.deepEqual(hook.deckTransitions('deck.card.changed', payload), []);
+});
+
+test('completing a card fires deck.card.completed exactly once', () => {
+    hook._resetCardState();
+    const open = hook.normalisePayload('deck.card.changed', deckEnvelope({ id: 1, stackId: 2, done: null }));
+    assert.deepEqual(hook.deckTransitions('deck.card.changed', open), []);
+
+    const done = hook.normalisePayload('deck.card.changed', deckEnvelope({
+        id: 1, stackId: 2, done: '2026-08-12T09:00:00+00:00',
+    }));
+    assert.deepEqual(hook.deckTransitions('deck.card.changed', done), ['deck.card.completed']);
+
+    // Editing an already-done card must NOT re-fire it. This is the whole
+    // reason the cache exists.
+    const edited = hook.normalisePayload('deck.card.changed', deckEnvelope({
+        id: 1, stackId: 2, done: '2026-08-12T09:00:00+00:00', title: 'renamed',
+    }));
+    assert.deepEqual(hook.deckTransitions('deck.card.changed', edited), []);
+});
+
+test('moving a card between stacks fires deck.card.moved', () => {
+    hook._resetCardState();
+    const a = hook.normalisePayload('deck.card.changed', deckEnvelope({ id: 9, stackId: 1, done: null }));
+    hook.deckTransitions('deck.card.changed', a);
+    const b = hook.normalisePayload('deck.card.changed', deckEnvelope({ id: 9, stackId: 5, done: null }));
+    assert.deepEqual(hook.deckTransitions('deck.card.changed', b), ['deck.card.moved']);
+});
+
+test('one update can be both moved and completed', () => {
+    hook._resetCardState();
+    const a = hook.normalisePayload('deck.card.changed', deckEnvelope({ id: 3, stackId: 1, done: null }));
+    hook.deckTransitions('deck.card.changed', a);
+    const b = hook.normalisePayload('deck.card.changed', deckEnvelope({
+        id: 3, stackId: 9, done: '2026-08-12T10:00:00+00:00',
+    }));
+    assert.deepEqual(
+        hook.deckTransitions('deck.card.changed', b).sort(),
+        ['deck.card.completed', 'deck.card.moved'],
+    );
+});
+
+test('creation seeds the cache so the next update is a real comparison', () => {
+    hook._resetCardState();
+    const created = hook.normalisePayload('deck.card.created', deckEnvelope({ id: 4, stackId: 1, done: null }));
+    assert.deepEqual(hook.deckTransitions('deck.card.created', created), []);
+    const done = hook.normalisePayload('deck.card.changed', deckEnvelope({
+        id: 4, stackId: 1, done: '2026-08-12T11:00:00+00:00',
+    }));
+    assert.deepEqual(hook.deckTransitions('deck.card.changed', done), ['deck.card.completed']);
+});
+
+test('deletion forgets the card so a recycled id cannot fake a transition', () => {
+    hook._resetCardState();
+    const a = hook.normalisePayload('deck.card.changed', deckEnvelope({ id: 5, stackId: 1, done: null }));
+    hook.deckTransitions('deck.card.changed', a);
+    const del = hook.normalisePayload('deck.card.deleted', deckEnvelope({ id: 5, stackId: 1, done: null }));
+    hook.deckTransitions('deck.card.deleted', del);
+    const back = hook.normalisePayload('deck.card.changed', deckEnvelope({
+        id: 5, stackId: 1, done: '2026-08-12T12:00:00+00:00',
+    }));
+    assert.deepEqual(hook.deckTransitions('deck.card.changed', back), []);
+});
+
+test('an unknown stack on either side is not reported as a move', () => {
+    hook._resetCardState();
+    const a = hook.normalisePayload('deck.card.changed', deckEnvelope({ id: 6, done: null }));
+    hook.deckTransitions('deck.card.changed', a);
+    const b = hook.normalisePayload('deck.card.changed', deckEnvelope({ id: 6, stackId: 4, done: null }));
+    assert.deepEqual(hook.deckTransitions('deck.card.changed', b), []);
+});
+
+test('the card cache is bounded so a busy board cannot grow it without limit', () => {
+    hook._resetCardState();
+    for (let i = 0; i < 5200; i++) {
+        const p = hook.normalisePayload('deck.card.created', deckEnvelope({ id: i, stackId: 1, done: null }));
+        hook.deckTransitions('deck.card.created', p);
+    }
+    // Card 0 was evicted, so completing it now yields no transition rather
+    // than a wrong one.
+    const old = hook.normalisePayload('deck.card.changed', deckEnvelope({
+        id: 0, stackId: 1, done: '2026-08-12T13:00:00+00:00',
+    }));
+    assert.deepEqual(hook.deckTransitions('deck.card.changed', old), []);
+    // A recent card still works.
+    const recent = hook.normalisePayload('deck.card.changed', deckEnvelope({
+        id: 5199, stackId: 1, done: '2026-08-12T13:00:00+00:00',
+    }));
+    assert.deepEqual(hook.deckTransitions('deck.card.changed', recent), ['deck.card.completed']);
 });

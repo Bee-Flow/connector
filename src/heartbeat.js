@@ -192,10 +192,14 @@ async function registerEventListeners() {
     const { ensureWebhookListeners, startRetry } = require('./webhookListeners');
     const { registerTalkBot } = require('./talkBot');
     const { registerTaskProcessing } = require('./taskProcessing');
+    const { registerFilesActions } = require('./filesActions');
     // Independent of the webhook registration: Talk bots are a different
     // mechanism with a different failure mode (Talk simply not installed).
     await registerTalkBot().catch(err => console.warn(`[Init] Talk bot registration failed: ${err.message}`));
     await registerTaskProcessing().catch(err => console.warn(`[Init] Task Processing registration failed: ${err.message}`));
+    // AppAPI mounts its Files plugin only if some ExApp has registered a file
+    // action, so this call is what puts Bee Flow in the right-click menu at all.
+    await registerFilesActions().catch(err => console.warn(`[Init] Files action registration failed: ${err.message}`));
     const result = await ensureWebhookListeners().catch(err => {
         console.warn(`[Init] Webhook registration failed: ${err.message}`);
         return { ok: false };
@@ -214,10 +218,12 @@ async function unregisterEventListeners() {
     const { unregisterWebhookListeners } = require('./webhookListeners');
     const { unregisterTalkBot } = require('./talkBot');
     const { unregisterTaskProcessing } = require('./taskProcessing');
+    const { unregisterFilesActions } = require('./filesActions');
     await Promise.allSettled([
         unregisterWebhookListeners(),
         unregisterTalkBot(),
         unregisterTaskProcessing(),
+        unregisterFilesActions(),
     ]);
 }
 

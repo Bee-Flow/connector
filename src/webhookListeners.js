@@ -38,11 +38,18 @@
  * class produces a fatal error inside a Nextcloud background job rather than a
  * clean failure here. Verified compatible upstream: Files `Node*` events,
  * `OCP\SystemTag\Tag{Assigned,Unassigned}Event`, the `OCP\Calendar\Events\CalendarObject*`
- * family, `OCA\Forms\Events\FormSubmittedEvent` and `OCA\Tables\Event\Row*Event`.
- * Verified NOT compatible: `OCP\Share\Events\*`. Deck and Talk expose no
- * webhook-compatible events at all — Deck stays on the activity poller and Talk
- * is handled by the Talk-bot webhook. Do not add classes to EVENTS below
- * without checking the interface first.
+ * family, `OCA\Forms\Events\FormSubmittedEvent`, `OCA\Tables\Event\Row*Event`,
+ * and — since Deck v1.18.0 (2026-05-03) — `OCA\Deck\Event\Card{Created,Updated,Deleted}Event`
+ * via `ACardEvent`. Verified NOT compatible: `OCP\Share\Events\*`, which still
+ * `extends Event` with no webhook interface on server HEAD. Talk is handled by
+ * the Talk-bot webhook instead (its events are not compatible either). Do not
+ * add classes to EVENTS below without checking the interface first.
+ *
+ * Deck's `AAclEvent` subclasses (`Acl{Created,Updated,Deleted}Event`) and
+ * `BoardUpdatedEvent` are ALSO webhook-compatible and deliberately not
+ * registered: Bee Flow's trigger catalogue has no event id for board or ACL
+ * changes, so subscribing would buy nothing but deliveries the handler answers
+ * with `{ignored}`. Add the catalogue entry first, then the class here.
  *
  * Delivery latency note: webhook_listeners dispatches through background jobs,
  * so out of the box latency is the cron interval (5 minutes). Admins who want
@@ -89,6 +96,16 @@ const EVENTS = [
     { class: 'OCA\\Tables\\Event\\RowAddedEvent', event: 'tables.row.added', optional: true },
     { class: 'OCA\\Tables\\Event\\RowUpdatedEvent', event: 'tables.row.updated', optional: true },
     { class: 'OCA\\Tables\\Event\\RowDeletedEvent', event: 'tables.row.deleted', optional: true },
+    // ── Deck (optional app, NC Deck >= 1.18.0) ───────────────────────────
+    // `deck.card.completed` and `deck.card.moved` are DERIVED from the update
+    // event rather than registered — Deck has no distinct class for either, and
+    // `CardUpdatedEvent` inherits `ACardEvent::getWebhookSerializable()`, which
+    // serialises only the current card. `cardBefore` exists on the PHP object
+    // and never reaches the wire. See deckTransitions() in
+    // automationEventsWebhook.js for how the transition is recovered.
+    { class: 'OCA\\Deck\\Event\\CardCreatedEvent', event: 'deck.card.created', optional: true },
+    { class: 'OCA\\Deck\\Event\\CardUpdatedEvent', event: 'deck.card.changed', optional: true },
+    { class: 'OCA\\Deck\\Event\\CardDeletedEvent', event: 'deck.card.deleted', optional: true },
 ];
 
 // Reverse lookup used by the delivery handler: class name → Bee Flow event id.

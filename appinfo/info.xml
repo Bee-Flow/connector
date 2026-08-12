@@ -54,7 +54,7 @@ Full privacy policy: <https://beeflow.nl/privacy>.
 
 Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We support Bee Flow Cloud and can also help you get Bee Flow running on a self-managed or self-hosted Nextcloud.
         ]]></description>
-    <version>1.0.2</version>
+    <version>1.1.0</version>
     <licence>AGPL-3.0-or-later</licence>
     <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.nl/">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>
@@ -98,29 +98,20 @@ Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We su
     <screenshot small-thumbnail="https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/03-agent-editor.png">https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/03-agent-editor.png</screenshot>
 
     <dependencies>
-        <nextcloud min-version="31" max-version="34"/>
+        <nextcloud min-version="31" max-version="35"/>
     </dependencies>
     <!--
-        OAuth-style scopes the Bee Flow ExApp uses against this Nextcloud
-        instance. Reviewers and admins can audit exactly what data flows
-        leave the instance via the connector. Each scope corresponds to a
-        Bee Flow agent tool group in `server/integrations/nextcloud*.js`.
+        Push triggers (new file, tag assigned, calendar change, Forms
+        submission, Tables row) are delivered by Nextcloud's bundled
+        `webhook_listeners` app. It ships with Nextcloud but is not enabled by
+        default: `occ app:enable webhook_listeners`. Without it the connector
+        still works — Bee Flow falls back to activity-feed polling — so this is
+        a soft requirement rather than a hard <dependencies> entry.
+
+        NOTE: the <scopes> block that used to live here was removed. AppAPI
+        deprecated and removed ApiScopes in 3.2.0 (app_api CHANGELOG, #373) and
+        we require AppAPI >= 3.2, so the block was inert metadata.
     -->
-    <scopes>
-        <required>
-            <value>FILES</value>
-            <value>USER_INFO</value>
-            <value>GROUPS</value>
-        </required>
-        <optional>
-            <value>NOTIFICATIONS</value>
-            <value>CALENDAR</value>
-            <value>CONTACTS</value>
-            <value>MAIL</value>
-            <value>TALK</value>
-            <value>DAV</value>
-        </optional>
-    </scopes>
     <external-app>
         <docker-install>
             <registry>ghcr.io</registry>
@@ -220,7 +211,17 @@ Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We su
                  gated by the one-time emailed code). -->
             <route><url>^/?setup\/(status|test|diagnostics|rotate-tenant-key|apply-pairing-code|public-nc-url|diagnose|clear-cache)$</url><verb>GET,POST</verb><access_level>ADMIN</access_level></route>
 
-            <!-- Webhooks: NC events_listener -> connector -->
+            <!-- Nextcloud `webhook_listeners` deliveries -> connector.
+                 PUBLIC because the delivery is made by a Nextcloud background
+                 job with no user session. It is authenticated by the
+                 `X-Beeflow-Hook-Secret` header, which Nextcloud echoes back
+                 from the `authData` supplied at registration — same trust
+                 model as the HMAC-gated ^nc/ route below. -->
+            <route><url>^/?hooks\/.*</url><verb>POST</verb><access_level>PUBLIC</access_level></route>
+
+            <!-- Legacy internal webhook bridge (user/group sync). Nothing
+                 subscribes to it today: Nextcloud's User/Group events are not
+                 IWebhookCompatibleEvent, so they cannot be webhooked. -->
             <route><url>^/?webhook\/.*</url><verb>POST</verb><access_level>ADMIN</access_level></route>
 
             <!-- HMAC-signed reverse proxy back to NC for SaaS-side calls -->

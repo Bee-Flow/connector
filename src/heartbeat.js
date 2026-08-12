@@ -177,121 +177,48 @@ async function registerEmbedScript() {
     console.log('[Init] Embed script registered');
 }
 
-// Canonical list of events the connector subscribes to.
+// Real-time event subscriptions now go through Nextcloud's bundled
+// `webhook_listeners` app — see webhookListeners.js for why (AppAPI's
+// `events_listener` API has been removed). This file only wires the lifecycle.
 //
-// Two families:
-//   1. User/group sync (actionHandler webhook/nc-events → eventsWebhook.js →
-//      ncUserGroupSync). Index 0 MUST stay a user/group event — it's used as
-//      the capability probe by registerEventListeners().
-//   2. Automation event-bridge (actionHandler webhook/automation →
-//      automationEventsWebhook.js → SaaS POST /api/automation/events/nextcloud,
-//      which IS now live — server/routes/automation.js). Without these, no
-//      push-based NC trigger (share/calendar/deck/talk, file mutations) can
-//      fire; only the activity-feed pollers work.
-//
-// Class names are best-effort across NC/app versions. registerEventListeners()
-// fans out with per-event error tolerance, so a class an installed NC doesn't
-// recognise is skipped (counted as failed) without affecting the rest.
-// VERIFY the Deck/Talk class names on the target NC/app versions before
-// relying on push for those — see NC-ROUTINES-REMEDIATION-PLAN.md (WS-3).
-const SUBSCRIBED_EVENTS = [
-    { eventType: 'OCP\\User\\Events\\UserCreatedEvent', actionHandler: 'webhook/nc-events' },
-    { eventType: 'OCP\\User\\Events\\UserDeletedEvent', actionHandler: 'webhook/nc-events' },
-    { eventType: 'OCP\\User\\Events\\UserChangedEvent', actionHandler: 'webhook/nc-events' },
-    { eventType: 'OCP\\Group\\Events\\UserAddedEvent', actionHandler: 'webhook/nc-events' },
-    { eventType: 'OCP\\Group\\Events\\UserRemovedEvent', actionHandler: 'webhook/nc-events' },
-    // ── Automation event-bridge → webhook/automation ──
-    // Files
-    { eventType: 'OCP\\Files\\Events\\Node\\NodeCreatedEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCP\\Files\\Events\\Node\\NodeWrittenEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCP\\Files\\Events\\Node\\NodeDeletedEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCP\\Files\\Events\\Node\\NodeRenamedEvent', actionHandler: 'webhook/automation' },
-    // Shares
-    { eventType: 'OCP\\Share\\Events\\ShareCreatedEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCP\\Share\\Events\\ShareDeletedEvent', actionHandler: 'webhook/automation' },
-    // Calendar (OCA\DAV)
-    { eventType: 'OCA\\DAV\\Events\\CalendarObjectCreatedEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCA\\DAV\\Events\\CalendarObjectUpdatedEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCA\\DAV\\Events\\CalendarObjectDeletedEvent', actionHandler: 'webhook/automation' },
-    // Deck (OCA\Deck) — CardUpdatedEvent is refined to completed/moved in the webhook
-    { eventType: 'OCA\\Deck\\Event\\CardCreatedEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCA\\Deck\\Event\\CardUpdatedEvent', actionHandler: 'webhook/automation' },
-    { eventType: 'OCA\\Deck\\Event\\CardDeletedEvent', actionHandler: 'webhook/automation' },
-    // Talk (OCA\Talk / spreed)
-    { eventType: 'OCA\\Talk\\Events\\ChatMessageSentEvent', actionHandler: 'webhook/automation' },
-];
-
-// Subscribe to NC user/group events so we can mirror them into Bee Flow
-// in real time. The connector's /webhook/nc-events endpoint receives the
-// callbacks and forwards them (HMAC-signed) to the SaaS.
-//
-// Idempotent: NC enforces a unique constraint on (appId, eventType,
-// actionHandler) and returns 409 on duplicate. We swallow 409.
-//
-// Parallelised via Promise.allSettled so worst-case is the timeout of a
-// single call (3s), not N × 3s. NC 33.0.0 / AppAPI 33.0.0 has a broken
-// EventsListenerController that always returns 500 — we detect that on
-// the first response and skip the rest.
+// Not every Nextcloud event can be webhooked: `WebhooksEventListener` calls
+// `getWebhookSerializable()`, so a class must implement
+// `OCP\EventDispatcher\IWebhookCompatibleEvent`. Files, SystemTag, Calendar,
+// Forms and Tables events do. User, Group, Share, Deck and Talk events do NOT,
+// which is why user/group sync stays on the periodic backstop + manual
+// "Sync now", Deck stays on the activity poller, and Talk is handled by the
+// Talk-bot webhook rather than an event subscription.
 async function registerEventListeners() {
-    const url = `${config.nextcloudUrl}/ocs/v1.php/apps/app_api/api/v1/events_listener`;
-    const PER_CALL_TIMEOUT_MS = 3_000;
-
-    // Probe one event first. If NC responds with the EventsListenerController
-    // error, the rest will all fail the same way — skip them.
-    const probeResult = await registerOne(url, SUBSCRIBED_EVENTS[0], PER_CALL_TIMEOUT_MS);
-    if (probeResult.unsupportedVersion) {
-        console.log('[Init] AppAPI on this Nextcloud version does not implement events_listener — real-time user/group sync disabled. Periodic backstop and manual "Sync now" remain available.');
-        return;
+    const { ensureWebhookListeners, startRetry } = require('./webhookListeners');
+    const { registerTalkBot } = require('./talkBot');
+    const { registerTaskProcessing } = require('./taskProcessing');
+    // Independent of the webhook registration: Talk bots are a different
+    // mechanism with a different failure mode (Talk simply not installed).
+    await registerTalkBot().catch(err => console.warn(`[Init] Talk bot registration failed: ${err.message}`));
+    await registerTaskProcessing().catch(err => console.warn(`[Init] Task Processing registration failed: ${err.message}`));
+    const result = await ensureWebhookListeners().catch(err => {
+        console.warn(`[Init] Webhook registration failed: ${err.message}`);
+        return { ok: false };
+    });
+    if (!result.ok) {
+        // Bootstrap may still be in flight, or the admin may not have enabled
+        // webhook_listeners yet. Keep trying quietly in the background.
+        startRetry();
     }
-    if (probeResult.error) {
-        console.warn(`[Init] events_listener probe failed: ${probeResult.error}`);
-    }
-
-    // Probe ok — fan out the rest in parallel.
-    const rest = SUBSCRIBED_EVENTS.slice(1);
-    const results = await Promise.allSettled(
-        rest.map(ev => registerOne(url, ev, PER_CALL_TIMEOUT_MS))
-    );
-    let failed = 0;
-    for (const r of results) {
-        if (r.status === 'rejected' || (r.value && r.value.error)) failed++;
-    }
-    console.log(`[Init] Event listeners registered (${SUBSCRIBED_EVENTS.length - failed}/${SUBSCRIBED_EVENTS.length})`);
+    console.log('[Init] Real-time user/group sync is not available via webhooks '
+        + '(Nextcloud\'s User/Group events are not webhook-compatible); the periodic '
+        + 'sync backstop and manual "Sync now" remain in use.');
 }
 
-async function registerOne(url, ev, timeoutMs) {
-    try {
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: appApiHeaders(),
-            body: JSON.stringify({ eventType: ev.eventType, actionHandler: ev.actionHandler, eventSubtypes: [] }),
-            signal: AbortSignal.timeout(timeoutMs),
-        });
-        if (res.ok || res.status === 409) return { ok: true };
-        const body = await res.text().catch(() => '');
-        if (res.status >= 500 && /EventsListenerController/i.test(body)) {
-            return { unsupportedVersion: true };
-        }
-        return { error: `HTTP ${res.status}: ${body.slice(0, 120)}` };
-    } catch (err) {
-        return { error: err.message };
-    }
-}
-
-// Called from process signal handlers. Best-effort: if NC is already
-// gone or unreachable, we just exit — stale entries will be cleaned up
-// by the next /init.
 async function unregisterEventListeners() {
-    if (!config.nextcloudUrl) return;
-    const url = `${config.nextcloudUrl}/ocs/v1.php/apps/app_api/api/v1/events_listener`;
-    await Promise.allSettled(SUBSCRIBED_EVENTS.map(ev =>
-        fetch(url, {
-            method: 'DELETE',
-            headers: appApiHeaders(),
-            body: JSON.stringify({ eventType: ev.eventType, actionHandler: ev.actionHandler }),
-            signal: AbortSignal.timeout(2_000),
-        }).catch(() => {})
-    ));
+    const { unregisterWebhookListeners } = require('./webhookListeners');
+    const { unregisterTalkBot } = require('./talkBot');
+    const { unregisterTaskProcessing } = require('./taskProcessing');
+    await Promise.allSettled([
+        unregisterWebhookListeners(),
+        unregisterTalkBot(),
+        unregisterTaskProcessing(),
+    ]);
 }
 
 // Reports init progress to AppAPI. Spec: PUT /ocs/v2.php/apps/app_api/ex-app/status

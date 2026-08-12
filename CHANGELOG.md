@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [1.1.0] - 2026-08-12
+
+### Fixed
+- **Automations could never be started by anything happening in Nextcloud.** Bee Flow routines that were supposed to run when a file arrives, a tag is added, a calendar entry changes, a form is submitted or a table row is edited simply never ran. The connector had been asking Nextcloud to notify it through an interface Nextcloud no longer provides, and even when a notification did arrive it was discarded because the connector looked for the details under the wrong name. Nothing reported an error — the connector said it was healthy the whole time, so the only symptom was routines that quietly did nothing. Bee Flow now subscribes through Nextcloud's own webhook system and receives sixteen kinds of event: files created, changed, deleted, renamed, copied and restored from the trash; tags added and removed; calendar entries created, changed, deleted and moved; Forms submissions; and Tables rows added, changed and deleted.
+  - Nextcloud ships the app that delivers these but does not switch it on by default. An administrator enables it once with `occ app:enable webhook_listeners`. Without it Bee Flow still works — it falls back to checking the activity feed periodically — so this is optional, just slower.
+- **Uploading a file through the embedded app could corrupt it.** Anything sent to Nextcloud's file interface was being read and re-written by the connector on the way through, which reordered the contents of `.json` files, rejected files that were not valid JSON with an error before they ever reached Nextcloud, and imposed a 25 MB ceiling on every upload. File data now passes through untouched.
+
+### Added
+- **Bee Flow answers Nextcloud's Assistant.** Bee Flow can now be selected as the provider behind Nextcloud's own AI features — summarising, rewriting, proofreading, translating, headlines, topics and free-form prompts. Because Nextcloud routes Assistant, Mail thread summaries, Talk call summaries, Text, Collectives, Notes, Deck and Office through the same mechanism, this makes all of them run on your organisation's chosen model and its own privacy settings, rather than a third party's. Answers are returned in the language of the text, not the language of the instruction.
+- **Bee Flow in Talk.** Bee Flow can be added to a Talk conversation as a bot: mention it to ask something, and approvals that a routine is waiting on can be granted straight from the chat instead of a separate screen.
+- **Bee Flow's own tools inside Nextcloud Assistant.** Bee Flow exposes its actions and saved routines over the Model Context Protocol, so Assistant — or any other client that speaks it — can call them.
+
+### Security
+- **A request to Nextcloud could be replayed with different contents.** Requests the embedded app sends through the connector are signed, but the signature covered only the address and the time, not the body being sent. Because writes to Nextcloud travel as ordinary posts, anyone who could observe one signed request had a few minutes in which they could reuse that signature to write something else to that same path. Signatures now cover the body as well. Signatures made by older connectors are still accepted, so an in-progress upgrade is not interrupted.
+
 ## [1.0.2] - 2026-08-11
 
 ### Fixed

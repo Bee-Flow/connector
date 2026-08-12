@@ -79,3 +79,64 @@ test('expired timestamp is rejected', () => {
 test('missing signature header is rejected', () => {
     assert.equal(verifyHmac({ method: 'POST', originalUrl: DECODED, headers: { 'x-beeflow-nc-uid': 'alice' } }), false);
 });
+
+// ── Body binding (added with the v2 signature) ──────────────────────────────
+//
+// The signature used to cover only (ts, method, path, ncUid). Because every
+// write verb is tunnelled as POST + X-HTTP-Method-Override, that made an
+// observed signature a five-minute licence to overwrite the same file with
+// different content. v2 folds sha256(body) into the message.
+
+const EMPTY_SHA256 = crypto.createHash('sha256').update('').digest('hex');
+
+function signV2(ts, signedMethod, path, ncUid, body) {
+    const bodyHash = crypto.createHash('sha256').update(body ?? '').digest('hex');
+    return crypto.createHmac('sha256', config.tenantKey)
+        .update(`${ts}\n${signedMethod}\n${path}\n${ncUid}\n${bodyHash}`).digest('hex');
+}
+
+function reqWithBody({ originalUrl, override, ncUid = 'alice', ts, sig, body }) {
+    const req = reqFor({ originalUrl, override, ncUid, ts, sig });
+    req.body = Buffer.isBuffer(body) ? body : Buffer.from(body ?? '');
+    return req;
+}
+
+const UPLOAD = '/nc/remote.php/dav/files/alice/report.docx';
+
+test('v2: a signature bound to the body verifies', () => {
+    const ts = now();
+    const body = 'the real report';
+    const sig = signV2(ts, 'PUT', UPLOAD, 'alice', body);
+    assert.equal(verifyHmac(reqWithBody({ originalUrl: UPLOAD, override: 'PUT', ts, sig, body })), true);
+});
+
+test('v2: swapping the body under a valid signature is rejected', () => {
+    const ts = now();
+    const sig = signV2(ts, 'PUT', UPLOAD, 'alice', 'the real report');
+    assert.equal(
+        verifyHmac(reqWithBody({ originalUrl: UPLOAD, override: 'PUT', ts, sig, body: 'malicious replacement' })),
+        false,
+        'a captured PUT signature must not authorise different file content',
+    );
+});
+
+test('v2: an empty body hashes to sha256("")', () => {
+    const ts = now();
+    const path = '/nc/ocs/v2.php/cloud/user';
+    const sig = crypto.createHmac('sha256', config.tenantKey)
+        .update(`${ts}\nGET\n${path}\nalice\n${EMPTY_SHA256}`).digest('hex');
+    const req = reqFor({ originalUrl: path, wireMethod: 'GET', ts, sig });
+    assert.equal(verifyHmac(req), true, 'a bodyless GET must verify without req.body being set');
+});
+
+test('v1 signatures still verify during rollout (drop this once every server signs v2)', () => {
+    const ts = now();
+    const sig = sign(ts, 'PUT', UPLOAD, 'alice');
+    assert.equal(verifyHmac(reqWithBody({ originalUrl: UPLOAD, override: 'PUT', ts, sig, body: 'anything' })), true);
+});
+
+test('a malformed (non-hex, wrong-length) signature is rejected', () => {
+    const ts = now();
+    const req = reqFor({ originalUrl: UPLOAD, override: 'PUT', ts, sig: 'zzzz' });
+    assert.equal(verifyHmac(req), false);
+});

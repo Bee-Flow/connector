@@ -29,10 +29,23 @@ const app = express();
 // Capture the raw body so the AppAPI signature can be verified against the
 // exact bytes Nextcloud sent. express.json() consumes the stream, so we
 // stash a copy via the `verify` hook before parsing happens.
-app.use(express.json({
+//
+// /nc/* is deliberately EXCLUDED. That route is a byte-for-byte reverse proxy
+// into Nextcloud: parsing and re-serialising a body there corrupts JSON file
+// uploads (key order and whitespace are lost), rejects syntactically-invalid
+// .json files with a 400 before they reach WebDAV, and imposes the 25 MB limit
+// on every DAV write. Its bodies stream through untouched instead.
+const jsonParser = express.json({
     limit: '25mb',
     verify: (req, _res, buf) => { req.rawBody = buf.toString('utf8'); },
-}));
+});
+app.use((req, res, next) => {
+    if (req.path === '/nc' || req.path.startsWith('/nc/')) return next();
+    // /hooks/talk verifies an HMAC over the exact bytes Talk sent, so it
+    // captures its own raw body too (talkBot.js).
+    if (req.path === '/hooks/talk') return next();
+    return jsonParser(req, res, next);
+});
 
 // CSP must allow the parent NC origin to embed proxied responses. Without
 // this, NC's default CSP wraps our response with `frame-ancestors 'none'`
@@ -58,13 +71,25 @@ app.use((req, res, next) => {
 // see ncProxy.js verifyHmac.
 require('./ncProxy').mount(app);
 
+// Nextcloud's `webhook_listeners` background job calls /hooks/nextcloud with
+// no user session, so it must also sit before the AppAPI auth gate. It is
+// authenticated by the `X-Beeflow-Hook-Secret` header that Nextcloud echoes
+// back from the `authData` we supplied at registration — see
+// automationEventsWebhook.js and webhookListeners.js.
+app.use('/', require('./automationEventsWebhook'));
+
+// Nextcloud Talk calls the bot route with no user session and its own
+// signature scheme, so it too sits before the AppAPI gate.
+app.use('/', require('./talkBot'));
+
 app.use(appApiAuthMiddleware);
 
-// /webhook/nc-events is hit by NC's AppAPI events_listener with an
-// AUTHORIZATION-APP-API header — appApiAuthMiddleware above has already
-// validated the shared secret by the time we reach this router.
+// Legacy user/group sync bridge. Nextcloud's User/Group events are not
+// `IWebhookCompatibleEvent`, so nothing subscribes to this today; the route is
+// kept so an internal caller (or a future Nextcloud that makes those events
+// webhook-compatible) still has somewhere to deliver to. Real-time user sync
+// currently comes from the periodic backstop and the manual "Sync now" action.
 app.use('/', require('./eventsWebhook'));
-app.use('/', require('./automationEventsWebhook'));
 
 // User-facing setup picker — choose Bee Flow Cloud vs a self-hosted server.
 // Routes auth-checked by appApiAuthMiddleware above (admin only via NC).
@@ -88,6 +113,11 @@ app.use('/setup', require('./setup'));
 require('./declarativeSettings').startPolling();
 
 registerLifecycle(app);
+
+// GET /trigger — Nextcloud calls this when a Task Processing task is scheduled
+// for one of our providers. Registered after the AppAPI gate: unlike the
+// webhook and Talk routes, this one IS an authenticated AppAPI call.
+require('./taskProcessing').registerRoutes(app);
 
 // Re-run UI registration (top-menu, embed script, settings form, event
 // listeners) on every boot. AppAPI only calls /init on install/upgrade, so

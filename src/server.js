@@ -152,7 +152,10 @@ app.get(['/api/languages/user/locales', '/api/languages/user/strings/:lang',
 // `/agents`, `/automation`, `/integrations`, `/api/*` sub-routes, etc.).
 // A maintained allow-list drifted as new endpoints were added; the deny-
 // list captures the small, stable set of connector-owned paths instead.
-const CONNECTOR_OWNED = /^\/(setup\/?(.*)?$|assets\/|js\/|img\/|favicon|BeeFlow-logo|bee-flow-logo|index\.html$|$)/;
+// `app-icon.svg` is the favicon the shell's own index.html links to. It was
+// absent here, so it fell through to the SaaS API proxy and 404'd on every
+// embedded page load.
+const CONNECTOR_OWNED = /^\/(setup\/?(.*)?$|assets\/|js\/|img\/|favicon|app-icon\.svg$|BeeFlow-logo|bee-flow-logo|index\.html$|$)/;
 const proxy = buildApiProxy();
 app.use((req, res, next) => {
     if (CONNECTOR_OWNED.test(req.url.split('?')[0])) return next();

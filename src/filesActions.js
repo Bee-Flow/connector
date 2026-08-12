@@ -55,7 +55,7 @@ const ACTIONS = [
         name: 'beeflow_ask',
         displayName: 'Ask Bee Flow about this',
         actionHandler: HANDLER_PATH.replace(/^\//, ''),
-        icon: 'img/app-dark.svg',
+        icon: 'img/app.svg',
         mime: 'file',
         permissions: PERM_READ,
         order: 10,
@@ -64,7 +64,7 @@ const ACTIONS = [
         name: 'beeflow_summarise',
         displayName: 'Summarise with Bee Flow',
         actionHandler: HANDLER_PATH.replace(/^\//, ''),
-        icon: 'img/app-dark.svg',
+        icon: 'img/app.svg',
         // Only offered on things with text in them. Nextcloud matches this
         // against the node's mimetype, so putting "Summarise" on a .zip is a
         // menu entry that can only disappoint.
@@ -76,7 +76,7 @@ const ACTIONS = [
         name: 'beeflow_routine',
         displayName: 'Run a Bee Flow routine…',
         actionHandler: HANDLER_PATH.replace(/^\//, ''),
-        icon: 'img/app-dark.svg',
+        icon: 'img/app.svg',
         mime: 'file',
         permissions: PERM_READ,
         order: 12,

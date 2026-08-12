@@ -82,13 +82,35 @@ docker build -t ghcr.io/bee-flow/connector:dev .
 
 The Dockerfile clones [`Bee-Flow/hive`](https://github.com/Bee-Flow/hive) anonymously over HTTPS at build time and bakes the SPA into the image — no SSH key or GitHub token required. Pass `--build-arg HIVE_REF=v0.1.0` to pin a specific frontend tag.
 
+## Published images
+
+An App Store install always pulls `latest`, because `appinfo/info.xml` pins
+`<image-tag>latest</image-tag>`. The other tags are opt-in: point AppAPI at one
+by overriding the image tag in the app's deploy options.
+
+| Tag | Built by | Moves when |
+|---|---|---|
+| `latest`, `<version>` | `release.yml`, on a `v*` tag | someone cuts a release |
+| `nightly` | `nightly.yml`, 03:00 UTC | the connector **or** hive changed that day |
+| `nightly-<connector>-<hive>` | same run | never — pin this to hold a build still |
+| `nightly-<YYYYMMDD>` | same run | never |
+| `dev`, `main-<sha7>` | `build-dev.yml`, every push to main | every push to main |
+
+`nightly` is the channel for work that needs real-Nextcloud exercise before it
+reaches customers. It is identified by **two** commits — the connector's and
+the `hive` commit whose SPA is baked into it — so a nightly whose code has not
+changed is not rebuilt.
+
 ## Tests
 
 ```bash
-cd nextcloud-connector
 npm install
-npm test
+npm test          # node --test test/*.test.js
 ```
+
+Infra-free and about a second: no Postgres, no network, no Nextcloud. CI runs
+the same command on every pull request (`tests.yml`). Keep it that way —
+anything needing a live Nextcloud belongs in a manual workflow.
 
 ## License
 

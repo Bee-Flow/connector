@@ -119,6 +119,11 @@ registerLifecycle(app);
 // webhook and Talk routes, this one IS an authenticated AppAPI call.
 require('./taskProcessing').registerRoutes(app);
 
+// POST /files-action — Nextcloud's Files plugin calls this when a user picks a
+// Bee Flow entry from the right-click menu. Behind the AppAPI gate: it is a
+// user action and must carry their identity.
+require('./filesActions').registerRoutes(app);
+
 // Re-run UI registration (top-menu, embed script, settings form, event
 // listeners) on every boot. AppAPI only calls /init on install/upgrade, so
 // without this a `docker restart` after the script's re-registration step

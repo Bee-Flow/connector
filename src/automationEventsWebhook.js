@@ -169,9 +169,92 @@ function normalisePayload(event, envelope) {
         };
     }
 
+    if (event.startsWith('deck.card.')) {
+        const c = (e.card && typeof e.card === 'object') ? e.card : {};
+        return {
+            cardId: c.id ?? null,
+            title: c.title ?? null,
+            description: c.description ?? null,
+            stackId: c.stackId ?? null,
+            boardId: c.boardId ?? null,
+            // Deck's `done` is an ISO timestamp when complete, null otherwise.
+            // Passed through as-is: "when was it finished" is more useful to a
+            // routine than a boolean, and truthiness still reads as "is done".
+            done: c.done ?? null,
+            archived: c.archived ?? null,
+            duedate: c.duedate ?? null,
+            labels: Array.isArray(c.labels) ? c.labels.map(l => l?.title).filter(Boolean) : [],
+            assignedUsers: Array.isArray(c.assignedUsers)
+                ? c.assignedUsers.map(a => a?.participant?.uid || a?.participant?.primaryKey).filter(Boolean)
+                : [],
+            ...base,
+        };
+    }
+
     // Unknown-but-registered class: forward the serialized event as-is rather
     // than dropping data the SaaS might understand.
     return { ...e, ...base };
+}
+
+/**
+ * Deck card transitions, recovered by remembering the last state we saw.
+ *
+ * Deck fires ONE class for every card mutation — `CardUpdatedEvent` — and its
+ * webhook payload is `ACardEvent::getWebhookSerializable()`, i.e. the current
+ * card and nothing else. The `cardBefore` the PHP event carries is never
+ * serialised, so "moved to another stack" and "marked done" are
+ * indistinguishable from "someone fixed a typo" on the wire.
+ *
+ * Bee Flow's catalogue has had `deck.card.moved` and `deck.card.completed`
+ * since before any of this could fire, and the `nc-deck-done-celebrate`
+ * template subscribes to the latter. So the transition is reconstructed here
+ * from a bounded cache of the last state per card.
+ *
+ * FAILURE MODE, deliberately chosen: a cache miss — first sighting, a restart,
+ * an eviction, or a second replica that has not seen this card — yields NO
+ * transition event, only `deck.card.changed`. Never a false positive. The
+ * alternative (firing `completed` whenever `done` is merely set) would re-fire
+ * on every subsequent edit of an already-finished card, which is the kind of
+ * trigger that gets a routine switched off.
+ */
+const CARD_STATE = new Map();
+const CARD_STATE_MAX = 5000;
+
+function rememberCard(cardId, state) {
+    if (cardId == null) return;
+    // Re-insert so the Map's insertion order is a true LRU tail.
+    CARD_STATE.delete(cardId);
+    CARD_STATE.set(cardId, state);
+    while (CARD_STATE.size > CARD_STATE_MAX) {
+        CARD_STATE.delete(CARD_STATE.keys().next().value);
+    }
+}
+
+function deckTransitions(event, payload) {
+    const id = payload?.cardId;
+    if (id == null) return [];
+    const next = { done: payload.done ?? null, stackId: payload.stackId ?? null };
+
+    if (event === 'deck.card.deleted') { CARD_STATE.delete(id); return []; }
+    if (event === 'deck.card.created') { rememberCard(id, next); return []; }
+    if (event !== 'deck.card.changed') return [];
+
+    const prev = CARD_STATE.get(id);
+    rememberCard(id, next);
+    if (!prev) return [];
+
+    // The cache is the only place the card's previous stack exists, so the
+    // payload is annotated here rather than in normalisePayload. `moved`
+    // without a "from" is half an event — a routine that files a card by where
+    // it came from cannot work without it.
+    if (prev.stackId != null) payload.previousStackId = prev.stackId;
+
+    const extra = [];
+    if (!prev.done && next.done) extra.push('deck.card.completed');
+    if (prev.stackId != null && next.stackId != null && prev.stackId !== next.stackId) {
+        extra.push('deck.card.moved');
+    }
+    return extra;
 }
 
 const router = express.Router();
@@ -201,41 +284,53 @@ router.post(HOOK_PATH, express.json({ limit: '512kb' }), async (req, res) => {
     const ncUid = envelope.user?.uid || null;
     const payload = normalisePayload(event, envelope);
 
-    // Note the omission: `envelope.authentication` is deliberately not read or
-    // forwarded. Bee Flow reaches Nextcloud as this user through AppAPI
-    // impersonation already (ncProxy.js), so the token would be an unused
-    // credential travelling one hop further than it needs to.
-    const body = JSON.stringify({ event, ncUid, payload });
-    const ts = Math.floor(Date.now() / 1000);
-    const path = '/api/automation/events/nextcloud';
-    const message = `${ts}\nPOST\n${path}\n${body}`;
-    const sig = crypto.createHmac('sha256', config.tenantKey).update(message).digest('hex');
+    // One Nextcloud delivery can be more than one Bee Flow event: a Deck card
+    // update that also completed the card is both `changed` and `completed`.
+    // Both are sent — a routine on `changed` should still fire, and the
+    // narrower trigger is the one most authors reach for.
+    const events = [event, ...deckTransitions(event, payload)];
 
-    try {
-        const r = await fetch(`${config.apiBaseUrl}${path}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Beeflow-Source': 'nextcloud-connector',
-                'X-Beeflow-NC-Instance-Id': config.ncInstanceId,
-                'X-Beeflow-Sig': `${ts}.${sig}`,
-            },
-            body,
-            signal: AbortSignal.timeout(10_000),
-        });
-        if (!r.ok) {
-            const t = await r.text().catch(() => '');
-            console.warn(`[AutomationEvents] SaaS returned ${r.status}: ${t.slice(0, 200)}`);
+    for (const name of events) {
+        // Note the omission: `envelope.authentication` is deliberately not read
+        // or forwarded. Bee Flow reaches Nextcloud as this user through AppAPI
+        // impersonation already (ncProxy.js), so the token would be an unused
+        // credential travelling one hop further than it needs to.
+        const body = JSON.stringify({ event: name, ncUid, payload });
+        const ts = Math.floor(Date.now() / 1000);
+        const path = '/api/automation/events/nextcloud';
+        const message = `${ts}\nPOST\n${path}\n${body}`;
+        const sig = crypto.createHmac('sha256', config.tenantKey).update(message).digest('hex');
+
+        try {
+            const r = await fetch(`${config.apiBaseUrl}${path}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Beeflow-Source': 'nextcloud-connector',
+                    'X-Beeflow-NC-Instance-Id': config.ncInstanceId,
+                    'X-Beeflow-Sig': `${ts}.${sig}`,
+                },
+                body,
+                signal: AbortSignal.timeout(10_000),
+            });
+            if (!r.ok) {
+                const t = await r.text().catch(() => '');
+                console.warn(`[AutomationEvents] SaaS returned ${r.status} for ${name}: ${t.slice(0, 200)}`);
+            }
+        } catch (err) {
+            // Keep going: a failure forwarding `changed` must not swallow the
+            // `completed` the author actually subscribed to.
+            console.warn(`[AutomationEvents] forward failed for ${name}: ${err.message}`);
         }
-    } catch (err) {
-        console.warn(`[AutomationEvents] forward failed: ${err.message}`);
     }
     // Always 200 to Nextcloud so the background job doesn't enter a retry
     // storm; SaaS failures are logged and recovered by the polling backstop.
-    res.json({ ok: true, event });
+    res.json({ ok: true, event, events });
 });
 
 module.exports = router;
 module.exports.mapEvent = mapEvent;
 module.exports.normalisePayload = normalisePayload;
 module.exports.toUserRelativePath = toUserRelativePath;
+module.exports.deckTransitions = deckTransitions;
+module.exports._resetCardState = () => CARD_STATE.clear();

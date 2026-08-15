@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [1.4.0] - 2026-08-15
+
+### Added
+- **Bee Flow Studio apps in the Nextcloud app menu.** An app built in Bee Flow's App Studio can now be published straight into Nextcloud's top bar: the app owner ticks "Show in the Nextcloud app menu" when publishing, and the connector adds a menu entry with the app's own icon that opens the app on its own page inside Nextcloud — forms, buttons, data grids and automations all working through your Nextcloud sign-in, with the app's audience and role rules enforced exactly as inside Bee Flow. Renaming, unpublishing or deleting the app updates or removes the menu entry automatically (within a couple of minutes). Everyone on the Nextcloud sees the icon; only the audience the owner chose can use the app — others get a clear "not available to you" screen.
+
+### Fixed
+- **The embedded app could open blank right after install.** While Bee Flow was finishing its one-time setup, the app's own files were rejected before it could load, so nothing rendered — and the one screen that completes setup never appeared. The app shell and its assets now always load, and the verification screen shows as intended.
+
 ## [1.3.0] - 2026-08-12
 
 ### Added

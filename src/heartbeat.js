@@ -112,6 +112,10 @@ async function runInitInBackground() {
         registerTopMenu().catch(err => console.warn(`[Init] TopMenu register failed: ${err.message}`)),
         registerEmbedScript().catch(err => console.warn(`[Init] Embed script register failed: ${err.message}`)),
         declarativeSettings.registerSettingsForm().catch(err => console.warn(`[Init] Settings form register failed: ${err.message}`)),
+        // Studio-app menu entries (a top-menu icon per published app). A no-op
+        // until bootstrap has a tenant key; the poller catches up afterwards.
+        require('./studioAppMenus').syncStudioAppMenus()
+            .catch(err => console.warn(`[Init] Studio-app menu sync failed: ${err.message}`)),
     ]);
     declarativeSettings.startPolling();
     await reportInitProgress(60).catch(() => {});

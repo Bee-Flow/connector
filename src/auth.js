@@ -212,6 +212,15 @@ function appApiAuthMiddleware(req, res, next) {
                 req.beeflow = { user, jwt: null };
                 if (req.path.startsWith('/setup')) return next();
                 if (isDocumentNavigation(req)) return next();
+                // The SPA bundle itself needs no tenant key — and it IS the
+                // setup UI. 502ing the shell's own assets deadlocked bootstrap:
+                // the navigation got index.html, every asset it referenced got
+                // this JSON 502 (browser: "Refused to apply style … MIME type
+                // application/json"), so the embedded view stayed blank and the
+                // admin had nowhere to enter the verification code that would
+                // have produced the key. Same static-asset predicate as the
+                // anonymous branch above.
+                if (ANON_OK.test(req.path)) return next();
                 return res.status(502).json({ error: 'Tenant key not configured — bootstrap in progress' });
             }
             req.beeflow = { user, jwt: token };

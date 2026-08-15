@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [1.4.2] - 2026-08-15
+
+### Changed
+- **Apps in the Nextcloud app menu now show their own icon.** An app published to the top bar appeared as a plain letter tile; it now shows the icon its owner picked in Bee Flow — the same one the app has everywhere else. Apps whose icon cannot be matched still fall back to the letter tile. Existing entries pick the icon up automatically within a few minutes of updating; nothing needs re-publishing.
+
 ## [1.4.1] - 2026-08-15
 
 ### Fixed

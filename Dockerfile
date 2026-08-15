@@ -94,7 +94,16 @@ WORKDIR /app
 # Connector source is the build context. Paths are relative to the connector
 # repo root (post-split layout): no `nextcloud-connector/` prefix needed.
 COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev --no-audit --no-fund
+RUN npm ci --omit=dev --no-audit --no-fund \
+    # lucide-static ships 48 MB, of which we need only `icons/` (8 MB) — the
+    # per-icon SVGs served as Nextcloud top-menu icons for published Studio
+    # apps (src/studioAppMenus.js). The webfonts, the bundled dist/ and the
+    # sprite are dead weight in this image.
+    && rm -rf node_modules/lucide-static/font \
+              node_modules/lucide-static/dist \
+              node_modules/lucide-static/sprite.svg \
+              node_modules/lucide-static/icon-nodes.json \
+              node_modules/lucide-static/tags.json
 
 COPY src ./src
 COPY appinfo ./appinfo

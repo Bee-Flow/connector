@@ -207,6 +207,16 @@ app.get(['/js/embed', '/js/embed.js'], (_req, res) => {
 `);
 });
 
+// Studio-app menu entries: /js/embed-app (the per-entry page script) and
+// /img/studio-app/<name>.svg (per-entry menu icons). Registered HERE — after
+// the SaaS-proxy gate (CONNECTOR_OWNED already excludes /js/ and /img/) and
+// before the embed-shell proxy, which would otherwise forward these paths to
+// the cloud /embed/ build and 404. The sync loop that registers the entries
+// with AppAPI runs from heartbeat.js (/init) and the poller below.
+const studioAppMenus = require('./studioAppMenus');
+studioAppMenus.registerRoutes(app);
+studioAppMenus.startPolling();
+
 // The SPA bundle baked into /public at container build time (see Dockerfile).
 // As of the embed-proxy change this is the OFFLINE FALLBACK only — the primary
 // path proxies the shell from the cloud `/embed/` build (below), so a frontend

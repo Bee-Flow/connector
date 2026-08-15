@@ -27,17 +27,51 @@ const config = require('../src/config');
 const menus = require('../src/studioAppMenus');
 
 const UUID = '4c6cbdcf-6a7e-4d9b-9f6e-2f1f5c1d0a01';
-const NAME = 'sa_4c6cbdcf6a7e4d9b9f6e2f1f5c1d0a01';
+const NAME = menus.menuNameForAppId(UUID);
 
 // ── Name mapping ────────────────────────────────────────────────────
 
 test('menu names round-trip crypto.randomUUID() app ids', () => {
-    assert.strictEqual(menus.menuNameForAppId(UUID), NAME);
     assert.strictEqual(menus.appIdForMenuName(NAME), UUID);
     // Anything that cannot round-trip is refused, not mangled.
     assert.strictEqual(menus.menuNameForAppId('not-a-uuid'), null);
     assert.strictEqual(menus.appIdForMenuName('sa_zz'), null);
     assert.strictEqual(menus.appIdForMenuName('main'), null);
+    // The OLD hex encoding must no longer be accepted — those names never
+    // registered (they did not fit the column) and must not be resurrected.
+    assert.strictEqual(menus.appIdForMenuName('sa_4c6cbdcf6a7e4d9b9f6e2f1f5c1d0a01'), null);
+});
+
+/**
+ * THE regression guard for the 1.4.0 outage.
+ *
+ * `oc_ex_ui_top_menu`.name is varchar(32). A longer name is not truncated —
+ * AppAPI answers OCS statuscode 400 while still returning HTTP 200, so it
+ * looks exactly like success. `sa_` + 32 hex chars = 35 meant EVERY studio-app
+ * menu entry was silently refused. Round-tripping is not enough: the name has
+ * to fit, for every possible id.
+ */
+test('every menu name fits the varchar(32) column, and still round-trips', () => {
+    const crypto = require('node:crypto');
+    for (let i = 0; i < 500; i++) {
+        const id = crypto.randomUUID();
+        const name = menus.menuNameForAppId(id);
+        assert.ok(name, `no name produced for ${id}`);
+        assert.ok(name.length <= 32, `name ${name} is ${name.length} chars — the column holds 32`);
+        assert.match(name, /^sa_[a-z2-7]+$/, 'lowercase alphanumeric only — no escaping in the URL path');
+        assert.strictEqual(menus.appIdForMenuName(name), id, `round-trip lost ${id}`);
+    }
+});
+
+test('display names are capped to the column too, visibly', () => {
+    // display_name is varchar(32) as well; an over-long app name used to take
+    // the whole entry down with the same silent 400.
+    const long = 'Customer relationship management pipeline 2026';
+    const fitted = menus.fitDisplayName(long);
+    assert.ok(fitted.length <= 32, `${fitted.length} chars`);
+    assert.match(fitted, /…$/, 'truncation is visible, not silent');
+    assert.strictEqual(menus.fitDisplayName('CRM pipeline'), 'CRM pipeline');
+    assert.strictEqual(menus.fitDisplayName('   '), 'App');
 });
 
 // ── The embedded page script ────────────────────────────────────────
@@ -112,6 +146,11 @@ const okJson = (obj, status = 200) => new Response(JSON.stringify(obj), {
     status, headers: { 'content-type': 'application/json' },
 });
 
+// An OCS refusal: HTTP 200 with the real verdict inside the envelope. This is
+// precisely the shape that made 1.4.0 look healthy while registering nothing.
+const ocsRefusal = (statuscode = 400, message = 'Top Menu entry could not be registered') =>
+    okJson({ ocs: { meta: { status: 'failure', statuscode, message } } });
+
 function saasListHandler(apps) {
     return {
         match: (u, c) => u.includes('/api/nextcloud/studio-apps') && c.method === 'GET',
@@ -182,6 +221,29 @@ test('sync registers new entries, updates renames, and unregisters removed apps'
     assert.ok(calls.some(c => c.url.includes('/ui/top-menu') && c.method === 'DELETE'));
     assert.ok(calls.some(c => c.url.includes('/ui/script') && c.method === 'DELETE'));
     assert.strictEqual(Object.keys(menus.loadState().entries).length, 0);
+});
+
+test('an OCS refusal inside a 200 is a failure, and is NOT recorded as registered', async (t) => {
+    const realFetch = global.fetch;
+    t.after(() => { global.fetch = realFetch; });
+    config.tenantKey = 'tk-secret';
+    config.ncInstanceId = 'nc-instance-a';
+    t.after(() => { config.tenantKey = null; config.ncInstanceId = null; });
+
+    const calls = mockFetch([
+        saasListHandler([{ id: UUID, name: 'Quote intake', icon: 'Scissors' }]),
+        { match: (u) => u.includes('/ui/top-menu'), respond: () => ocsRefusal() },
+        ocsHandler,
+    ]);
+    const result = await menus.syncStudioAppMenus();
+
+    // The sync survives (one bad entry must not stop the others)…
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.added, 0, 'a refused entry must not count as added');
+    // …but nothing is persisted, so the next tick RETRIES instead of believing
+    // a registration that never happened.
+    assert.strictEqual(menus.loadState().entries[NAME], undefined, 'refused entry must not be recorded');
+    assert.ok(calls.some(c => c.url.includes('/ui/top-menu') && c.method === 'POST'));
 });
 
 test('sync is a silent no-op until bootstrap has bound a tenant', async () => {

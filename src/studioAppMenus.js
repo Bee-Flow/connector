@@ -6,16 +6,16 @@
  * for the org's opted-in published apps and reconciles that list against
  * AppAPI's `ui/top-menu` registrations, so each app gets its own icon in the
  * Nextcloud top bar and opens on its own embedded page
- * (`/apps/app_api/embedded/<appId>/sa_<id>`).
+ * (`/apps/app_api/embedded/bee_flow/sa_<base32 app id>`).
  *
  * Flow per entry:
- *   1. POST /ocs/v1.php/apps/app_api/api/v1/ui/top-menu    {name:'sa_<hex>', displayName, icon}
- *   2. POST /ocs/v1.php/apps/app_api/api/v1/ui/script      {type:'top_menu', name:'sa_<hex>', path:'js/embed-app'}
+ *   1. POST /ocs/v1.php/apps/app_api/api/v1/ui/top-menu    {name:'sa_<b32>', displayName, icon}
+ *   2. POST /ocs/v1.php/apps/app_api/api/v1/ui/script      {type:'top_menu', name:'sa_<b32>', path:'js/embed-app'}
  *   3. NC injects js/embed-app.js into the entry's embedded page; the script
- *      derives the app id from the page URL (the menu name IS the app id with
- *      dashes stripped — crypto.randomUUID() on the server) and mounts an
- *      iframe at the signed proxy with `?ncStudioApp=<appId>`, which the SPA
- *      resolves to its standalone app-run view.
+ *      decodes the app id back out of the entry name in the page URL (see the
+ *      encoding note below) and mounts an iframe at the signed proxy with
+ *      `?ncStudioApp=<appId>`, which the SPA resolves to its standalone
+ *      app-run view.
  *   4. GET /img/studio-app/<name>.svg serves the entry's monochrome menu icon.
  *
  * Reconciliation is state-based: the registered set is persisted in
@@ -41,24 +41,78 @@ const LIST_PATH = '/api/nextcloud/studio-apps';
 // Poll cadence. Each tick is one HTTPS GET to the SaaS and, when nothing
 // changed, zero OCS calls — cheap enough to keep publish→visible latency low.
 const SYNC_INTERVAL_MS = (parseInt(process.env.BEEFLOW_STUDIO_MENU_SYNC_SECONDS, 10) || 120) * 1000;
-// NC's oc_ex_ui_top_menu display name column is bounded; keep names short.
-const MAX_DISPLAY_NAME = 60;
+
+// ── Nextcloud column limits — HARD, and silent when exceeded ────────
+// `oc_ex_ui_top_menu`.name AND .display_name are both varchar(32). Over-long
+// values do not truncate: AppAPI answers OCS statuscode 400 ("Top Menu entry
+// could not be registered") while still returning HTTP 200, so an unchecked
+// caller reads it as success. Both limits are enforced here, and ocsCall below
+// reads the OCS envelope so a future violation is loud instead of invisible.
+const MAX_NAME = 32;
+const MAX_DISPLAY_NAME = 32;
 
 // ── Menu-name mapping ───────────────────────────────────────────────
-// App ids are crypto.randomUUID() (8-4-4-4-12 lowercase hex). The menu entry
-// name embeds the id with dashes stripped, so the embed script can reconstruct
-// the id from the page URL alone — no per-entry state has to reach the browser.
+// App ids are crypto.randomUUID() (8-4-4-4-12 lowercase hex). The entry name
+// carries the id so the embedded page script can reconstruct it from the page
+// URL alone — no per-entry state has to reach the browser.
+//
+// The id is encoded as lowercase BASE32 (RFC 4648 alphabet, no padding): 128
+// bits → 26 chars, so `sa_` + 26 = 29, inside the 32-char column with room to
+// spare. Hex would be 32 chars and `sa_` + hex = 35, which is what made every
+// registration fail. Lowercase-alphanumeric is also the safest charset here —
+// it matches the existing `main` entry and needs no escaping in the embedded
+// URL path segment.
+const B32 = 'abcdefghijklmnopqrstuvwxyz234567';
 
 function menuNameForAppId(appId) {
     const hex = String(appId || '').toLowerCase().replace(/-/g, '');
-    return /^[0-9a-f]{32}$/.test(hex) ? `sa_${hex}` : null;
+    if (!/^[0-9a-f]{32}$/.test(hex)) return null;
+    let out = '';
+    let acc = 0;
+    let nbits = 0;
+    for (let i = 0; i < hex.length; i += 2) {
+        acc = (acc << 8) | parseInt(hex.slice(i, i + 2), 16);
+        nbits += 8;
+        while (nbits >= 5) {
+            out += B32[(acc >> (nbits - 5)) & 31];
+            nbits -= 5;
+        }
+    }
+    if (nbits > 0) out += B32[(acc << (5 - nbits)) & 31];
+    const name = `sa_${out}`;
+    // Belt and braces: never hand Nextcloud a name the column cannot hold.
+    return name.length <= MAX_NAME ? name : null;
 }
 
 function appIdForMenuName(name) {
-    const m = /^sa_([0-9a-f]{32})$/.exec(String(name || ''));
+    const m = /^sa_([a-z2-7]{26})$/.exec(String(name || ''));
     if (!m) return null;
-    const h = m[1];
-    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+    let hex = '';
+    let acc = 0;
+    let nbits = 0;
+    for (const ch of m[1]) {
+        const v = B32.indexOf(ch);
+        if (v < 0) return null;
+        acc = (acc << 5) | v;
+        nbits += 5;
+        while (nbits >= 8) {
+            const byte = (acc >> (nbits - 8)) & 255;
+            hex += byte.toString(16).padStart(2, '0');
+            nbits -= 8;
+        }
+    }
+    if (hex.length !== 32) return null;
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/**
+ * Fit a display name into the column. Truncation is visible ("…") rather than
+ * silent, because the alternative — what shipped in 1.4.0 — was AppAPI
+ * refusing the whole entry for a long app name and nothing saying why.
+ */
+function fitDisplayName(displayName) {
+    const clean = String(displayName || '').trim() || 'App';
+    return clean.length <= MAX_DISPLAY_NAME ? clean : `${clean.slice(0, MAX_DISPLAY_NAME - 1)}…`;
 }
 
 // ── Persisted registration state ────────────────────────────────────
@@ -70,7 +124,18 @@ function statePath() {
 function loadState() {
     try {
         const raw = JSON.parse(fs.readFileSync(statePath(), 'utf8'));
-        return (raw && typeof raw.entries === 'object' && raw.entries !== null) ? raw : { entries: {} };
+        if (!raw || typeof raw.entries !== 'object' || raw.entries === null) return { entries: {} };
+        // Drop entries whose name predates the current encoding. 1.4.0 wrote
+        // `sa_<32 hex>` (35 chars) into this file as "registered" while
+        // Nextcloud had actually refused every one of them — the name could
+        // not fit varchar(32). They therefore do not exist on the NC side and
+        // must not be carried forward, or every sync would try (and fail) to
+        // unregister a row that was never there.
+        const entries = {};
+        for (const [name, entry] of Object.entries(raw.entries)) {
+            if (appIdForMenuName(name)) entries[name] = entry;
+        }
+        return { ...raw, entries };
     } catch (_) {
         return { entries: {} };
     }
@@ -128,6 +193,34 @@ function appApiHeaders() {
     };
 }
 
+/**
+ * OCS statuscodes that mean "the desired end state holds".
+ *   100 / 200 — success (v1 / v2 envelopes)
+ *   409       — already registered; re-running a sync must be idempotent
+ * On a DELETE, 404 additionally means "already gone".
+ */
+const OCS_OK = new Set([100, 200, 409]);
+
+/** Pull `ocs.meta.statuscode` out of a JSON *or* XML envelope; null if absent. */
+function readOcsStatus(text) {
+    try {
+        const code = JSON.parse(text)?.ocs?.meta?.statuscode;
+        if (Number.isFinite(code)) return code;
+    } catch (_) { /* not JSON — try the XML shape below */ }
+    const m = /<statuscode>(\d+)<\/statuscode>/.exec(text || '');
+    return m ? parseInt(m[1], 10) : null;
+}
+
+/**
+ * One OCS call, checked properly.
+ *
+ * OCS answers HTTP 200 even when it refuses the request — the real outcome is
+ * `ocs.meta.statuscode` in the body. Reading only the HTTP status is what let
+ * 1.4.0 report "registered" for entries Nextcloud had rejected outright, and
+ * then persist them as done so they were never retried. Both layers are
+ * checked here, and the thrown error carries the OCS code so the log names the
+ * actual reason.
+ */
 async function ocsCall(method, url, body, label) {
     const res = await withWarmupRetry(() => fetch(url, {
         method,
@@ -135,11 +228,18 @@ async function ocsCall(method, url, body, label) {
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(5_000),
     }), { label, budgetMs: 30_000 });
-    // 409 (already registered) and 404 (already gone on delete) are both the
-    // desired end state.
-    if (!res.ok && res.status !== 409 && !(method === 'DELETE' && res.status === 404)) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`${label} HTTP ${res.status}: ${text.slice(0, 200)}`);
+
+    const text = await res.text().catch(() => '');
+    const code = readOcsStatus(text);
+    const httpOk = res.ok || res.status === 409 || (method === 'DELETE' && res.status === 404);
+    const ocsOk = code === null
+        ? httpOk // no envelope to read — the HTTP status is all we have
+        : (OCS_OK.has(code) || (method === 'DELETE' && code === 404));
+
+    if (!httpOk || !ocsOk) {
+        throw new Error(
+            `${label} HTTP ${res.status}${code === null ? '' : ` / OCS ${code}`}: ${text.slice(0, 200)}`,
+        );
     }
 }
 
@@ -147,7 +247,7 @@ async function registerEntry(name, displayName) {
     const base = `${config.nextcloudUrl}/ocs/v1.php/apps/app_api/api/v1/ui`;
     await ocsCall('POST', `${base}/top-menu`, {
         name,
-        displayName: String(displayName || 'App').slice(0, MAX_DISPLAY_NAME),
+        displayName: fitDisplayName(displayName),
         icon: `img/studio-app/${name}.svg`,
         adminRequired: 0,
     }, `top-menu:${name}`);
@@ -282,14 +382,34 @@ function buildEmbedAppScript() {
 (function() {
     var content = document.getElementById('content');
     if (!content) return;
-    var m = (window.location.pathname || '').match(/\\/embedded\\/[^/]+\\/([A-Za-z0-9_.-]+)/);
-    var hex = m ? /^sa_([0-9a-f]{32})$/.exec(m[1]) : null;
-    if (!hex) {
+    // Mirror of appIdForMenuName(): base32 (RFC 4648, lowercase, no padding)
+    // back to the UUID. Kept in lockstep with the server side — the entry name
+    // in this URL is the ONLY thing identifying which app to open.
+    var B32 = 'abcdefghijklmnopqrstuvwxyz234567';
+    var m = (window.location.pathname || '').match(/\\/embedded\\/[^/]+\\/(sa_[a-z2-7]{26})/);
+    var appId = null;
+    if (m) {
+        var s = m[1].slice(3), acc = 0, nbits = 0, hex = '';
+        for (var i = 0; i < s.length; i++) {
+            var v = B32.indexOf(s.charAt(i));
+            if (v < 0) { hex = ''; break; }
+            acc = (acc << 5) | v;
+            nbits += 5;
+            while (nbits >= 8) {
+                var byte = (acc >> (nbits - 8)) & 255;
+                hex += (byte < 16 ? '0' : '') + byte.toString(16);
+                nbits -= 8;
+            }
+        }
+        if (hex.length === 32) {
+            appId = hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16)
+                + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
+        }
+    }
+    if (!appId) {
         content.textContent = 'This Bee Flow app could not be loaded (invalid app link).';
         return;
     }
-    var h = hex[1];
-    var appId = h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20);
     content.innerHTML = '';
     var iframe = document.createElement('iframe');
     iframe.src = OC.generateUrl('/apps/app_api/proxy/${config.appId}/') + '?ncStudioApp=' + appId;
@@ -356,6 +476,9 @@ module.exports = {
     // exported for tests
     menuNameForAppId,
     appIdForMenuName,
+    fitDisplayName,
+    MAX_NAME,
+    MAX_DISPLAY_NAME,
     buildEmbedAppScript,
     buildEntryIconSvg,
     fetchDesiredApps,

@@ -7,50 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [1.4.1] - 2026-08-15
+
+### Fixed
+- **Apps published to the Nextcloud app menu never actually appeared.** The menu entry Bee Flow asked Nextcloud to create had a name longer than Nextcloud's 32-character limit, so Nextcloud refused every one of them — and because the refusal arrives inside an otherwise-successful response, Bee Flow recorded it as done and never tried again. The name is now well within the limit, an app name longer than 32 characters is shortened instead of taking the whole entry down with it, and a refusal from Nextcloud is now treated as the failure it is (logged with the reason, and retried on the next sync). Anyone who ticked "Show in the Nextcloud app menu" on 1.4.0 gets their icon within two minutes of updating — no need to re-publish.
+
 ## [1.4.0] - 2026-08-15
+
+> Note: 1.2.0 and 1.3.0 were released from the public `Bee-Flow/connector`
+> repo on 2026-08-12 (Assistant agent provider, Files right-click menu, Deck
+> triggers, Talk bot fixes) — see that repo's CHANGELOG for their entries.
+> This feature therefore ships as 1.4.0.
 
 ### Added
 - **Bee Flow Studio apps in the Nextcloud app menu.** An app built in Bee Flow's App Studio can now be published straight into Nextcloud's top bar: the app owner ticks "Show in the Nextcloud app menu" when publishing, and the connector adds a menu entry with the app's own icon that opens the app on its own page inside Nextcloud — forms, buttons, data grids and automations all working through your Nextcloud sign-in, with the app's audience and role rules enforced exactly as inside Bee Flow. Renaming, unpublishing or deleting the app updates or removes the menu entry automatically (within a couple of minutes). Everyone on the Nextcloud sees the icon; only the audience the owner chose can use the app — others get a clear "not available to you" screen.
 
-### Fixed
-- **The embedded app could open blank right after install.** While Bee Flow was finishing its one-time setup, the app's own files were rejected before it could load, so nothing rendered — and the one screen that completes setup never appeared. The app shell and its assets now always load, and the verification screen shows as intended.
-
-## [1.3.0] - 2026-08-12
-
-### Added
-- **Ask Bee Flow directly in a Talk conversation.** Add the "Bee Flow" bot to a conversation, then mention it — "@Bee Flow, what changed in my calendar today?" — and it answers inline, using Nextcloud's Assistant agent with read-only access scoped to your own account. The bot only ever sees conversations a moderator has added it to. (Nextcloud does not list bots in the "@" autocomplete, so type the name; the mention still works.)
-
-### Fixed
-- **Bee Flow now actually appears as Nextcloud's Assistant agent.** The agent provider introduced in 1.2.0 was rejected by Nextcloud on registration because of a metadata mismatch, so the Assistant showed "No provider found" and its agent tab had no backend. The registration is corrected, and a failed provider registration now reports which provider and why instead of a bare count.
-- **The Bee Flow icon is back in the Files right-click menu.** The entries pointed at an icon path the connector did not serve, so they appeared without the bee. They now show the icon.
-- **The self-hosted server address in Settings no longer fights an address set at install time.** When both were set and disagreed, the connector repeatedly tried to switch targets and briefly dropped its connection on each attempt. An address supplied at install now takes precedence while it is set, and the Settings picker is informational.
-
-## [1.2.0] - 2026-08-12
-
-### Added
-- **Bee Flow can now answer Nextcloud's Assistant agent, not just its writing tools.** Bee Flow registers as the provider behind Assistant's agent — the tab where you ask it to actually find and do things, rather than rewrite a paragraph. Because Nextcloud hands the provider the identity of the person asking, anything Bee Flow looks up is looked up as them: nobody sees a file they could not already open. For now the assistant can only read — searching, fetching and summarising. Actions that change something are deliberately withheld until Nextcloud's "are you sure?" step is wired up, so it cannot alter anything on your behalf without asking.
-- **Bee Flow in the file right-click menu.** "Ask Bee Flow about this", "Summarise with Bee Flow" and "Run a Bee Flow routine…" appear when you right-click a file, and work on a whole multi-selection at once. Summarise only appears on files that contain text. These open Bee Flow; carrying the selected file straight into the conversation is still to come.
-- **Deck triggers work.** Routines can now start when a card is created, changed, deleted, moved to another list, or marked done. This has been offered in the automation builder for months and could not fire — Bee Flow believed Nextcloud had no way to notify it about Deck, which stopped being true when Deck 1.18.0 shipped. Two of the built-in example routines depended on it and were quietly dead.
-
-### Fixed
-- **Assistant requests no longer queue behind one another.** Bee Flow handled one AI task at a time per instance, so a second person asking anything waited for the first to finish. It now handles several at once.
-- **A request to Bee Flow can no longer hang forever.** If Bee Flow stopped responding mid-request, Nextcloud was never told, and the task sat marked "scheduled" — a spinner with nothing behind it. Requests now give up on a deadline that fits the kind of work, and report a failure the user can see and act on. The message also now distinguishes "this took too long, try again" from "something is broken, ask your administrator".
-- **Requests are no longer missed when several people ask at once.** Nextcloud only notifies an app that work is waiting when nothing of that kind is already running, so the second simultaneous request generated no notification at all and waited for the next one to arrive. Bee Flow now also checks for waiting work on its own, frequently while busy and rarely when idle.
-
 ## [1.1.0] - 2026-08-12
 
-### Fixed
-- **Automations could never be started by anything happening in Nextcloud.** Bee Flow routines that were supposed to run when a file arrives, a tag is added, a calendar entry changes, a form is submitted or a table row is edited simply never ran. The connector had been asking Nextcloud to notify it through an interface Nextcloud no longer provides, and even when a notification did arrive it was discarded because the connector looked for the details under the wrong name. Nothing reported an error — the connector said it was healthy the whole time, so the only symptom was routines that quietly did nothing. Bee Flow now subscribes through Nextcloud's own webhook system and receives sixteen kinds of event: files created, changed, deleted, renamed, copied and restored from the trash; tags added and removed; calendar entries created, changed, deleted and moved; Forms submissions; and Tables rows added, changed and deleted.
-  - Nextcloud ships the app that delivers these but does not switch it on by default. An administrator enables it once with `occ app:enable webhook_listeners`. Without it Bee Flow still works — it falls back to checking the activity feed periodically — so this is optional, just slower.
-- **Uploading a file through the embedded app could corrupt it.** Anything sent to Nextcloud's file interface was being read and re-written by the connector on the way through, which reordered the contents of `.json` files, rejected files that were not valid JSON with an error before they ever reached Nextcloud, and imposed a 25 MB ceiling on every upload. File data now passes through untouched.
-
 ### Added
-- **Bee Flow answers Nextcloud's Assistant.** Bee Flow can now be selected as the provider behind Nextcloud's own AI features — summarising, rewriting, proofreading, translating, headlines, topics and free-form prompts. Because Nextcloud routes Assistant, Mail thread summaries, Talk call summaries, Text, Collectives, Notes, Deck and Office through the same mechanism, this makes all of them run on your organisation's chosen model and its own privacy settings, rather than a third party's. Answers are returned in the language of the text, not the language of the instruction.
-- **Bee Flow in Talk.** Bee Flow can be added to a Talk conversation as a bot: mention it to ask something, and approvals that a routine is waiting on can be granted straight from the chat instead of a separate screen.
-- **Bee Flow's own tools inside Nextcloud Assistant.** Bee Flow exposes its actions and saved routines over the Model Context Protocol, so Assistant — or any other client that speaks it — can call them.
+- **Ask Bee Flow directly in a Talk conversation.** Add the "Bee Flow" bot to any Talk conversation, then mention it — "@Bee Flow, what changed in my calendar today?" — and it answers inline, using the same assistant that powers the app, with read-only access scoped to your own Nextcloud account. The bot only sees conversations a moderator has added it to. (Nextcloud does not list bots in the "@" autocomplete, so type the name; the mention still works.)
 
-### Security
-- **A request to Nextcloud could be replayed with different contents.** Requests the embedded app sends through the connector are signed, but the signature covered only the address and the time, not the body being sent. Because writes to Nextcloud travel as ordinary posts, anyone who could observe one signed request had a few minutes in which they could reuse that signature to write something else to that same path. Signatures now cover the body as well. Signatures made by older connectors are still accepted, so an in-progress upgrade is not interrupted.
+### Fixed
+- **The embedded app could open blank, or drop you on a sign-in screen, right after install.** While Bee Flow was finishing its one-time setup, the app's own files were being rejected before it could load, so nothing rendered — and the one screen that completes setup never appeared. The app shell and its assets now always load, and the verification screen shows as intended.
+- **The Bee Flow icon was missing from the Files right-click menu.** The entries ("Ask Bee Flow about this", "Summarise with Bee Flow", "Run a Bee Flow routine…") pointed at an icon path that was not served, so they appeared without the bee. They now show the icon.
+- **Bee Flow did not appear as an AI provider for Nextcloud's Assistant.** One provider registration was rejected because of a metadata mismatch, which left the Assistant showing "No provider found". All Bee Flow task types — including the agent behind the Assistant's chat — now register correctly.
+- **The self-hosted server address in Settings could fight an address set at install time.** When both were set and disagreed, the connector repeatedly tried to switch targets and briefly lost its connection on each attempt. An address supplied at install time now takes precedence, and the Settings picker is informational while it is set.
 
 ## [1.0.2] - 2026-08-11
 

@@ -434,14 +434,71 @@ function buildEmbedAppScript() {
 `;
 }
 
+// ── Lucide icon resolution ──────────────────────────────────────────
+// A Studio app's `icon` is a Lucide icon NAME in PascalCase ('Contact',
+// 'LayoutGrid', 'Building2') — the same name the Bee Flow web app renders, so
+// the Nextcloud top bar shows the icon the owner actually picked rather than a
+// stand-in. lucide-static ships one SVG per icon, kebab-cased; the Dockerfile
+// keeps only that directory (see the prune there).
+const LUCIDE_ICON_DIR = (() => {
+    try {
+        return path.join(path.dirname(require.resolve('lucide-static/package.json')), 'icons');
+    } catch (_) {
+        return null; // dependency absent (e.g. a slimmed image) → letter tiles
+    }
+})();
+
+/** 'LayoutGrid' → 'layout-grid', 'Building2' → 'building-2'. */
+function lucideFileName(iconName) {
+    return String(iconName || '')
+        .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+        .replace(/([a-zA-Z])(\d)/g, '$1-$2')
+        .toLowerCase();
+}
+
+const _iconCache = new Map();
+
 /**
- * Monochrome top-bar icon for one entry: the app's first letter in a rounded
- * tile. Nextcloud recolors menu icons via CSS filters, so the glyph must be a
- * plain dark shape on transparent — never the app's accent color. The letter
- * comes from the connector's own persisted state (display names never leave
- * the org's Nextcloud), with a neutral fallback when state is missing.
+ * The app's own Lucide glyph, or null when it cannot be resolved.
+ *
+ * The name is normalised to a kebab file name and then hard-validated against
+ * `[a-z0-9-]+` before it touches the filesystem: it arrives from the SaaS, so
+ * a crafted value must not be able to walk out of the icons directory.
+ * `currentColor` is pinned to black because Nextcloud recolors menu icons with
+ * a CSS filter over a standalone SVG, where `currentColor` has no context to
+ * inherit from.
  */
-function buildEntryIconSvg(displayName) {
+function lucideIconSvg(iconName) {
+    if (!LUCIDE_ICON_DIR || !iconName) return null;
+    const file = lucideFileName(iconName);
+    if (!/^[a-z0-9-]+$/.test(file)) return null;
+    if (_iconCache.has(file)) return _iconCache.get(file);
+    let svg = null;
+    try {
+        svg = fs.readFileSync(path.join(LUCIDE_ICON_DIR, `${file}.svg`), 'utf8')
+            .replace(/currentColor/g, '#000000');
+    } catch (_) {
+        svg = null; // unknown icon name — the caller falls back to the letter
+    }
+    _iconCache.set(file, svg);
+    return svg;
+}
+
+/**
+ * Monochrome top-bar icon for one entry: the app's own Lucide glyph when the
+ * name resolves, otherwise the app's first letter in a rounded tile. Nextcloud
+ * recolors menu icons via CSS filters, so either way the shape must be plain
+ * dark on transparent — never the app's accent color. The letter comes from
+ * the connector's own persisted state (display names never leave the org's
+ * Nextcloud), with a neutral fallback when state is missing.
+ */
+function buildEntryIconSvg(displayName, iconName) {
+    const lucide = lucideIconSvg(iconName);
+    if (lucide) return lucide;
+    return buildLetterIconSvg(displayName);
+}
+
+function buildLetterIconSvg(displayName) {
     const match = String(displayName || '').trim().match(/[\p{L}\p{N}]/u);
     const letter = (match ? match[0] : '•').toUpperCase()
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -465,7 +522,7 @@ function registerRoutes(app) {
         // Menu icons are fetched by every user's browser on every page load;
         // let them cache briefly but revalidate so a rename shows up soon.
         res.set('Cache-Control', 'public, max-age=300');
-        res.send(buildEntryIconSvg(entry ? entry.displayName : null));
+        res.send(buildEntryIconSvg(entry ? entry.displayName : null, entry ? entry.icon : null));
     });
 }
 
@@ -481,6 +538,9 @@ module.exports = {
     MAX_DISPLAY_NAME,
     buildEmbedAppScript,
     buildEntryIconSvg,
+    buildLetterIconSvg,
+    lucideFileName,
+    lucideIconSvg,
     fetchDesiredApps,
     loadState,
     STATE_FILE,

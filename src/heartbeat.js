@@ -17,6 +17,25 @@
 
 const config = require('./config');
 const { withWarmupRetry } = require('./appApiClient');
+const { decodeAuthHeader, secretMatches, HDR } = require('./auth');
+
+/**
+ * Is this caller presenting the AppAPI shared secret?
+ *
+ * `^/?heartbeat$` is declared PUBLIC in info.xml — it has to be, AppAPI polls it
+ * before any user session exists — which means anyone on the internet can GET
+ * `<nextcloud>/index.php/apps/app_api/proxy/bee_flow/heartbeat` anonymously.
+ * That is fine for liveness and for a coarse bootstrap state, and not fine for
+ * the detail attached to a failure: the raw upstream error and the remediation
+ * text name the Bee Flow server URL, the operator's egress requirements and the
+ * container name, i.e. exactly the internal-network shape
+ * developer_manual/prologue/security.html calls out under "Sensitive data
+ * exposure". Those fields go only to a caller that holds the secret.
+ */
+function isTrustedLifecycleCaller(req) {
+    const decoded = decodeAuthHeader(req.headers?.[HDR.auth]);
+    return !!decoded && secretMatches(decoded.secret);
+}
 
 function registerLifecycle(app) {
     app.get('/heartbeat', (req, res) => {
@@ -25,6 +44,7 @@ function registerLifecycle(app) {
         // AppAPI itself only reads `status: ok`; the extra fields are
         // advisory for our own diagnostics (consumed by the SPA error
         // overlay and `app_api:app:heartbeat` operators).
+        const trusted = isTrustedLifecycleCaller(req);
         let pending = null;
         let lastError = null;
         let bs = null;
@@ -52,17 +72,24 @@ function registerLifecycle(app) {
 
         // A persisted last-error wins over a bare-OK so the admin sees
         // why bootstrap hasn't completed yet. Cleared on success or on
-        // a transition to the pending-approval state above.
+        // a transition to the pending-approval state above. The state name is
+        // public (it answers "is this install stuck?"); the diagnosis is not.
         if (lastError && lastError.status === 'failed' && !config.tenantKey) {
             return res.json({
                 status: 'ok', // AppAPI's contract — must be `ok` to keep the ExApp alive
                 bootstrap: 'failed',
-                category: lastError.category,
-                error: lastError.error,
-                remediation: bs?.remediationFor?.(lastError.category)
-                    || 'Bootstrap failed. Check `docker logs nc_app_bee_flow --tail 200` for details.',
-                lastAttemptAt: lastError.lastAttemptAt,
-                nextRetryAt: lastError.nextRetryAt,
+                ...(trusted ? {
+                    category: lastError.category,
+                    error: lastError.error,
+                    remediation: bs?.remediationFor?.(lastError.category)
+                        || 'Bootstrap failed. Check `docker logs nc_app_bee_flow --tail 200` for details.',
+                    lastAttemptAt: lastError.lastAttemptAt,
+                    nextRetryAt: lastError.nextRetryAt,
+                } : {
+                    // Where to get the detail, without being the detail.
+                    remediation: 'Open Bee Flow in Nextcloud as an administrator, or read '
+                        + 'GET /setup/diagnostics, for the cause and how to fix it.',
+                }),
             });
         }
 

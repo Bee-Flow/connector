@@ -140,3 +140,48 @@ test('a malformed (non-hex, wrong-length) signature is rejected', () => {
     const req = reqFor({ originalUrl: UPLOAD, override: 'PUT', ts, sig: 'zzzz' });
     assert.equal(verifyHmac(req), false);
 });
+
+// ── Path allow-list ─────────────────────────────────────────────────────────
+//
+// The /nc/* route forwards into Nextcloud with the AppAPI shared secret and an
+// impersonated uid, so "which paths" is a real authorisation boundary and not
+// just routing. Three prefixes are allowed; `..` must not be able to walk out
+// of them, in any spelling (developer_manual/prologue/security.html, directory
+// traversal).
+const { isAllowedNcPath } = require('../src/ncProxy');
+
+test('the three documented prefixes are forwarded', () => {
+    for (const p of [
+        '/ocs/v2.php/cloud/user',
+        '/remote.php/dav/files/alice/notes.md',
+        '/index.php/apps/spreed/api/v1/room',
+        '/ocs/v2.php/cloud/users/alice?format=json',
+    ]) {
+        assert.equal(isAllowedNcPath(p), true, `${p} should be forwarded`);
+    }
+});
+
+test('anything outside them is not', () => {
+    for (const p of ['/settings/admin', '/index.php/settings/admin', '/', '/core/ajax/update.php']) {
+        assert.equal(isAllowedNcPath(p), false, `${p} must not be forwarded`);
+    }
+});
+
+test('a traversal segment cannot satisfy the prefix and then walk out of it', () => {
+    for (const p of [
+        '/ocs/../settings/admin',
+        '/ocs/v2.php/../../index.php/settings/admin',
+        '/ocs/%2e%2e/settings/admin',
+        '/ocs/%252e%252e/settings/admin',
+        '/ocs/..%2fsettings/admin',
+        String.raw`/ocs/..\settings\admin`, // backslash separators, as Windows-flavoured clients send them
+    ]) {
+        assert.equal(isAllowedNcPath(p), false, `${p} must be refused`);
+    }
+});
+
+test('a percent-encoded prefix does not smuggle a path past the allow-list', () => {
+    // Decoding to an allowed prefix is not enough — the raw path must be
+    // allowed too, because that is the form the upstream request carries.
+    assert.equal(isAllowedNcPath('/%6fcs/v2.php/cloud/user'), false);
+});

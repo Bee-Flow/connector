@@ -32,6 +32,11 @@ const fs = require('fs');
 const path = require('path');
 const config = require('./config');
 const { withWarmupRetry } = require('./appApiClient');
+const rateLimit = require('./rateLimit');
+
+// Brute-force gate on the delivery signature. Talk itself never produces a bad
+// one, so only failures are billed and real deliveries are never throttled.
+const sigLimiter = rateLimit.penalise('talk-bot-sig', { limit: 60, windowMs: 60_000 });
 
 const TALK_BOT_API = '/ocs/v2.php/apps/app_api/api/v1/talk_bot';
 // Declared PUBLIC in appinfo/info.xml: Talk calls it with no user session and
@@ -367,9 +372,15 @@ const router = express.Router();
 // sent, so the body must be captured verbatim before anything reshapes it.
 router.post(BOT_ROUTE, express.raw({ type: () => true, limit: '256kb' }), async (req, res) => {
     req.rawBody = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : '';
+    if (sigLimiter.blocked()) {
+        res.set('Retry-After', String(Math.ceil(sigLimiter.windowMs / 1000)));
+        return res.status(429).json({ error: 'Too many invalid signatures' });
+    }
     if (!verifyTalkSignature(req)) {
+        sigLimiter.fail();
         return res.status(401).json({ error: 'Invalid Talk bot signature' });
     }
+    sigLimiter.succeed();
 
     let body;
     try { body = JSON.parse(req.rawBody || '{}'); } catch (_) { body = null; }

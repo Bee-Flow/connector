@@ -63,24 +63,45 @@ test('anonymous (empty user) → next() on SPA shell paths', (_, done) => {
     }
 });
 
-// The connector deliberately does NOT re-verify the AppAPI shared secret — see
-// the "Trust boundary" comment in src/auth.js. NC signs every proxied request
-// and is the only thing that can reach this port, so the header is treated as a
-// user-identity envelope; the load-bearing secret is the tenant key, verified on
-// every SaaS-bound JWT and every SaaS callback. This test used to assert a 401
-// for a bad secret, which the code stopped doing when that boundary was drawn —
-// and it never caught the drift because it was throwing (`req.accepts is not a
-// function`) rather than asserting. It now pins the behaviour that IS the
-// contract: identity is taken from the header, and an unreachable Nextcloud
-// fails the API call closed with a 502 rather than forwarding it unauthenticated.
-test('secret is not re-verified; an unreachable NC fails API calls closed (502)', (_, done) => {
+// The shared secret in AUTHORIZATION-APP-API is what makes the userId half of
+// that header trustworthy, so it is verified on every request that claims a
+// user. Without this check anything that can reach the connector's port — the
+// Docker network it shares with Nextcloud, its deploy daemon and every other
+// ExApp — could present base64("admin:anything") and be handed a SaaS JWT for
+// the Nextcloud administrator.
+test('a wrong shared secret is rejected, whoever it claims to be', (_, done) => {
     const header = Buffer.from('alice:wrong').toString('base64');
     const req = { method: 'POST', path: '/ai/chat/direct/stream', url: '/ai/chat/direct/stream',
                   originalUrl: '/ai/chat/direct/stream',
                   headers: { 'authorization-app-api': header, accept: '*/*' }, rawBody: '' };
     const res = {
-        status: (code) => { assert.equal(code, 502); return res; },
+        status: (code) => { assert.equal(code, 401); return res; },
+        json: (body) => {
+            assert.equal(body.code, 'appapi_secret_mismatch');
+            done();
+        },
+    };
+    appApiAuthMiddleware(req, res, () => done(new Error('forged secret was let through')));
+});
+
+test('a forged admin identity cannot reach the SPA shell either', (_, done) => {
+    const header = Buffer.from('admin:not-the-secret').toString('base64');
+    const req = { method: 'GET', path: '/index.html', url: '/index.html', originalUrl: '/index.html',
+                  headers: { 'authorization-app-api': header }, rawBody: '' };
+    const res = {
+        status: (code) => { assert.equal(code, 401); return res; },
         json: () => done(),
     };
-    appApiAuthMiddleware(req, res, () => done(new Error('chat POST forwarded without a JWT')));
+    appApiAuthMiddleware(req, res, () => done(new Error('forged secret served the shell')));
+});
+
+test('a truncated secret is rejected (length is compared before the bytes)', (_, done) => {
+    const header = Buffer.from('alice:test').toString('base64'); // prefix of 'test-secret'
+    const req = { method: 'GET', path: '/api/chat', url: '/api/chat', originalUrl: '/api/chat',
+                  headers: { 'authorization-app-api': header }, rawBody: '' };
+    const res = {
+        status: (code) => { assert.equal(code, 401); return res; },
+        json: () => done(),
+    };
+    appApiAuthMiddleware(req, res, () => done(new Error('prefix of the secret was accepted')));
 });

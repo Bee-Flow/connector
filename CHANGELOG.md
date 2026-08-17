@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [1.5.0] - 2026-08-17
+
+### Added
+- **The connector now enforces Nextcloud's security guidelines for itself.** A Nextcloud app written in PHP inherits rate limiting, remote-host validation and clickjacking protection from the framework. This connector is an ExApp — a separate Node process behind AppAPI's proxy — so it inherits none of them, and now implements each one directly: how often an operation can be run in a given time window (with an HTTP 429 once the budget is spent), validation of every admin-supplied URL before the connector opens a connection to it, and response hardening that rejects cross-site requests and refuses to be framed by an origin that is not your Nextcloud. Nothing to configure; existing installs are covered as soon as they update.
+
+### Fixed
+- **Building a routine: the trigger picker, a stuck error, an unhelpful skip message, and hidden step navigation.** Four things reported by beta testers, all in the routine builder:
+  - Starting a new routine and clicking "Choose a trigger" opened the ordinary step picker, which led with suggestions for steps that cannot be placed first. It now offers triggers, and nothing else.
+  - When a step failed, the red error banner's dismiss button did nothing — the message stayed until the next send or run, which made one step's failure feel like the whole routine was stuck on it. Dismiss now works.
+  - A step that works through a list used to fail with "forEach overRef did not resolve to an array", naming neither the setting that broke nor what to do. It now says which list it was looking for, what it found instead, and how to fix it.
+  - Moving between steps with the arrows was only possible in the large step view, and the arrows sat among the window buttons where they were easy to miss — while the keyboard shortcut worked all along. They now appear in both the quick and the full view, next to the step's name.
+- **A step that runs once per item can now be used in mapping.** Values such as a count or a status that the step itself produced were missing from the field picker entirely, so there was no way to feed them into a later step by hand. They are now offered, marked as one value per item, and the results table says which columns came from the list being worked through and which the step itself returned, instead of showing both mixed together.
+
 ## [1.4.2] - 2026-08-15
 
 ### Changed

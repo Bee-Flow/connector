@@ -15,6 +15,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { parseAllowedUrl } = require('./remoteHost');
 
 const FILE_NAME = 'setup-config.json';
 const VALID_MODES = ['cloud', 'self-hosted', 'custom'];
@@ -55,9 +56,13 @@ function save({ mode, apiBaseUrl }) {
         throw new Error(`invalid mode "${mode}" (allowed: ${VALID_MODES.join(', ')})`);
     }
     const url = String(apiBaseUrl || '').replace(/\/+$/, '');
-    if (!/^https?:\/\//.test(url)) {
-        throw new Error('apiBaseUrl must start with http:// or https://');
-    }
+    // Scheme + host validation, not just a `https?://` prefix test: this value
+    // becomes the target of every signed connector→Bee Flow call, so it must
+    // not be a link-local/metadata address or carry embedded credentials.
+    // Synchronous (no DNS) because this is also the last gate on the settings-
+    // panel path, which reconciles without a request to answer to; the routes
+    // in setup.js additionally resolve the name before getting here.
+    parseAllowedUrl(url, { label: 'apiBaseUrl' });
     const next = {
         ...(cached || {}),
         mode,
@@ -75,9 +80,7 @@ function save({ mode, apiBaseUrl }) {
 // clear (fall back to NEXTCLOUD_URL).
 function savePublicNcUrl(url) {
     const v = url ? String(url).trim().replace(/\/+$/, '') : null;
-    if (v && !/^https?:\/\//.test(v)) {
-        throw new Error('publicNcUrl must start with http:// or https://');
-    }
+    if (v) parseAllowedUrl(v, { label: 'publicNcUrl' });
     const next = {
         ...(cached || {}),
         publicNcUrl: v,

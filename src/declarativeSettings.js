@@ -17,6 +17,7 @@
 const config = require('./config');
 const setupConfig = require('./setupConfig');
 const { withWarmupRetry } = require('./appApiClient');
+const { parseAllowedUrl } = require('./remoteHost');
 
 const FORM_ID = 'beeflow_admin';
 const FIELD_MODE = 'deployment_mode';
@@ -120,7 +121,17 @@ function _resolveTargetUrl(values) {
     if (!mode) return null;
     if (mode === 'cloud') return CLOUD_URL;
     const url = (values[FIELD_URL] || '').trim();
-    return url || null; // self-hosted picked but no URL given yet — no-op
+    if (!url) return null; // self-hosted picked but no URL given yet — no-op
+    // This value arrives from Nextcloud's appconfig, i.e. straight from a text
+    // field in the admin settings panel — the same untrusted-input class as a
+    // request body, and the connector signs every SaaS call to whatever it says.
+    try {
+        parseAllowedUrl(url, { label: 'Self-hosted API URL' });
+    } catch (err) {
+        console.warn(`[Settings] ignoring the configured Bee Flow server URL: ${err.message}`);
+        return null;
+    }
+    return url;
 }
 
 let _lastApplied = null;

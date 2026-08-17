@@ -8,12 +8,40 @@ open a public GitHub issue.
 We aim to acknowledge reports within 2 business days, share a remediation
 plan within 7 days, and ship a fix within 30 days for high-severity issues.
 
+## Nextcloud security guidelines
+
+This connector is an ExApp — a Node process behind AppAPI's proxy, not a PHP
+app — so the framework guarantees a PHP app inherits have to be rebuilt here.
+Where each item of Nextcloud's developer security guidance
+([prologue](https://docs.nextcloud.com/server/latest/developer_manual/prologue/security.html),
+[digging deeper](https://docs.nextcloud.com/server/latest/developer_manual/digging_deeper/security.html))
+lives in this codebase:
+
+| Guideline | Where it is handled |
+|---|---|
+| SQL injection | Not applicable — the connector owns no database. State is a JSON file in `APP_PERSISTENT_STORAGE` (mode 0600). |
+| XSS | The embedded app is React (auto-escaping). The one hand-written page, `src/setup.html`, escapes every interpolated value (`esc()`); prefer `showStatusText()` over `showStatus()` for new copy. |
+| Clickjacking | `src/security.js` — `frame-ancestors` lists only this Nextcloud's own origins plus `BEEFLOW_TRUSTED_EMBED_ORIGINS`. A request's own `Origin`/`Referer` is never echoed into it. |
+| Code execution / file inclusion | No `eval`, no `child_process`, no user input in a `require()`. Static files are served from the baked `public/` only. |
+| Directory traversal | `src/ncProxy.js` — `isAllowedNcPath()` rejects `..` in any spelling before the three-prefix allow-list is applied. |
+| Shell injection | No shell is invoked at runtime. |
+| Authentication bypass / privilege escalation | `src/auth.js` verifies the AppAPI shared secret in constant time on every request before trusting the uid it carries. `src/setup.js` re-checks Nextcloud admin membership on every org-level action rather than relying on `info.xml` access levels alone. |
+| Sensitive data exposure | `/heartbeat` is PUBLIC by necessity; it reports coarse state to anyone and the failure diagnosis (server URL, upstream error, remediation) only to a caller holding the shared secret. `/setup/diagnostics` is admin-only. |
+| CSRF | `src/security.js` — AppAPI's proxy controller is `#[NoCSRFRequired]`, so the connector rejects any state-changing request the browser reports as `Sec-Fetch-Site: cross-site`. |
+| Unvalidated redirects | The connector issues no redirects; the Files action returns a fixed handler id. |
+| CORS | No `Access-Control-Allow-*` header is ever sent. |
+| Rate limiting | `src/rateLimit.js` — per-uid budgets on the setup and verification routes (429 + `Retry-After`), and failure-only brute-force gates on the signature-authenticated routes (`/nc/*`, `/hooks/*`). |
+| Remote host validation | `src/remoteHost.js` — every admin-supplied URL is checked for scheme, embedded credentials and link-local/cloud-metadata addresses before any connection. Loopback and RFC1918 stay allowed: self-hosting depends on them. |
+| Trusted domain verification | `src/setup.js` — `pointsAtThisNextcloud()` compares the Nextcloud instance id before accepting an admin-supplied public Nextcloud URL. |
+
 ## Scope
 
 This repository contains the Bee Flow Nextcloud connector — the ExApp
 that bridges a Nextcloud installation to the hosted (or self-hosted)
 Bee Flow service. In-scope concerns include:
 
+- AppAPI shared-secret verification bypass (any path to a minted Bee Flow JWT
+  without a matching `APP_SECRET`)
 - AppAPI signature verification bypass on `/init`, `/heartbeat`, `/enabled`
 - HMAC-signed `/nc/*` reverse-proxy authentication weakness
 - AppAPI shared-secret leakage paths inside the container

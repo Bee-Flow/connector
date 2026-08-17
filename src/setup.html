@@ -409,9 +409,28 @@
         statusBox.textContent = '';
         statusInline.textContent = '';
     }
+    // Escape before anything reaches innerHTML below. The status line mixes
+    // static markup (<strong>, <code>) with values that are NOT ours: the
+    // version and tier come from whatever host the admin just probed, and the
+    // error strings echo a URL the admin typed. Nextcloud's guidance is to
+    // sanitise every variable that reaches the DOM rather than judging each
+    // one's provenance (developer_manual/prologue/security.html, XSS).
+    function esc(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
     function showStatus(kind, html) {
         statusBox.className = `status show ${kind}`;
         statusBox.innerHTML = html;
+    }
+    /** Plain-text status — the safe default; use showStatus only for static markup. */
+    function showStatusText(kind, text) {
+        statusBox.className = `status show ${kind}`;
+        statusBox.textContent = String(text == null ? '' : text);
     }
 
     cards.forEach(c => c.addEventListener('click', () => {
@@ -441,13 +460,13 @@
             if (d.ok) {
                 showStatus('ok',
                     `<strong>Reachable.</strong> Server responded
-                     <code>${d.status}</code>${d.version ? ` · version <code>${d.version}</code>` : ''}${d.tier ? ` · tier <code>${d.tier}</code>` : ''}.`);
+                     <code>${esc(d.status)}</code>${d.version ? ` · version <code>${esc(d.version)}</code>` : ''}${d.tier ? ` · tier <code>${esc(d.tier)}</code>` : ''}.`);
             } else {
                 showStatus('err',
-                    `Could not reach <code>${d.url}</code>: ${d.error || 'unknown'}.`);
+                    `Could not reach <code>${esc(d.url)}</code>: ${esc(d.error || 'unknown')}.`);
             }
         } catch (e) {
-            showStatus('err', `Test failed: ${e.message}`);
+            showStatusText('err', `Test failed: ${e.message}`);
         } finally {
             statusInline.textContent = '';
             btnTest.disabled = false;
@@ -468,7 +487,7 @@
             });
             const d = await r.json();
             if (!r.ok) {
-                showStatus('err', d.error || 'save failed');
+                showStatusText('err', d.error || 'save failed');
                 btnSave.disabled = false;
                 return;
             }
@@ -476,11 +495,11 @@
             badgeCurrent.textContent = d.saved.mode === 'cloud' ? '☁️ Cloud' : '🏠 Self-hosted';
             const probeMsg = d.probe?.ok
                 ? `Server is reachable.`
-                : `Saved, but the server isn't reachable yet (<code>${d.probe?.error || 'unknown'}</code>). Check the URL or start the server, then retry the test.`;
+                : `Saved, but the server isn't reachable yet (<code>${esc(d.probe?.error || 'unknown')}</code>). Check the URL or start the server, then retry the test.`;
             showStatus(d.probe?.ok ? 'ok' : 'info',
                 `<strong>Saved.</strong> ${probeMsg}`);
         } catch (e) {
-            showStatus('err', `Save failed: ${e.message}`);
+            showStatusText('err', `Save failed: ${e.message}`);
         } finally {
             btnSave.disabled = envLocked;
             statusInline.textContent = '';
@@ -545,7 +564,7 @@
             }
         });
     }).catch(err => {
-        showStatus('err', 'Could not load current status: ' + err.message);
+        showStatusText('err', 'Could not load current status: ' + err.message);
     });
 
     const btnApplyPairing = $('btn-apply-pairing-code');

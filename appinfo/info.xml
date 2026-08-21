@@ -54,7 +54,7 @@ Full privacy policy: <https://beeflow.nl/privacy>.
 
 Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We support Bee Flow Cloud and can also help you get Bee Flow running on a self-managed or self-hosted Nextcloud.
         ]]></description>
-    <version>1.4.2</version>
+    <version>1.5.0</version>
     <licence>AGPL-3.0-or-later</licence>
     <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.nl/">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>
@@ -98,7 +98,12 @@ Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We su
     <screenshot small-thumbnail="https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/03-agent-editor.png">https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/03-agent-editor.png</screenshot>
 
     <dependencies>
-        <nextcloud min-version="31" max-version="35"/>
+        <!-- 32 is the oldest Nextcloud still receiving maintenance releases;
+             31 went end-of-life in February 2026, so claiming it promised
+             support we could not honour. 35 is the next major (ships
+             2026-09-16); its external API froze on 2026-08-07, so it is
+             testable now. -->
+        <nextcloud min-version="32" max-version="35"/>
     </dependencies>
     <!--
         Push triggers (new file, tag assigned, calendar change, Forms
@@ -221,8 +226,19 @@ Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We su
                  job with no user session. It is authenticated by the
                  `X-Beeflow-Hook-Secret` header, which Nextcloud echoes back
                  from the `authData` supplied at registration — same trust
-                 model as the HMAC-gated ^nc/ route below. -->
-            <route><url>^/?hooks\/.*</url><verb>POST</verb><access_level>PUBLIC</access_level></route>
+                 model as the HMAC-gated ^nc/ route below.
+
+                 bruteforce_protection: unlike ^nc/, this route's credential is
+                 a STATIC header secret with no timestamp and no body binding,
+                 so it is the one connector credential an attacker can
+                 meaningfully guess at. Nextcloud throttles the source IP once
+                 it sees repeated 401/403 here. Deliberately NOT applied to
+                 ^nc/ below: those 401s come from our own SaaS on clock skew,
+                 and throttling (or, under HaRP, IP-banning) our own egress
+                 address would take out file access and user sync for the
+                 whole tenant. That route is already HMAC-signed, timestamped
+                 and rate-limited on failures in src/ncProxy.js. -->
+            <route><url>^/?hooks\/.*</url><verb>POST</verb><access_level>PUBLIC</access_level><bruteforce_protection>[401, 403]</bruteforce_protection></route>
 
             <!-- Legacy internal webhook bridge (user/group sync). Nothing
                  subscribes to it today: Nextcloud's User/Group events are not

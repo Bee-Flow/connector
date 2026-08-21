@@ -36,6 +36,11 @@ const express = require('express');
 const crypto = require('crypto');
 const config = require('./config');
 const { hookSecret, EVENT_BY_CLASS, HOOK_PATH } = require('./webhookListeners');
+const rateLimit = require('./rateLimit');
+
+// Brute-force gate on the hook secret. Nextcloud's background job always sends
+// the right one, so only failures are billed and real deliveries never throttle.
+const secretLimiter = rateLimit.penalise('nc-hook-secret', { limit: 60, windowMs: 60_000 });
 
 /** Bee Flow trigger id for a Nextcloud event class, or null if unregistered. */
 function mapEvent(eventClass) {
@@ -264,9 +269,15 @@ const router = express.Router();
 router.post(HOOK_PATH, express.json({ limit: '512kb' }), async (req, res) => {
     const secret = hookSecret();
     if (!secret) return res.status(503).json({ error: 'Connector not yet bootstrapped' });
+    if (secretLimiter.blocked()) {
+        res.set('Retry-After', String(Math.ceil(secretLimiter.windowMs / 1000)));
+        return res.status(429).json({ error: 'Too many invalid hook secrets' });
+    }
     if (!safeEqual(req.headers['x-beeflow-hook-secret'], secret)) {
+        secretLimiter.fail();
         return res.status(401).json({ error: 'Invalid hook secret' });
     }
+    secretLimiter.succeed();
 
     const envelope = req.body || {};
     const eventClass = envelope.event?.class;

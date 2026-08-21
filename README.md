@@ -4,7 +4,12 @@
 
 ExApp / AppAPI connector that lets a Nextcloud instance host the Bee Flow workspace UI and forward authenticated requests to the Bee Flow SaaS.
 
-App ID: `bee_flow` · Compatible with Nextcloud 31–34 · Requires AppAPI ≥ 3.2.
+App ID: `bee_flow` · Compatible with Nextcloud 32–35 · Requires the AppAPI shipped with those releases.
+
+> AppAPI stopped publishing standalone versions after 3.2.0 and now versions in
+> lockstep with the Nextcloud major (32.0.0, 33.0.0, …), so "AppAPI ≥ 3.2" no
+> longer reads as a version bound — state the Nextcloud range instead. Nextcloud
+> 31 reached end-of-life in February 2026.
 
 ## Architecture
 
@@ -74,6 +79,59 @@ npm start
 
 `APP_SECRET`, `NEXTCLOUD_URL`, `APP_ID`, `APP_PORT`, etc. are normally injected by AppAPI. For local dev, set them by hand. `BEEFLOW_TENANT_KEY` is configured per customer via `occ app_api:app:setenv bee_flow BEEFLOW_TENANT_KEY <key>` after install.
 
+## Deployment modes: HaRP vs Docker Socket Proxy
+
+The connector image supports **both** AppAPI deployment modes from one build;
+`HP_SHARED_KEY` (injected by AppAPI) is what selects between them at runtime.
+
+**HaRP** (HaProxy Reversed Proxy) is the mode to prefer, and soon the only one:
+AppAPI deprecated the Docker Socket Proxy daemon and **scheduled its removal for
+Nextcloud 35**. Under HaRP the container dials out over an FRP tunnel (no
+inbound port), binds a unix socket instead of TCP, and — the part that matters
+operationally — clients reach it on `/exapps/<app_id>/`, **bypassing Nextcloud's
+PHP entirely**.
+
+That bypass is not a micro-optimisation. AppAPI's PHP proxy streams responses
+with `RequestOptions::TIMEOUT => 0` and `fpassthru`, so **every open SSE chat
+stream occupies one PHP-FPM worker for its whole lifetime**. A few dozen
+concurrent chats can exhaust the pool and take the entire Nextcloud instance
+down with them — not just Bee Flow. WebSockets are not supported through the PHP
+proxy at all.
+
+### Reverse-proxy settings HaRP needs
+
+HaRP holds long-lived streams open (`HP_TIMEOUT_SERVER`, default 1800s). Whatever
+sits in front of Nextcloud must not cut them shorter:
+
+| Proxy | Setting |
+|---|---|
+| nginx | `proxy_read_timeout 1800s;` |
+| Caddy | `read_timeout 1800s` |
+| Traefik | `responseHeaderTimeout: 1800s` |
+| Apache | `ProxyTimeout 1800` |
+
+### Two HaRP behaviours worth knowing
+
+- **IP banning.** HaRP blocks a source IP after `HP_BLACKLIST_COUNT` (default 10)
+  4xx/5xx responses within `HP_BLACKLIST_WINDOW` (default 300s). Every `/nc/*`
+  callback arrives from the Bee Flow server's single egress address, so a run of
+  rejected signatures — a drifted clock, a tenant key rotated on one side only —
+  can get that address banned, taking out file access *and* user/group sync
+  tenant-wide. The connector counts signature rejections and surfaces them in
+  `GET /setup/diagnostics` (`callbackSignatures`), with a warning once a ban
+  becomes plausible; allow-list the Bee Flow egress IP if you run a strict
+  deployment.
+- **Session caching.** `HP_SESSION_LIFETIME` (default 3s) caches the resolved
+  Nextcloud session, so a just-changed permission can take a few seconds to be
+  reflected.
+
+### FRP certificate lifetime
+
+The mutual-TLS certificates HaRP generates for the tunnel are valid for
+`HP_FRP_CERT_VALIDITY_DAYS` (default 5000 ≈ 13 years) and are **not
+auto-renewed**. Regenerating them requires removing and re-installing every
+ExApp — a restart is not enough.
+
 ## Building the container
 
 ```bash
@@ -82,35 +140,13 @@ docker build -t ghcr.io/bee-flow/connector:dev .
 
 The Dockerfile clones [`Bee-Flow/hive`](https://github.com/Bee-Flow/hive) anonymously over HTTPS at build time and bakes the SPA into the image — no SSH key or GitHub token required. Pass `--build-arg HIVE_REF=v0.1.0` to pin a specific frontend tag.
 
-## Published images
-
-An App Store install always pulls `latest`, because `appinfo/info.xml` pins
-`<image-tag>latest</image-tag>`. The other tags are opt-in: point AppAPI at one
-by overriding the image tag in the app's deploy options.
-
-| Tag | Built by | Moves when |
-|---|---|---|
-| `latest`, `<version>` | `release.yml`, on a `v*` tag | someone cuts a release |
-| `nightly` | `nightly.yml`, 03:00 UTC | the connector **or** hive changed that day |
-| `nightly-<connector>-<hive>` | same run | never — pin this to hold a build still |
-| `nightly-<YYYYMMDD>` | same run | never |
-| `dev`, `main-<sha7>` | `build-dev.yml`, every push to main | every push to main |
-
-`nightly` is the channel for work that needs real-Nextcloud exercise before it
-reaches customers. It is identified by **two** commits — the connector's and
-the `hive` commit whose SPA is baked into it — so a nightly whose code has not
-changed is not rebuilt.
-
 ## Tests
 
 ```bash
+cd nextcloud-connector
 npm install
-npm test          # node --test test/*.test.js
+npm test
 ```
-
-Infra-free and about a second: no Postgres, no network, no Nextcloud. CI runs
-the same command on every pull request (`tests.yml`). Keep it that way —
-anything needing a live Nextcloud belongs in a manual workflow.
 
 ## License
 

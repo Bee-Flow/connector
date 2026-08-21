@@ -43,16 +43,53 @@ function hasParsedJsonBody(req) {
     return !!req.body && typeof req.body === 'object';
 }
 
-// Custom agents with keep-alive disabled. http-proxy-middleware (and Node's
-// default Agent) cache TCP sockets per host; when the upstream container
-// gets a new IP (compose restart, rolling deploy, k8s pod rotation), the
-// cached socket points at the dead old IP and every request fails with
-// ECONNREFUSED until the connector is restarted manually. Forcing a fresh
-// connection per request guarantees DNS re-resolution and eliminates that
-// failure mode entirely. The throughput cost is negligible for a single-NC
-// connector and is the right trade-off for reliability.
-const httpAgent = new http.Agent({ keepAlive: false });
-const httpsAgent = new https.Agent({ keepAlive: false });
+// Keep-alive agents WITH stale-socket failover. Keep-alive matters here:
+// with it off, every asset and API call on an embedded page load pays a
+// fresh TCP+TLS handshake to the cloud (~30 handshakes per cold load — a
+// measurable chunk of the "Bee Flow is slow inside Nextcloud" complaint).
+//
+// The reason it used to be off is real, though: pooled sockets go stale
+// when the upstream container gets a new IP (compose restart, rolling
+// deploy, k8s pod rotation) and the peer dies without a FIN — the next
+// request on that socket fails ECONNRESET/EPIPE. The failover below keeps
+// the reliability property without the per-request handshake tax:
+//   1. on a network-class proxy error, destroy the agent's FREE sockets
+//      (never in-flight ones — a live SSE chat stream must survive another
+//      request's failure), so the next connect re-resolves DNS;
+//   2. retry the request once, GET/HEAD only (no body to replay), via the
+//      same middleware — the retry grabs a fresh socket.
+// Non-idempotent requests still surface the 502; their free-socket purge
+// means the client's own retry lands on a clean pool.
+const AGENT_OPTS = { keepAlive: true, keepAliveMsecs: 10_000, maxSockets: 64, maxFreeSockets: 8 };
+const httpAgent = new http.Agent(AGENT_OPTS);
+const httpsAgent = new https.Agent(AGENT_OPTS);
+
+// Network-class errors where the socket/pool is suspect. Anything else
+// (protocol errors, aborts) is not a stale-pool symptom and never retried.
+const NETWORK_ERROR_CODES = new Set([
+    'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'EHOSTUNREACH', 'ETIMEDOUT', 'EAI_AGAIN',
+]);
+
+function dropFreeSockets(agent) {
+    for (const list of Object.values(agent.freeSockets || {})) {
+        for (const socket of [...list]) {
+            try { socket.destroy(); } catch (_) { /* already gone */ }
+        }
+    }
+}
+
+// Shared failover: purge the free pool and, for idempotent requests that
+// haven't sent headers yet, re-dispatch through the middleware exactly once.
+// Returns true when a retry was dispatched (caller must not respond).
+function retryOnceOnNetworkError({ err, req, res, agent, middleware, onExhausted }) {
+    if (!NETWORK_ERROR_CODES.has(err.code)) return false;
+    dropFreeSockets(agent);
+    const idempotent = req.method === 'GET' || req.method === 'HEAD';
+    if (!idempotent || res.headersSent || req.__beeflowRetried) return false;
+    req.__beeflowRetried = true;
+    middleware(req, res, onExhausted);
+    return true;
+}
 
 // The SPA "shell" — index.html + hashed /assets + logos/favicon — is the
 // subset of connector-owned paths that make up the front-end bundle. These
@@ -74,10 +111,12 @@ function rewriteToEmbed(p) {
 
 function buildApiProxy() {
     const isHttps = String(config.apiBaseUrl || '').startsWith('https://');
-    return createProxyMiddleware({
+    const agent = isHttps ? httpsAgent : httpAgent;
+    let mw; // self-reference for the one-shot retry in the error handler
+    mw = createProxyMiddleware({
         target: config.apiBaseUrl,
         changeOrigin: true,
-        agent: isHttps ? httpsAgent : httpAgent,
+        agent,
         // Critical for SSE on the chat endpoint — disables proxy buffering.
         selfHandleResponse: false,
         on: {
@@ -246,15 +285,23 @@ function buildApiProxy() {
                 }
             },
             error: (err, req, res) => {
-                console.error(`[Proxy] ${req.method} ${req.url}: ${err.message}`);
-                if (!res.headersSent) {
-                    res.status(502).json({
-                        error: 'Bee Flow service is temporarily unavailable. Please try again.',
-                    });
+                console.error(`[Proxy] ${req.method} ${req.url}: ${err.message}${req.__beeflowRetried ? ' (after retry)' : ''}`);
+                const respond502 = () => {
+                    if (!res.headersSent) {
+                        res.status(502).json({
+                            error: 'Bee Flow service is temporarily unavailable. Please try again.',
+                        });
+                    }
+                };
+                if (retryOnceOnNetworkError({ err, req, res, agent, middleware: mw, onExhausted: respond502 })) {
+                    console.warn(`[Proxy] retrying ${req.method} ${req.url} on a fresh socket (${err.code})`);
+                    return;
                 }
+                respond502();
             },
         },
     });
+    return mw;
 }
 
 // Proxy for the embedded SPA SHELL (index.html + hashed /assets, logos,
@@ -276,10 +323,12 @@ function buildApiProxy() {
 // doesn't receive it.
 function buildEmbedProxy() {
     const isHttps = String(config.embedBaseUrl || '').startsWith('https://');
-    return createProxyMiddleware({
+    const agent = isHttps ? httpsAgent : httpAgent;
+    let mw; // self-reference for the one-shot retry in the error handler
+    mw = createProxyMiddleware({
         target: config.embedBaseUrl,
         changeOrigin: true,
-        agent: isHttps ? httpsAgent : httpAgent,
+        agent,
         pathRewrite: rewriteToEmbed,
         on: {
             proxyReq: (proxyReq) => {
@@ -289,17 +338,27 @@ function buildEmbedProxy() {
                 proxyReq.removeHeader('referer');
             },
             error: (err, req, res) => {
-                // Fall through to the baked /public bundle rather than 502.
-                console.warn(`[EmbedProxy] ${req.method} ${req.url}: ${err.message} — falling back to baked /public`);
-                if (!res.headersSent && typeof req.__shellNext === 'function') {
-                    return req.__shellNext();
+                // Retry once on a fresh socket, then fall through to the
+                // baked /public bundle rather than 502 (shell requests are
+                // all GET, so every one qualifies for the retry).
+                const fallback = () => {
+                    console.warn(`[EmbedProxy] ${req.method} ${req.url}: ${err.message} — falling back to baked /public`);
+                    if (!res.headersSent && typeof req.__shellNext === 'function') {
+                        return req.__shellNext();
+                    }
+                    if (!res.headersSent) {
+                        res.status(502).json({ error: 'Bee Flow UI is temporarily unavailable. Please try again.' });
+                    }
+                };
+                if (retryOnceOnNetworkError({ err, req, res, agent, middleware: mw, onExhausted: fallback })) {
+                    console.warn(`[EmbedProxy] retrying ${req.method} ${req.url} on a fresh socket (${err.code})`);
+                    return;
                 }
-                if (!res.headersSent) {
-                    res.status(502).json({ error: 'Bee Flow UI is temporarily unavailable. Please try again.' });
-                }
+                fallback();
             },
         },
     });
+    return mw;
 }
 
 module.exports = { buildApiProxy, buildEmbedProxy, isSpaShellPath, rewriteToEmbed };

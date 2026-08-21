@@ -40,8 +40,48 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const crypto = require('crypto');
 const config = require('./config');
 const { ncHttpsAgent, ncTlsMode } = require('./ncTls');
+const rateLimit = require('./rateLimit');
 
 const ALLOWED_PREFIXES = ['/ocs/', '/remote.php/dav/', '/index.php/apps/'];
+
+// Brute-force gate on the HMAC. Only failures are billed — the Bee Flow server
+// legitimately makes a lot of these calls, and throttling those would break
+// user-visible features, while a caller producing 60 bad signatures a minute is
+// guessing at the tenant key.
+const sigLimiter = rateLimit.penalise('nc-proxy-sig', { limit: 60, windowMs: 60_000 });
+
+/**
+ * Is this path one we are willing to forward into Nextcloud?
+ *
+ * The allow-list is checked against the DECODED, NORMALISED path: `/ocs/` was
+ * otherwise satisfiable by `/ocs/../remote.php/webdav/...` and by its
+ * percent-encoded spellings, which turns a three-prefix allow-list into "any
+ * Nextcloud endpoint". Nextcloud's own guidance on directory traversal is to
+ * strip the traversal before acting on a caller-supplied path
+ * (developer_manual/prologue/security.html); refusing it outright is the
+ * stricter form and costs nothing here, because no legitimate WebDAV or OCS URL
+ * contains a `..` segment.
+ */
+function isAllowedNcPath(rawUrl) {
+    const withoutQuery = String(rawUrl || '').split('?')[0];
+    let decoded = withoutQuery;
+    // Decode repeatedly: `%252e%252e` is `%2e%2e` after one pass and `..` after
+    // two, and NC/HaRP may decode once before we ever see the request.
+    for (let i = 0; i < 3; i++) {
+        let next;
+        try { next = decodeURIComponent(decoded); } catch { break; }
+        if (next === decoded) break;
+        decoded = next;
+    }
+    const candidates = [withoutQuery, decoded];
+    for (const candidate of candidates) {
+        const normalised = candidate.replace(/\\/g, '/');
+        if (normalised.split('/').includes('..')) return false;
+        if (normalised.includes('\0')) return false;
+    }
+    return ALLOWED_PREFIXES.some(p => decoded.startsWith(p))
+        && ALLOWED_PREFIXES.some(p => withoutQuery.startsWith(p));
+}
 
 const EMPTY_BODY_SHA256 = crypto.createHash('sha256').update('').digest('hex');
 
@@ -102,7 +142,12 @@ function verifyHmac(req) {
     const paths = decodedPath === rawPath ? [rawPath] : [decodedPath, rawPath];
     // v2 binds the body; v1 is the pre-body-hash form, accepted for one release
     // so a SaaS/connector version skew doesn't break customers mid-rollout.
-    // Remove the v1 suffix once every deployed server signs v2.
+    //
+    // REMOVAL CRITERION: the SaaS side no longer signs v1 anywhere — the last
+    // v1 signer was services/ncUserGroupSync.js, which now uses the shared
+    // integrations/ncSigning.js helper. Drop the trailing '' suffix (and this
+    // comment) once every deployed SaaS is at or past that build; the
+    // cross-repo vector in test/ncProxy.test.js pins the v2 form that stays.
     const suffixes = [`\n${bodyHashOf(req)}`, ''];
     for (const path of paths) {
         for (const suffix of suffixes) {
@@ -182,13 +227,20 @@ function mount(app) {
     const rawBody = express.raw({ type: () => true, limit: '100mb' });
     app.use('/nc', rawBody, (req, res, next) => {
         // Allowed-prefix check after pathRewrite would happen too late; do it here.
-        const stripped = req.url.split('?')[0];
-        if (!ALLOWED_PREFIXES.some(p => stripped.startsWith(p))) {
+        if (!isAllowedNcPath(req.url)) {
             return res.status(404).json({ error: 'Path not proxied' });
         }
+        if (sigLimiter.blocked()) {
+            res.set('Retry-After', String(Math.ceil(sigLimiter.windowMs / 1000)));
+            return res.status(429).json({ error: 'Too many invalid signatures' });
+        }
         if (!verifyHmac(req)) {
+            sigLimiter.fail();
+            _recordSigFailure(req);
             return res.status(401).json({ error: 'Missing or invalid X-Beeflow-Sig' });
         }
+        sigLimiter.succeed();
+        _sigFailures.consecutive = 0;
         // Restore the real WebDAV method from the tunnel BEFORE http-proxy builds
         // the upstream request (changing proxyReq.method later is too late — the
         // method is fixed when the ClientRequest is created). The signature was
@@ -202,4 +254,40 @@ function mount(app) {
     });
 }
 
-module.exports = { mount, verifyHmac };
+/**
+ * Signature-failure telemetry, surfaced through /heartbeat.
+ *
+ * Under HaRP a source IP is banned after HP_BLACKLIST_COUNT (default 10)
+ * 4xx/5xx responses within HP_BLACKLIST_WINDOW (default 300s). Every /nc/*
+ * request comes from the SaaS's single egress address, so a run of rejected
+ * signatures — a clock that has drifted past the skew window, a tenant key
+ * rotated on one side only — does not merely fail those calls: it can get
+ * Bee Flow's own backend banned, which takes out file access AND user/group
+ * sync for the whole tenant until the window expires.
+ *
+ * A 401 here is therefore an operational signal, not just an auth outcome.
+ * Counting it makes the precursor visible to an admin (and to
+ * /setup/diagnostics) BEFORE the ban lands.
+ */
+const _sigFailures = { total: 0, consecutive: 0, lastAt: null, lastReason: null };
+
+function _recordSigFailure(req) {
+    _sigFailures.total += 1;
+    _sigFailures.consecutive += 1;
+    _sigFailures.lastAt = new Date().toISOString();
+    _sigFailures.lastReason = req.headers['x-beeflow-sig'] ? 'signature_mismatch_or_skew' : 'missing_signature';
+    // Loud at the point a HaRP ban becomes plausible, quiet before that.
+    if (_sigFailures.consecutive === 5 || _sigFailures.consecutive % 10 === 0) {
+        console.warn(
+            `[ncProxy] ${_sigFailures.consecutive} consecutive signature rejections `
+            + `(${_sigFailures.lastReason}). Under HaRP ~10 within 300s bans the caller's IP — `
+            + 'check clock skew between the Bee Flow server and this host, and that the tenant key matches.'
+        );
+    }
+}
+
+function sigFailureStats() {
+    return { ..._sigFailures };
+}
+
+module.exports = { mount, verifyHmac, isAllowedNcPath, ALLOWED_PREFIXES, sigFailureStats };

@@ -8,13 +8,15 @@
  *
  * Auth middleware sits between (1) and (2). /heartbeat is exempted inside
  * the middleware itself, so the order of registration here is just:
- *   express → rawBody capture → auth → lifecycle + api + static
+ *   express → security headers → cross-site gate → signed routes → auth →
+ *   body parsing → lifecycle + api + static
  */
 
 const express = require('express');
 const path = require('path');
 const config = require('./config');
 const { appApiAuthMiddleware } = require('./auth');
+const { securityHeaders, rejectCrossSiteWrites } = require('./security');
 const { registerLifecycle } = require('./heartbeat');
 const { buildApiProxy, buildEmbedProxy, isSpaShellPath } = require('./proxy');
 
@@ -26,43 +28,17 @@ require('./ncTls').installNcDispatcher();
 
 const app = express();
 
-// Capture the raw body so the AppAPI signature can be verified against the
-// exact bytes Nextcloud sent. express.json() consumes the stream, so we
-// stash a copy via the `verify` hook before parsing happens.
-//
-// /nc/* is deliberately EXCLUDED. That route is a byte-for-byte reverse proxy
-// into Nextcloud: parsing and re-serialising a body there corrupts JSON file
-// uploads (key order and whitespace are lost), rejects syntactically-invalid
-// .json files with a 400 before they reach WebDAV, and imposes the 25 MB limit
-// on every DAV write. Its bodies stream through untouched instead.
-const jsonParser = express.json({
-    limit: '25mb',
-    verify: (req, _res, buf) => { req.rawBody = buf.toString('utf8'); },
-});
-app.use((req, res, next) => {
-    if (req.path === '/nc' || req.path.startsWith('/nc/')) return next();
-    // /hooks/talk verifies an HMAC over the exact bytes Talk sent, so it
-    // captures its own raw body too (talkBot.js).
-    if (req.path === '/hooks/talk') return next();
-    return jsonParser(req, res, next);
-});
+// Response hardening: `frame-ancestors` limited to this Nextcloud's own
+// origins (so the embedded SPA renders, and nothing else can frame it),
+// plus nosniff / no-referrer / noindex. See security.js for why the previous
+// "echo whatever Origin/Referer the request carried" approach was the bug it
+// was meant to prevent.
+app.use(securityHeaders);
 
-// CSP must allow the parent NC origin to embed proxied responses. Without
-// this, NC's default CSP wraps our response with `frame-ancestors 'none'`
-// and the browser blocks rendering. The connector knows NEXTCLOUD_URL but
-// the user's browser may reach NC via a different origin (localhost vs
-// host.docker.internal in dev, customer domain in prod). The forwarded
-// request's Origin/Referer tells us what the browser sees.
-app.use((req, res, next) => {
-    const ancestors = new Set(["'self'", new URL(config.nextcloudUrl).origin]);
-    for (const hdr of ['origin', 'referer']) {
-        const v = req.headers[hdr];
-        if (!v) continue;
-        try { ancestors.add(new URL(v).origin); } catch { /* ignore malformed */ }
-    }
-    res.setHeader('Content-Security-Policy', `frame-ancestors ${[...ancestors].join(' ')}`);
-    next();
-});
+// Nextcloud's AppAPI proxy controller is #[NoCSRFRequired], so no CSRF check
+// happens upstream of us. This rejects state-changing requests that the
+// browser itself reports as coming from another site.
+app.use(rejectCrossSiteWrites);
 
 // Mount /nc/* reverse-proxy before the AppAPI auth gate. Calls under /nc
 // originate from the Bee Flow SaaS (not from a browser via NC's signed
@@ -83,6 +59,24 @@ app.use('/', require('./automationEventsWebhook'));
 app.use('/', require('./talkBot'));
 
 app.use(appApiAuthMiddleware);
+
+// Body parsing sits AFTER the auth gate on purpose. Every route reached before
+// this point brings its own parser with a limit sized for what it actually
+// receives (raw bytes for /nc/*, 256 kB for the Talk bot, 512 kB for webhook
+// deliveries), so parsing here first only meant an unauthenticated caller could
+// make the connector buffer and parse 25 MB of JSON before anything checked who
+// they were.
+//
+// /nc/* stays excluded regardless: it is a byte-for-byte reverse proxy into
+// Nextcloud, and parsing and re-serialising a body there corrupts JSON file
+// uploads (key order and whitespace are lost), rejects syntactically-invalid
+// .json files with a 400 before they reach WebDAV, and imposes the 25 MB limit
+// on every DAV write.
+const jsonParser = express.json({ limit: '25mb' });
+app.use((req, res, next) => {
+    if (req.path === '/nc' || req.path.startsWith('/nc/')) return next();
+    return jsonParser(req, res, next);
+});
 
 // Legacy user/group sync bridge. Nextcloud's User/Group events are not
 // `IWebhookCompatibleEvent`, so nothing subscribes to this today; the route is
@@ -166,13 +160,47 @@ app.use((req, res, next) => {
 // pointing at NC's signed proxy back to this connector, which lets the
 // SPA render inside the Nextcloud chrome.
 app.get(['/js/embed', '/js/embed.js'], (_req, res) => {
+    // Deployment-aware frame target.
+    //
+    //   AppAPI proxy (/apps/app_api/proxy/<appId>/) — every byte, including
+    //   each SSE chat stream, is passed through PHP by ExAppProxyController
+    //   (synchronous Guzzle + fpassthru, RequestOptions::TIMEOUT => 0). One
+    //   open stream therefore occupies one PHP-FPM worker for its entire
+    //   lifetime, so a few dozen concurrent chats can exhaust the pool and
+    //   take the whole Nextcloud down with them.
+    //
+    //   HaRP (/exapps/<appId>/) — HaRP routes straight to this container,
+    //   so streams never enter the PHP pool at all. HP_SHARED_KEY is what
+    //   AppAPI injects for HaRP deployments, and it is what server.js
+    //   already keys its unix-socket bind on, so it is the mode signal.
+    //
+    // The SPA reads its own prefix from the document URL at runtime
+    // (agent-hub utils/helpers.js deriveEmbedApiBase), so one bundle serves
+    // both shapes. Assets still resolve through the baked AppAPI base for
+    // now — they are cacheable and idle, unlike streams.
+    //
+    // The AppAPI path ends in `index.html`, not `/`. AppAPI decides whether a
+    // proxied response is HTML with
+    // `pathinfo($other, PATHINFO_EXTENSION) === 'html'`, and only HTML gets
+    // its `<script` tags rewritten to carry Nextcloud's CSP nonce. Framing the
+    // bare `/` therefore served the shell WITHOUT a nonce, so Nextcloud's own
+    // CSP blocked both of the shell's inline scripts — the import map and the
+    // pre-React theme bootstrap — in the embed and nowhere else. Naming
+    // index.html restores the nonce injection; `^/?index\.html$` is already a
+    // PUBLIC route and the shell proxy already serves that path.
+    //
+    // HaRP needs no such trick: it never passes through PHP, so no nonce is
+    // involved and the connector's own CSP (frame-ancestors only) governs.
+    const framePath = process.env.HP_SHARED_KEY
+        ? `/exapps/${config.appId}/`
+        : `/apps/app_api/proxy/${config.appId}/index.html`;
     res.type('application/javascript').send(`
 (function() {
     var content = document.getElementById('content');
     if (!content) return;
     content.innerHTML = '';
     var iframe = document.createElement('iframe');
-    iframe.src = OC.generateUrl('/apps/app_api/proxy/${config.appId}/');
+    iframe.src = OC.generateUrl('${framePath}');
     // Height was hardcoded to calc(100vh - 50px), i.e. an assumption that
     // Nextcloud's chrome above #content is exactly 50px. It is not, and the
     // difference is paid by the BOTTOM of the frame — which is where the chat

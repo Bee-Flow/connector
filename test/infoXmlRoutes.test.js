@@ -40,10 +40,20 @@ function parseRoutes() {
     const xml = fs.readFileSync(INFO_XML, 'utf8');
     const block = xml.slice(xml.indexOf('<routes>'), xml.indexOf('</routes>'));
     const routes = [];
-    const re = /<route>\s*<url>([\s\S]*?)<\/url>\s*<verb>([\s\S]*?)<\/verb>\s*<access_level>([\s\S]*?)<\/access_level>\s*<\/route>/g;
+    // A <route> may carry optional children after <access_level> —
+    // <bruteforce_protection> and <headers_to_exclude> are both part of
+    // AppAPI's route schema. Match each element inside the route rather than
+    // insisting on a fixed three-child shape, or adding one silently drops
+    // the route from this allow-list check (and, worse, lets the following
+    // route inherit the miss).
+    const routeRe = /<route>([\s\S]*?)<\/route>/g;
     let m;
-    while ((m = re.exec(block)) !== null) {
-        routes.push({ url: m[1].trim(), verb: m[2].trim(), access: ACCESS[m[3].trim()] });
+    while ((m = routeRe.exec(block)) !== null) {
+        const body = m[1];
+        const pick = (tag) => (body.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`)) || [])[1];
+        const url = pick('url'); const verb = pick('verb'); const access = pick('access_level');
+        if (url === undefined || verb === undefined || access === undefined) continue;
+        routes.push({ url: url.trim(), verb: verb.trim(), access: ACCESS[access.trim()] });
     }
     return routes;
 }
@@ -147,4 +157,36 @@ test('every route URL matches both the canonical and the bare subject form', () 
 test('the chat POST verb list covers what the SPA actually sends', () => {
     const route = resolveRoute(routes, 'ai/chat/direct/stream', 'POST');
     assert.ok(route.verb.toUpperCase().includes('POST'));
+});
+
+// ── Manifest currency + route hardening ─────────────────────────────────────
+
+test('the supported-version floor tracks Nextcloud maintenance, not history', () => {
+    const xml = fs.readFileSync(INFO_XML, 'utf8');
+    const dep = xml.match(/<nextcloud\s+min-version="(\d+)"\s+max-version="(\d+)"/);
+    assert.ok(dep, '<nextcloud min-version/max-version> must be declared');
+    const min = Number(dep[1]);
+    assert.ok(min >= 32,
+        `min-version ${min}: Nextcloud 31 reached end-of-life in February 2026 — `
+        + 'claiming it promises support that cannot be honoured');
+    assert.ok(Number(dep[2]) >= min);
+});
+
+test('the static-secret hooks route carries brute-force protection; the HMAC route does not', () => {
+    const xml = fs.readFileSync(INFO_XML, 'utf8');
+    const routeOf = (needle) => {
+        const all = [...xml.matchAll(/<route>([\s\S]*?)<\/route>/g)].map(m => m[1]);
+        return all.find(r => r.includes(needle));
+    };
+    const hooks = routeOf('hooks\\/');
+    assert.ok(hooks, 'the hooks route must exist');
+    assert.match(hooks, /<bruteforce_protection>\s*\[[^\]]*401/,
+        'hooks/ is guarded by a STATIC header secret — the one connector credential worth guessing at, '
+        + 'so Nextcloud should throttle repeated rejections');
+
+    const nc = routeOf('nc\\/');
+    assert.ok(nc, 'the nc route must exist');
+    assert.ok(!/<bruteforce_protection>/.test(nc),
+        'nc/ 401s come from our OWN server on clock skew; throttling (or, under HaRP, IP-banning) '
+        + 'the Bee Flow egress address would take out file access and user sync tenant-wide');
 });

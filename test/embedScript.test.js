@@ -53,8 +53,11 @@ test('a degenerate measurement cannot collapse the frame', () => {
         'a mid-layout read can land past the viewport; clamp to a usable minimum');
 });
 
-test('the iframe still points at the signed AppAPI proxy and keeps clipboard access', () => {
-    assert.match(embedRoute, /OC\.generateUrl\('\/apps\/app_api\/proxy\//);
+test('the iframe points at a connector-owned route and keeps clipboard access', () => {
+    // The target became deployment-dependent (AppAPI proxy vs HaRP /exapps/ —
+    // see the per-mode tests at the bottom of this file); what must not drift
+    // is that both targets are ours and that clipboard access survives.
+    assert.match(embedRoute, /const framePath = process\.env\.HP_SHARED_KEY/);
     assert.match(embedRoute, /clipboard-read; clipboard-write/);
 });
 
@@ -95,4 +98,34 @@ test('the computed height fits the frame to its slot for any chrome height', () 
             + 'the composer is clipped by the difference',
         );
     }
+});
+
+// ── Deployment-aware frame target ───────────────────────────────────────────
+// AppAPI's PHP proxy passes every byte through PHP-FPM with no timeout
+// (ExAppProxyController: Guzzle + fpassthru, RequestOptions::TIMEOUT => 0), so
+// one open SSE chat stream holds one worker for its whole lifetime and enough
+// concurrent chats exhaust the pool — taking Nextcloud, not just Bee Flow,
+// down. HaRP's /exapps/ route reaches this container directly, so streams
+// never enter the pool. HP_SHARED_KEY is the mode signal AppAPI injects, and
+// the same one server.js keys its unix-socket bind on.
+
+test('HaRP deployments frame the direct /exapps/ route', () => {
+    assert.match(embedRoute, /HP_SHARED_KEY/,
+        'the frame target must depend on the deployment mode');
+    assert.match(embedRoute, /`\/exapps\/\$\{config\.appId\}\/`/,
+        'HaRP mode must bypass the PHP proxy — that is the whole point of adopting HaRP');
+});
+
+test('non-HaRP deployments keep the AppAPI proxy route, and name index.html', () => {
+    assert.match(embedRoute, /`\/apps\/app_api\/proxy\/\$\{config\.appId\}\/index\.html`/,
+        'Docker-Socket-Proxy installs have no /exapps/ route — they must keep the proxy path. '
+        + 'It must end in index.html: AppAPI injects Nextcloud\'s CSP nonce only into responses whose '
+        + 'path has an .html extension (pathinfo(...) === \'html\'), and without the nonce Nextcloud\'s '
+        + 'CSP blocks the shell\'s inline import map and theme bootstrap — in the embed only.');
+});
+
+test('the frame target is still resolved through OC.generateUrl', () => {
+    // Nextcloud may live under a subdirectory; a hardcoded absolute path
+    // would 404 on every such install.
+    assert.match(embedRoute, /OC\.generateUrl\('\$\{framePath\}'\)/);
 });

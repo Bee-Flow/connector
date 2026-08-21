@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [1.5.0] - 2026-08-21
+
+### Added
+- **Choose what Bee Flow may reach in your Nextcloud.** Under Settings → Integrations → Nextcloud, each person can now share individual folders, calendars, address books, boards, conversations, task lists, mail accounts, tables and forms with the assistant — or switch an integration off entirely — the way you would share with a colleague. Every row says what it is set to in plain words, and *Revoke all Nextcloud access* takes everything back in one click. The limits are enforced on the server for chats, automations, scheduled tasks and apps alike, so they hold wherever the assistant runs, and every change is written to the audit log. Nothing changes for existing users until they narrow something.
+- **Runs on Nextcloud's new HaRP deployment.** On a HaRP install the app is now reached directly instead of through Nextcloud's PHP layer. This matters beyond speed: with the old route every open chat stream occupied one PHP worker for as long as it stayed open, so enough simultaneous conversations could exhaust the pool and slow Nextcloud itself — not just Bee Flow. Nextcloud is retiring the old deployment method in version 35; this release is ready for it.
+
+### Fixed
+- **Opening Bee Flow inside Nextcloud is markedly faster.** Every request from the embedded app was paying costs the standalone app never did — a full settings-table read, a database write that nothing ever read back, and a fresh network handshake per file. Page loads also ran three start-up requests one after another instead of together. All four are gone.
+- **The theme no longer flashes when the app opens inside Nextcloud.** The embedded page was served in a way that made Nextcloud's security policy block the small script that applies your theme before the first paint. It now loads correctly, so the app appears in the right colours immediately.
+- **Repeated rejected callbacks are now visible instead of silent.** If the Bee Flow server's clock drifts, or its key is rotated on only one side, its calls back into Nextcloud start failing — and on HaRP a run of them can get the server's address temporarily blocked, which stops file access and user syncing altogether. Administrators now see the cause, with a warning, under Setup → diagnostics.
+
+### Changed
+- **Supported Nextcloud versions are now 32 to 35.** Nextcloud 31 reached end of life in February 2026, so listing it promised support that could not be honoured.
+- Nextcloud now rate-limits repeated failed attempts against the webhook endpoint, the one connector address authenticated by a fixed secret.
+- The permissions documentation has been rewritten. It described an install-time permissions dialog that Nextcloud removed some releases ago, which meant it explained a safeguard that no longer existed. It now sets out plainly what Nextcloud does and does not limit, and what Bee Flow enforces itself.
+
 ## [1.4.2] - 2026-08-15
 
 ### Changed

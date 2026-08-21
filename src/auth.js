@@ -19,6 +19,7 @@
  * endpoints which are exempt).
  */
 
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const config = require('./config');
 
@@ -30,6 +31,14 @@ const HDR = {
     requestId: 'aa-request-id',
 };
 
+// AppAPI 5.x sends NO auth header on the lifecycle calls (test/lifecycle.test.js),
+// so these three are let through before a single header is parsed — the check
+// below never runs for them. That is not the same as "they are unauthenticated
+// by design": info.xml declares /init and /enabled ADMIN, and the connector binds
+// 0.0.0.0 on a docker network it shares with every other ExApp. Because the gate
+// cannot see them, each route carries its own check — see heartbeat.js
+// (isTrustedLifecycleCaller + untrustedLifecycleAllowed). Adding a lifecycle route
+// here without one leaves it open to every container on that network.
 const LIFECYCLE_PATHS = new Set(['/heartbeat', '/init', '/enabled']);
 
 // Paths that are safe to serve without a NC user context. Includes:
@@ -158,19 +167,48 @@ function mintSaasJwt(user) {
 
 // Trust boundary
 // ──────────────
-// The connector container only listens on AppAPI's private docker network
-// and is reachable solely via NC's AppAPI proxy on the NC container. NC signs
-// every forwarded request with the APP_SECRET it minted at install time, so
-// the `authorization-app-api` header is already trusted by the time it
-// arrives here. Re-verifying the shared secret on every inbound request
-// added no security (any attacker who could deliver a request to this port
-// has already bypassed the framework boundary) but introduced a brittle
-// failure mode: a single drift between NC's stored secret and the container
-// env locked out every browser request with a 401. We treat the header as a
-// user-identity envelope, not a re-checkable signature. The actually
-// load-bearing secret — the per-install tenant key minted by the SaaS at
-// bootstrap — is verified end-to-end on every SaaS callback in ncProxy.js
-// and on every SaaS-bound JWT below.
+// `AUTHORIZATION-APP-API` carries base64(<userId>:<APP_SECRET>). The shared
+// secret half is what makes the userId half trustworthy, so it is verified in
+// constant time on every request that claims a user.
+//
+// This used to be skipped, on the reasoning that the container is only
+// reachable through Nextcloud's AppAPI proxy and NC has already signed the
+// request. That reasoning does not hold: the connector binds 0.0.0.0 and shares
+// a Docker network with Nextcloud, its deploy daemon and every other ExApp on
+// the instance. Anything on that network could therefore send
+// `base64("admin:anything")` and be handed a freshly minted SaaS JWT for the
+// Nextcloud administrator — Bee Flow account takeover from a neighbouring
+// container, with no Nextcloud session anywhere in the story. Nextcloud's own
+// guidance is explicit that authorisation checks belong in the app even where
+// the framework looks like it has already made them
+// (developer_manual/prologue/security.html, "Authentication bypass").
+//
+// The failure mode that motivated skipping the check is real but narrow: if
+// Nextcloud's stored secret and the container's APP_SECRET drift apart, every
+// request 401s. That is now a loud, named error with the exact `occ` command
+// that repairs it, rather than a silently open door.
+const _appSecretBuf = Buffer.from(String(config.appSecret), 'utf8');
+let _lastSecretWarnAt = 0;
+
+function secretMatches(secret) {
+    const got = Buffer.from(String(secret == null ? '' : secret), 'utf8');
+    if (got.length !== _appSecretBuf.length) return false;
+    return crypto.timingSafeEqual(got, _appSecretBuf);
+}
+
+// Once a minute at most: a broken deployment retries on every SPA poll, and a
+// log line per request buries the one that explains the fix.
+function warnSecretMismatch(userId) {
+    const now = Date.now();
+    if (now - _lastSecretWarnAt < 60_000) return;
+    _lastSecretWarnAt = now;
+    console.warn(`[Auth] rejected a request for uid=${userId || '(service)'}: the `
+        + `AUTHORIZATION-APP-API shared secret does not match this container's APP_SECRET. `
+        + `If this is not an attack, Nextcloud and the container hold different secrets — `
+        + `re-register the ExApp (occ app_api:app:unregister ${config.appId} && `
+        + `occ app_api:app:register ${config.appId} --force-scopes) to mint a matching pair.`);
+}
+
 function appApiAuthMiddleware(req, res, next) {
     if (LIFECYCLE_PATHS.has(req.path)) return next();
     // Public assets fetched server-to-server by NC (menu icon, embed JS).
@@ -179,6 +217,13 @@ function appApiAuthMiddleware(req, res, next) {
     const decoded = decodeAuthHeader(req.headers[HDR.auth]);
     if (!decoded) {
         return res.status(401).json({ error: 'Missing AppAPI auth header' });
+    }
+    if (!secretMatches(decoded.secret)) {
+        warnSecretMismatch(decoded.userId);
+        return res.status(401).json({
+            code: 'appapi_secret_mismatch',
+            error: 'Invalid AppAPI shared secret',
+        });
     }
     const expectedAppId = req.headers[HDR.appId];
     if (expectedAppId && expectedAppId !== config.appId) {
@@ -245,6 +290,7 @@ module.exports = {
     appApiAuthMiddleware,
     isDocumentNavigation,
     decodeAuthHeader,
+    secretMatches,
     fetchNextcloudUser,
     mintSaasJwt,
     HDR,

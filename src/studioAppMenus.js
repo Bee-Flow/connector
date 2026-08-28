@@ -35,6 +35,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('./config');
 const { withWarmupRetry } = require('./appApiClient');
+const { ocsSucceeded } = require('./ocs');
 
 const STATE_FILE = 'studio-app-menus.json';
 const LIST_PATH = '/api/nextcloud/studio-apps';
@@ -194,32 +195,14 @@ function appApiHeaders() {
 }
 
 /**
- * OCS statuscodes that mean "the desired end state holds".
- *   100 / 200 — success (v1 / v2 envelopes)
- *   409       — already registered; re-running a sync must be idempotent
- * On a DELETE, 404 additionally means "already gone".
- */
-const OCS_OK = new Set([100, 200, 409]);
-
-/** Pull `ocs.meta.statuscode` out of a JSON *or* XML envelope; null if absent. */
-function readOcsStatus(text) {
-    try {
-        const code = JSON.parse(text)?.ocs?.meta?.statuscode;
-        if (Number.isFinite(code)) return code;
-    } catch (_) { /* not JSON — try the XML shape below */ }
-    const m = /<statuscode>(\d+)<\/statuscode>/.exec(text || '');
-    return m ? parseInt(m[1], 10) : null;
-}
-
-/**
  * One OCS call, checked properly.
  *
  * OCS answers HTTP 200 even when it refuses the request — the real outcome is
  * `ocs.meta.statuscode` in the body. Reading only the HTTP status is what let
  * 1.4.0 report "registered" for entries Nextcloud had rejected outright, and
- * then persist them as done so they were never retried. Both layers are
- * checked here, and the thrown error carries the OCS code so the log names the
- * actual reason.
+ * then persist them as done so they were never retried. Both layers are checked
+ * by the shared `ocsSucceeded` helper (src/ocs.js); the thrown error carries the
+ * OCS code so the log names the actual reason.
  */
 async function ocsCall(method, url, body, label) {
     const res = await withWarmupRetry(() => fetch(url, {
@@ -230,13 +213,8 @@ async function ocsCall(method, url, body, label) {
     }), { label, budgetMs: 30_000 });
 
     const text = await res.text().catch(() => '');
-    const code = readOcsStatus(text);
-    const httpOk = res.ok || res.status === 409 || (method === 'DELETE' && res.status === 404);
-    const ocsOk = code === null
-        ? httpOk // no envelope to read — the HTTP status is all we have
-        : (OCS_OK.has(code) || (method === 'DELETE' && code === 404));
-
-    if (!httpOk || !ocsOk) {
+    const { ok, code } = ocsSucceeded(res, text, method);
+    if (!ok) {
         throw new Error(
             `${label} HTTP ${res.status}${code === null ? '' : ` / OCS ${code}`}: ${text.slice(0, 200)}`,
         );

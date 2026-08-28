@@ -25,6 +25,29 @@ for (const path of ['/heartbeat', '/init', '/enabled', '/img/app.svg', '/js/embe
     });
 }
 
+// AppAPI's Task Processing trigger is a service-level call: it carries the
+// shared secret with an EMPTY userId (base64(":"+secret)) and hits POST
+// /trigger. It must pass the gate (SERVICE_PATHS) — but only WITH a valid
+// secret, unlike the lifecycle paths which skip the secret check entirely.
+test('service call POST /trigger passes the gate with a valid shared secret', (_, done) => {
+    const header = Buffer.from(':test-secret').toString('base64');
+    const req = { method: 'POST', path: '/trigger', url: '/trigger?providerId=x',
+                  originalUrl: '/trigger?providerId=x', headers: { 'authorization-app-api': header }, rawBody: '' };
+    const res = { status: () => res, json: () => done(new Error('/trigger was rejected despite a valid secret')) };
+    appApiAuthMiddleware(req, res, (err) => { assert.ok(!err); done(); });
+});
+
+test('POST /trigger with a wrong secret is still rejected', (_, done) => {
+    const header = Buffer.from(':wrong-secret').toString('base64');
+    const req = { method: 'POST', path: '/trigger', url: '/trigger', originalUrl: '/trigger',
+                  headers: { 'authorization-app-api': header }, rawBody: '' };
+    const res = {
+        status: (code) => { assert.equal(code, 401); return res; },
+        json: () => done(),
+    };
+    appApiAuthMiddleware(req, res, () => done(new Error('/trigger let through with a wrong secret')));
+});
+
 test('user-facing /api/* without header → 401', (_, done) => {
     const req = unsignedReq('/api/chat');
     const res = {

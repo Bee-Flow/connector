@@ -41,6 +41,15 @@ const HDR = {
 // here without one leaves it open to every container on that network.
 const LIFECYCLE_PATHS = new Set(['/heartbeat', '/init', '/enabled']);
 
+// Service-level AppAPI calls that carry the shared secret but NO user context.
+// AppAPI's Task Processing trigger (ITriggerableProvider) calls the ExApp at
+// POST /trigger?providerId=… via requestToExApp with a null userId, so the
+// header is base64(":"+APP_SECRET) — a valid secret, empty userId. These paths
+// must run rather than 401, but UNLIKE the lifecycle paths they still pass the
+// constant-time secret check below (they are allow-listed in the empty-userId
+// branch, not in LIFECYCLE_PATHS which skips the secret entirely).
+const SERVICE_PATHS = new Set(['/trigger']);
+
 // Paths that are safe to serve without a NC user context. Includes:
 //   - SPA shell + assets (index.html, favicon, /assets/*)
 //   - /js/* and /img/* — NC's embedded.html template loads these via
@@ -231,6 +240,9 @@ function appApiAuthMiddleware(req, res, next) {
     }
 
     if (!decoded.userId) {
+        // Service-level AppAPI calls (Task Processing trigger) carry the secret
+        // but no user — let them through now that the secret is verified.
+        if (SERVICE_PATHS.has(req.path)) return next();
         // PUBLIC route reached anonymously (NC user not logged in). Serve
         // the SPA shell — but reject SaaS-bound requests with a clear error
         // so the SPA can show a recognizable login-required state instead

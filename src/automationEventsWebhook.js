@@ -269,12 +269,19 @@ const router = express.Router();
 router.post(HOOK_PATH, express.json({ limit: '512kb' }), async (req, res) => {
     const secret = hookSecret();
     if (!secret) return res.status(503).json({ error: 'Connector not yet bootstrapped' });
-    if (secretLimiter.blocked()) {
-        res.set('Retry-After', String(Math.ceil(secretLimiter.windowMs / 1000)));
-        return res.status(429).json({ error: 'Too many invalid hook secrets' });
-    }
+    // Verify FIRST, then bill only a genuine failure — the same order the
+    // /nc/* gate uses (src/ncProxy.js). The limiter is GLOBAL-keyed, so with
+    // blocked() checked first a flood of forged secrets on this public route
+    // 429'd the legitimate Bee Flow server too: its valid request never reached
+    // succeed(), so the block stood for the whole window and Nextcloud→Bee Flow
+    // event delivery stopped for every tenant on the instance. safeEqual is one
+    // constant-time compare, so a valid caller is never collateral damage.
     if (!safeEqual(req.headers['x-beeflow-hook-secret'], secret)) {
-        secretLimiter.fail();
+        const verdict = secretLimiter.fail();
+        if (!verdict.allowed) {
+            res.set('Retry-After', String(Math.ceil(secretLimiter.windowMs / 1000)));
+            return res.status(429).json({ error: 'Too many invalid hook secrets' });
+        }
         return res.status(401).json({ error: 'Invalid hook secret' });
     }
     secretLimiter.succeed();

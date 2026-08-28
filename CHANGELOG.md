@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [1.5.1] - 2026-08-28
+
+### Fixed
+- **Talk replies work again.** The assistant's Talk bot never answered. Nextcloud verifies the bot's signature itself and then forwards the message to Bee Flow with its own app credentials, but the connector was still looking for the original signature — which by then is gone — and rejected every real message. It now checks the credentials Nextcloud actually sends.
+- **Assistant tasks no longer sit unstarted after a restart.** When Nextcloud handed Bee Flow a task, the call was refused because it carries no user — it comes from the server itself, not a person. Nothing picked the work up afterwards either, so a task queued at the wrong moment waited indefinitely. Both are fixed, and the periodic catch-up sweep now starts when the connection is established rather than only at boot.
+- **A refused registration is no longer recorded as a success.** Nextcloud answers some refusals with an OK status and puts the real verdict inside the response. The app menu, embedded script and settings form all read only the outer status, so a rejected registration was logged as registered and never retried. All three now read the real result.
+- **A flood of forged requests can no longer cut Nextcloud off from Bee Flow.** Two public addresses counted bad attempts before checking whether a request was genuine, against a single shared budget. Anyone could spend that budget with invalid requests and the real server's next legitimate call would be turned away — and because only a successful call clears the counter, the block held for the rest of the window and renewed for as long as the flood continued. That took out file access and, on the second address, every Deck, Files and Calendar trigger on the instance. Both now verify first and charge only genuine failures, so a valid request is never refused because of someone else's.
+
 ## [1.5.0] - 2026-08-21
 
 ### Added

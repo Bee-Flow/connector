@@ -17,6 +17,7 @@
 const config = require('./config');
 const setupConfig = require('./setupConfig');
 const { withWarmupRetry } = require('./appApiClient');
+const { ocsSucceeded } = require('./ocs');
 const { parseAllowedUrl } = require('./remoteHost');
 
 const FORM_ID = 'beeflow_admin';
@@ -82,9 +83,12 @@ async function registerSettingsForm() {
         body: JSON.stringify({ formScheme: FORM_SCHEME }),
         signal: AbortSignal.timeout(5_000),
     }), { label: 'settings-form', budgetMs: 60_000 });
-    if (!res.ok && res.status !== 409) {
-        const body = await res.text().catch(() => '');
-        throw new Error(`Settings form register HTTP ${res.status}: ${body.slice(0, 200)}`);
+    // OCS answers HTTP 200 even when it refuses the form — check
+    // ocs.meta.statuscode too, or a rejected registration logs as success.
+    const body = await res.text().catch(() => '');
+    const { ok, code } = ocsSucceeded(res, body, 'POST');
+    if (!ok) {
+        throw new Error(`Settings form register HTTP ${res.status}${code === null ? '' : ` / OCS ${code}`}: ${body.slice(0, 200)}`);
     }
     console.log(`[Init] Declarative settings form registered (${FORM_ID})`);
 }

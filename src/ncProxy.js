@@ -230,13 +230,20 @@ function mount(app) {
         if (!isAllowedNcPath(req.url)) {
             return res.status(404).json({ error: 'Path not proxied' });
         }
-        if (sigLimiter.blocked()) {
-            res.set('Retry-After', String(Math.ceil(sigLimiter.windowMs / 1000)));
-            return res.status(429).json({ error: 'Too many invalid signatures' });
-        }
+        // Verify the HMAC FIRST, then bill only a genuine failure. Checking a
+        // blocked() gate BEFORE verifying would let a flood of forged signatures
+        // (this route is PUBLIC) 429 the legitimate Bee Flow server too — its
+        // valid request would never reach succeed(), so the block would persist
+        // for the whole window and take out all SaaS→NC access. The HMAC is one
+        // SHA256, so a valid caller is now never collateral to an attacker's
+        // failures; a forged one is still counted and 429'd once over budget.
         if (!verifyHmac(req)) {
-            sigLimiter.fail();
+            const verdict = sigLimiter.fail();
             _recordSigFailure(req);
+            if (!verdict.allowed) {
+                res.set('Retry-After', String(Math.ceil(sigLimiter.windowMs / 1000)));
+                return res.status(429).json({ error: 'Too many invalid signatures' });
+            }
             return res.status(401).json({ error: 'Missing or invalid X-Beeflow-Sig' });
         }
         sigLimiter.succeed();

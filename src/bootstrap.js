@@ -389,6 +389,24 @@ async function recordBootstrapError(err, phase, opts = {}) {
     return state;
 }
 
+// Arm the Task Processing idle poller once the tenant key exists.
+//
+// taskProcessing.startPolling() early-returns while config.tenantKey is null,
+// and its only other caller runs at boot (server.js) BEFORE bootstrap — so on
+// an auto-bootstrap install the poll backstop never starts and queued
+// Assistant/AI tasks are never drained (the AppAPI trigger alone is not enough:
+// Nextcloud suppresses it while a same-type task is already running). Calling it
+// here, at every point the key becomes set, closes that gap. It is idempotent
+// (guarded by its own _pollTimer + tenantKey) and unref'd, and the require is
+// lazy to avoid a bootstrap↔taskProcessing circular import at module load.
+function armTaskPolling() {
+    try {
+        require('./taskProcessing').startPolling();
+    } catch (err) {
+        console.warn(`[Bootstrap] could not arm the task-processing poller: ${err.message}`);
+    }
+}
+
 async function applyTenantKeyResponse(json, ncInstanceId) {
     config.tenantKey = json.tenantKey;
     config.organizationId = json.organizationId;
@@ -408,6 +426,7 @@ async function applyTenantKeyResponse(json, ncInstanceId) {
     });
     await deletePendingFile();
     pendingState = null;
+    armTaskPolling();
 }
 
 // Poll the SaaS for an approved binding. Spawned in the background when the
@@ -589,6 +608,7 @@ async function _provisionFlow() {
         }
         await clearErrorFile();
         console.log(`[Bootstrap] Loaded cached tenant key for org ${cached.organizationId}`);
+        armTaskPolling();
         return;
     }
 

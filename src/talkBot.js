@@ -10,14 +10,25 @@
  *
  * Registration goes through AppAPI (`/apps/app_api/api/v1/talk_bot`), which
  * mints the shared secret and hands it back in the OCS response — we never
- * choose it. Talk then signs every delivery with it, and it is the same secret
- * a bot uses to post. It must therefore survive container restarts, so it is
- * persisted alongside the tenant-key cache in APP_PERSISTENT_STORAGE.
+ * choose it. That secret is used for the OUTBOUND direction: signing bot
+ * messages we post back (X-Nextcloud-Talk-Bot-Signature, see _sendBotMessage).
+ * It must survive container restarts, so it is persisted alongside the
+ * tenant-key cache in APP_PERSISTENT_STORAGE.
  *
- * Signature scheme (nextcloud/spreed docs/bots.md):
- *   HMAC-SHA256(X-Nextcloud-Talk-Random + rawBody, secret) == X-Nextcloud-Talk-Signature
- * Note that it is the *raw* body, so this route must not be body-parsed before
- * the check — see server.js, where the JSON parser is scoped away from it.
+ * INBOUND auth — this is the subtle part. Because the bot is registered THROUGH
+ * AppAPI, Nextcloud does not POST deliveries straight to this route. Talk POSTs
+ * them to AppAPI's own proxy route, AppAPI verifies the Talk HMAC itself
+ * (X-Nextcloud-Talk-Signature over X-Nextcloud-Talk-Random + raw body), and only
+ * then forwards to this ExApp via requestToExApp with a NULL userId. The
+ * forwarded request therefore carries the ordinary AppAPI headers —
+ * `AUTHORIZATION-APP-API: base64(":"+APP_SECRET)` + EX-APP-ID — and a re-encoded
+ * JSON body; the X-Nextcloud-Talk-* headers are gone. So we authenticate the
+ * shared secret here (exactly like the /trigger and /files-action service
+ * calls), NOT a Talk signature — verifying a Talk signature on this route 401s
+ * every real delivery, which is why the bot's @mention/reaction features were
+ * silently dead before this. (This route is mounted before the AppAPI gate in
+ * server.js because AppAPI's forward carries an empty userId, which that gate
+ * rejects; the secret check below is the equivalent boundary.)
  *
  * Payloads are Activity Streams 2.0:
  *   type "Create" + object.name "message"  → a chat message
@@ -32,11 +43,14 @@ const fs = require('fs');
 const path = require('path');
 const config = require('./config');
 const { withWarmupRetry } = require('./appApiClient');
+const { secretMatches, decodeAuthHeader } = require('./auth');
 const rateLimit = require('./rateLimit');
 
-// Brute-force gate on the delivery signature. Talk itself never produces a bad
-// one, so only failures are billed and real deliveries are never throttled.
-const sigLimiter = rateLimit.penalise('talk-bot-sig', { limit: 60, windowMs: 60_000 });
+// Brute-force gate on the inbound AppAPI shared-secret check. AppAPI itself
+// never presents a bad one, so only failures are billed and real deliveries are
+// never throttled. Verified BEFORE it can block, so a flood of forged requests
+// (this route is PUBLIC) can never lock out a legitimate delivery.
+const sigLimiter = rateLimit.penalise('talk-bot-auth', { limit: 60, windowMs: 60_000 });
 
 const TALK_BOT_API = '/ocs/v2.php/apps/app_api/api/v1/talk_bot';
 // Declared PUBLIC in appinfo/info.xml: Talk calls it with no user session and
@@ -141,24 +155,18 @@ async function unregisterTalkBot() {
 }
 
 /**
- * Verify a delivery. Constant-time, and fails closed when we have no secret
- * (which is the state after a persistent-storage wipe until re-registration).
+ * Verify an inbound delivery forwarded by AppAPI. The forwarded request is
+ * authenticated by the AppAPI shared secret (base64(userId:APP_SECRET), with an
+ * empty userId for this service-level forward) — the same boundary auth.js
+ * enforces for browser traffic. Constant-time via secretMatches; EX-APP-ID is
+ * checked when present. Returns false on a missing/mismatched secret.
  */
-function verifyTalkSignature(req) {
-    const secret = loadSecret();
-    if (!secret) return false;
-    const random = req.headers['x-nextcloud-talk-random'];
-    const signature = req.headers['x-nextcloud-talk-signature'];
-    if (typeof random !== 'string' || typeof signature !== 'string') return false;
-    // Talk documents the random as 64 chars; reject anything short enough to
-    // be brute-forceable rather than trusting the header blindly.
-    if (random.length < 32) return false;
-
-    const raw = typeof req.rawBody === 'string' ? req.rawBody : '';
-    const expected = crypto.createHmac('sha256', secret).update(random + raw).digest();
-    const got = Buffer.from(String(signature).toLowerCase(), 'hex');
-    if (got.length !== expected.length) return false;
-    return crypto.timingSafeEqual(expected, got);
+function verifyInboundAppApi(req) {
+    const decoded = decodeAuthHeader(req.headers['authorization-app-api']);
+    if (!decoded || !secretMatches(decoded.secret)) return false;
+    const appId = req.headers['ex-app-id'];
+    if (appId && appId !== config.appId) return false;
+    return true;
 }
 
 /**
@@ -205,19 +213,32 @@ function mapActivity(body) {
     }
 
     if (body.type === 'Like' || body.type === 'Undo') {
-        // A reaction. `object` is the message that was reacted to; `content`
-        // carries the emoji. This is what makes approve/reject-by-emoji
-        // possible without parsing free text.
+        // A reaction. This is what makes approve/reject-by-emoji possible
+        // without parsing free text.
+        //
+        // The two envelopes are NOT the same shape (spreed docs/bots.md):
+        //   Like → object IS the message, top-level content IS the emoji
+        //   Undo → object is the whole original Like, so the message is one
+        //          level deeper and the emoji is object.content
+        // Reading the Like shape for both is why a removal used to arrive with
+        // a null messageId and an empty reaction.
+        const removed = body.type === 'Undo';
+        const reacted = removed ? body.object?.object : body.object;
+        const emoji = removed ? body.object?.content : body.content;
         return {
             event: 'talk.reaction.added',
             payload: {
-                messageId: body.object?.id ?? null,
+                messageId: reacted?.id ?? null,
                 roomToken: token,
                 roomName,
                 actor,
+                // Which KIND of attendee reacted ('users' | 'guests' | 'bots').
+                // A vote may only ever come from a real user, and the bot's
+                // own seeded 👍 must be distinguishable from a person's.
+                actorType,
                 actorName: body.actor?.name || null,
-                reaction: body.content || '',
-                removed: body.type === 'Undo',
+                reaction: emoji || '',
+                removed,
                 datetime: new Date().toISOString(),
             },
         };
@@ -368,22 +389,24 @@ async function handleMention(payload) {
 
 const router = express.Router();
 
-// express.raw, not express.json: the signature covers the exact bytes Talk
-// sent, so the body must be captured verbatim before anything reshapes it.
-router.post(BOT_ROUTE, express.raw({ type: () => true, limit: '256kb' }), async (req, res) => {
-    req.rawBody = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : '';
-    if (sigLimiter.blocked()) {
-        res.set('Retry-After', String(Math.ceil(sigLimiter.windowMs / 1000)));
-        return res.status(429).json({ error: 'Too many invalid signatures' });
-    }
-    if (!verifyTalkSignature(req)) {
-        sigLimiter.fail();
-        return res.status(401).json({ error: 'Invalid Talk bot signature' });
+// express.json: AppAPI forwards the delivery as a normal JSON body (it re-encodes
+// the request params), so there is no raw-body HMAC to preserve any more — the
+// inbound auth is the AppAPI shared secret, checked below.
+router.post(BOT_ROUTE, express.json({ type: () => true, limit: '256kb' }), async (req, res) => {
+    // Verify the shared secret FIRST, then bill only genuine failures — a valid
+    // delivery must never be locked out by a flood of forged ones on this PUBLIC
+    // route (see rateLimit.js and the ncProxy verify-first gate).
+    if (!verifyInboundAppApi(req)) {
+        const verdict = sigLimiter.fail();
+        if (!verdict.allowed) {
+            res.set('Retry-After', String(Math.ceil(sigLimiter.windowMs / 1000)));
+            return res.status(429).json({ error: 'Too many invalid requests' });
+        }
+        return res.status(401).json({ error: 'Invalid AppAPI shared secret' });
     }
     sigLimiter.succeed();
 
-    let body;
-    try { body = JSON.parse(req.rawBody || '{}'); } catch (_) { body = null; }
+    const body = (req.body && typeof req.body === 'object') ? req.body : null;
     const mapped = mapActivity(body);
     if (!mapped) {
         // Joins, leaves and system messages land here. 200 so Talk does not
@@ -441,7 +464,7 @@ router.post(BOT_ROUTE, express.raw({ type: () => true, limit: '256kb' }), async 
 module.exports = router;
 module.exports.registerTalkBot = registerTalkBot;
 module.exports.unregisterTalkBot = unregisterTalkBot;
-module.exports.verifyTalkSignature = verifyTalkSignature;
+module.exports.verifyInboundAppApi = verifyInboundAppApi;
 module.exports.mapActivity = mapActivity;
 module.exports.loadSecret = loadSecret;
 module.exports.saveSecret = saveSecret;

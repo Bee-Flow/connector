@@ -108,9 +108,11 @@ require('./declarativeSettings').startPolling();
 
 registerLifecycle(app);
 
-// GET /trigger — Nextcloud calls this when a Task Processing task is scheduled
-// for one of our providers. Registered after the AppAPI gate: unlike the
-// webhook and Talk routes, this one IS an authenticated AppAPI call.
+// POST /trigger — Nextcloud calls this (AppAPI's ITriggerableProvider shim,
+// default verb POST) when a Task Processing task is scheduled for one of our
+// providers. Registered after the AppAPI gate: unlike the webhook and Talk
+// routes, this one IS an authenticated AppAPI call — a service-level one with
+// an empty userId, which auth.js allow-lists in SERVICE_PATHS.
 require('./taskProcessing').registerRoutes(app);
 
 // POST /files-action — Nextcloud's Files plugin calls this when a user picks a

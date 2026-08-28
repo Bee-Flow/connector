@@ -126,8 +126,16 @@ function limit(name, { limit: max, windowMs, keyOf = callerKey, message } = {}) 
 }
 
 /**
- * Brute-force gate for signature-authenticated routes: call `blocked()` before
- * doing the (cheap) signature check, and `fail()` when it does not verify.
+ * Brute-force gate for signature-authenticated routes. VERIFY FIRST, then call
+ * `fail()` when the signature does not check out and act on the verdict it
+ * returns; call `succeed()` when it does.
+ *
+ * Do NOT gate on `blocked()` before verifying. These limiters are global-keyed,
+ * and every route using them is public, so an attacker's forged requests would
+ * spend the shared budget and 429 the legitimate caller — whose valid request
+ * then never reaches `succeed()` to clear it, making the lockout last the whole
+ * window. That is a renewable outage, not rate limiting. The signature check is
+ * one hash, so verifying before billing costs nothing worth saving.
  *
  * Only failures are billed, so a healthy Nextcloud delivering a thousand
  * webhooks is untouched while a thousand forged signatures are not.

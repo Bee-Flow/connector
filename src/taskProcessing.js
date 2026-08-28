@@ -19,7 +19,8 @@
  *   1. We POST a provider definition to
  *      `/apps/app_api/api/v1/ai_provider/task_processing`, one per task type.
  *   2. When a task is scheduled for one of them and nothing is already running,
- *      Nextcloud calls this ExApp at `GET /trigger?providerId=<id>`.
+ *      Nextcloud calls this ExApp at `POST /trigger?providerId=<id>` (AppAPI's
+ *      requestToExApp default verb; the connector also accepts GET).
  *   3. We pull work with `GET /taskprocessing/tasks_provider/next`, run it
  *      through the Bee Flow SaaS, and report back with
  *      `POST /taskprocessing/tasks_provider/{id}/result`.
@@ -490,24 +491,33 @@ function stopPolling() {
     _emptyRounds = 0;
 }
 
+function handleTrigger(req, res) {
+    const id = String(req.query.providerId || '');
+    res.json({ status: 'ok' });
+    if (!id) return;
+    // A trigger means work exists, so come off the idle tick immediately —
+    // the next few minutes are the likeliest time for more.
+    _emptyRounds = 0;
+    scheduleNextPoll();
+    setImmediate(() => {
+        drainProvider(id).catch(err =>
+            console.warn(`[TaskProcessing] drain failed for ${id}: ${err.message}`));
+    });
+}
+
 function registerRoutes(app) {
     // Nextcloud calls this when a task is scheduled for one of our providers.
     // Answer immediately and drain in the background: AppAPI's request has its
     // own timeout, and holding it open for the length of an LLM call would make
     // every trigger look like a failure.
-    app.get('/trigger', (req, res) => {
-        const id = String(req.query.providerId || '');
-        res.json({ status: 'ok' });
-        if (!id) return;
-        // A trigger means work exists, so come off the idle tick immediately —
-        // the next few minutes are the likeliest time for more.
-        _emptyRounds = 0;
-        scheduleNextPoll();
-        setImmediate(() => {
-            drainProvider(id).catch(err =>
-                console.warn(`[TaskProcessing] drain failed for ${id}: ${err.message}`));
-        });
-    });
+    //
+    // AppAPI's ITriggerableProvider shim issues the trigger as a **POST**
+    // (requestToExApp's default verb) to /trigger?providerId=…, so POST is the
+    // route that actually fires; GET is kept for manual/diagnostic pokes.
+    // The request carries the AppAPI shared secret with an empty userId, which
+    // is why auth.js allow-lists /trigger in SERVICE_PATHS.
+    app.post('/trigger', handleTrigger);
+    app.get('/trigger', handleTrigger);
     startPolling();
 }
 

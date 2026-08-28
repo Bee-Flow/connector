@@ -24,6 +24,7 @@
 const config = require('./config');
 const { withWarmupRetry } = require('./appApiClient');
 const { decodeAuthHeader, secretMatches, HDR } = require('./auth');
+const { ocsSucceeded } = require('./ocs');
 const rateLimit = require('./rateLimit');
 
 /**
@@ -273,9 +274,13 @@ async function registerTopMenu() {
         }),
         signal: AbortSignal.timeout(5_000),
     }), { label: 'top-menu', budgetMs: 60_000 });
-    if (!res.ok && res.status !== 409) {
-        const body = await res.text().catch(() => '');
-        throw new Error(`TopMenu register HTTP ${res.status}: ${body.slice(0, 200)}`);
+    // OCS answers HTTP 200 even when it refuses — check ocs.meta.statuscode too,
+    // or a rejected registration is logged as "registered" and never retried
+    // (the 1.4.0/1.4.1 top-menu bug). 409 = already registered is success.
+    const body = await res.text().catch(() => '');
+    const { ok, code } = ocsSucceeded(res, body, 'POST');
+    if (!ok) {
+        throw new Error(`TopMenu register HTTP ${res.status}${code === null ? '' : ` / OCS ${code}`}: ${body.slice(0, 200)}`);
     }
     console.log('[Init] TopMenu entry registered');
 }
@@ -296,9 +301,11 @@ async function registerEmbedScript() {
         }),
         signal: AbortSignal.timeout(5_000),
     }), { label: 'embed-script', budgetMs: 60_000 });
-    if (!res.ok && res.status !== 409) {
-        const body = await res.text().catch(() => '');
-        throw new Error(`Script register HTTP ${res.status}: ${body.slice(0, 200)}`);
+    // Same OCS-in-band-refusal check as the top-menu registration above.
+    const body = await res.text().catch(() => '');
+    const { ok, code } = ocsSucceeded(res, body, 'POST');
+    if (!ok) {
+        throw new Error(`Script register HTTP ${res.status}${code === null ? '' : ` / OCS ${code}`}: ${body.slice(0, 200)}`);
     }
     console.log('[Init] Embed script registered');
 }
@@ -377,5 +384,7 @@ module.exports = {
     registerLifecycle,
     unregisterEventListeners,
     runInitInBackground,
+    registerTopMenu,
+    registerEmbedScript,
     INIT_UNTRUSTED_LIMIT,
 };

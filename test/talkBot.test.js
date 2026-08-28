@@ -1,16 +1,20 @@
 /**
- * Talk bot: signature verification and Activity Streams mapping.
+ * Talk bot: inbound AppAPI authentication and Activity Streams mapping.
  *
- * The signature is the only thing standing between an arbitrary caller and the
- * ability to inject fabricated chat messages into a customer's automations, so
- * the negative cases matter more than the positive one.
+ * The bot is registered THROUGH AppAPI, so Talk POSTs deliveries to AppAPI,
+ * AppAPI verifies the Talk HMAC itself and forwards to this ExApp route with a
+ * null userId — i.e. the only auth that reaches /hooks/talk is the AppAPI shared
+ * secret (base64(":"+APP_SECRET) + EX-APP-ID), NOT the X-Nextcloud-Talk-*
+ * signature headers. So the connector authenticates the shared secret; a
+ * Talk-signature check here 401s every real delivery. These tests exercise that
+ * boundary in the exact shape AppAPI forwards.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const crypto = require('node:crypto');
 const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
+const express = require('express');
 
 process.env.APP_SECRET = process.env.APP_SECRET || 'ci-test-secret';
 process.env.NEXTCLOUD_URL = process.env.NEXTCLOUD_URL || 'http://nextcloud.invalid';
@@ -19,69 +23,97 @@ process.env.APP_PERSISTENT_STORAGE = process.env.APP_PERSISTENT_STORAGE
     || fs.mkdtempSync(path.join(os.tmpdir(), 'beeflow-talkbot-'));
 
 const talkBot = require('../src/talkBot');
+const config = require('../src/config');
 
-const SECRET = 'a'.repeat(64);
-const RANDOM = 'r'.repeat(64);
+const appApiAuth = (userId, secret) => Buffer.from(`${userId}:${secret}`).toString('base64');
 
-function sign(secret, random, body) {
-    return crypto.createHmac('sha256', secret).update(random + body).digest('hex');
+// ── Inbound AppAPI shared-secret auth (the real delivery boundary) ──────────
+
+test('a delivery carrying the AppAPI shared secret (empty userId) is accepted', () => {
+    const req = { headers: { 'authorization-app-api': appApiAuth('', config.appSecret) } };
+    assert.equal(talkBot.verifyInboundAppApi(req), true);
+});
+
+test('a wrong shared secret is rejected', () => {
+    const req = { headers: { 'authorization-app-api': appApiAuth('', 'not-the-secret') } };
+    assert.equal(talkBot.verifyInboundAppApi(req), false);
+});
+
+test('a missing auth header is rejected', () => {
+    assert.equal(talkBot.verifyInboundAppApi({ headers: {} }), false);
+});
+
+test('a mismatched EX-APP-ID is rejected even with the right secret', () => {
+    const req = { headers: { 'authorization-app-api': appApiAuth('', config.appSecret), 'ex-app-id': 'some_other_app' } };
+    assert.equal(talkBot.verifyInboundAppApi(req), false);
+});
+
+test('the matching EX-APP-ID passes', () => {
+    const req = { headers: { 'authorization-app-api': appApiAuth('', config.appSecret), 'ex-app-id': config.appId } };
+    assert.equal(talkBot.verifyInboundAppApi(req), true);
+});
+
+// ── Route-level: the shape AppAPI actually forwards ─────────────────────────
+// This is the test that would have caught the shipped-but-dead feature: a POST
+// to /hooks/talk with AppAPI auth headers, an Activity-Streams JSON body, and NO
+// X-Nextcloud-Talk-* headers.
+
+function startRouter() {
+    const app = express();
+    app.use('/', talkBot);
+    const server = app.listen(0);
+    return { server, port: server.address().port };
 }
 
-function reqFor({ body, random = RANDOM, signature, headers = {} }) {
-    return {
-        rawBody: body,
-        headers: {
-            'x-nextcloud-talk-random': random,
-            'x-nextcloud-talk-signature': signature ?? sign(SECRET, random, body),
-            ...headers,
-        },
-    };
-}
-
-test('a correctly signed delivery verifies', () => {
-    talkBot.saveSecret(SECRET);
-    const body = JSON.stringify({ type: 'Create' });
-    assert.equal(talkBot.verifyTalkSignature(reqFor({ body })), true);
+test('a forwarded delivery with the AppAPI secret is accepted (200) and forwarded to the SaaS', async () => {
+    config.tenantKey = 'test-tenant-key';
+    config.ncInstanceId = 'nc-instance';
+    const { server, port } = startRouter();
+    const realFetch = global.fetch;
+    const calls = [];
+    global.fetch = async (url, opts) => { calls.push(String(url)); return { ok: true, status: 200, text: async () => '{}', json: async () => ({}) }; };
+    try {
+        const body = {
+            type: 'Create',
+            actor: { id: 'users/ada', name: 'Ada' },
+            object: { id: '9', name: 'message', content: JSON.stringify({ message: 'hello there' }) },
+            target: { id: 'room1', name: 'General' },
+            // AppAPI injects these route params into the forwarded JSON — mapActivity ignores them.
+            appId: config.appId,
+            route: '/hooks/talk',
+        };
+        const r = await realFetch(`http://127.0.0.1:${port}/hooks/talk`, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                'authorization-app-api': appApiAuth('', config.appSecret),
+                'ex-app-id': config.appId,
+            },
+            body: JSON.stringify(body),
+        });
+        assert.equal(r.status, 200, 'a genuine AppAPI-forwarded delivery must be accepted');
+        assert.ok(
+            calls.some(u => u.includes('/api/automation/events/nextcloud')),
+            'the mapped event is forwarded to the SaaS',
+        );
+    } finally {
+        global.fetch = realFetch;
+        server.close();
+    }
 });
 
-test('a tampered body is rejected', () => {
-    talkBot.saveSecret(SECRET);
-    const signature = sign(SECRET, RANDOM, JSON.stringify({ type: 'Create' }));
-    const req = reqFor({ body: JSON.stringify({ type: 'Create', injected: true }), signature });
-    assert.equal(talkBot.verifyTalkSignature(req), false);
-});
-
-test('a signature made with a different secret is rejected', () => {
-    talkBot.saveSecret(SECRET);
-    const body = JSON.stringify({ type: 'Create' });
-    assert.equal(talkBot.verifyTalkSignature(reqFor({ body, signature: sign('b'.repeat(64), RANDOM, body) })), false);
-});
-
-test('a swapped random is rejected', () => {
-    talkBot.saveSecret(SECRET);
-    const body = JSON.stringify({ type: 'Create' });
-    const signature = sign(SECRET, RANDOM, body);
-    assert.equal(talkBot.verifyTalkSignature(reqFor({ body, random: 'z'.repeat(64), signature })), false);
-});
-
-test('a short random is rejected even if the HMAC matches', () => {
-    // A 4-character random would make the signature brute-forceable offline.
-    talkBot.saveSecret(SECRET);
-    const body = JSON.stringify({ type: 'Create' });
-    const short = 'abcd';
-    assert.equal(talkBot.verifyTalkSignature(reqFor({ body, random: short, signature: sign(SECRET, short, body) })), false);
-});
-
-test('missing headers are rejected', () => {
-    talkBot.saveSecret(SECRET);
-    assert.equal(talkBot.verifyTalkSignature({ rawBody: '{}', headers: {} }), false);
-});
-
-test('no secret means nothing verifies — fail closed', () => {
-    talkBot.saveSecret('');
-    const body = JSON.stringify({ type: 'Create' });
-    assert.equal(talkBot.verifyTalkSignature(reqFor({ body })), false);
-    talkBot.saveSecret(SECRET);
+test('a delivery with a wrong AppAPI secret is rejected with 401', async () => {
+    const { server, port } = startRouter();
+    try {
+        const r = await fetch(`http://127.0.0.1:${port}/hooks/talk`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'authorization-app-api': appApiAuth('', 'wrong') },
+            body: JSON.stringify({ type: 'Create' }),
+        });
+        assert.equal(r.status, 401);
+    } finally {
+        server.close();
+    }
 });
 
 // ── Activity Streams mapping ───────────────────────────────────────────────
@@ -133,14 +165,46 @@ test('a reaction maps to talk.reaction.added and carries the emoji', () => {
     assert.equal(mapped.payload.reaction, '\u{1F44D}');
     assert.equal(mapped.payload.messageId, '1567');
     assert.equal(mapped.payload.removed, false);
+    // Which KIND of attendee reacted decides whether it can ever be a vote:
+    // approval-by-emoji only counts a real user, never a guest and never the
+    // bot's own seeded reaction coming back at us.
+    assert.equal(mapped.payload.actorType, 'users');
 });
 
-test('un-reacting is flagged rather than looking like a new reaction', () => {
+test('un-reacting reads the Undo envelope, which nests the original Like', () => {
+    // Talk's Undo is NOT shaped like a Like (spreed docs/bots.md): `object` is
+    // the whole original Like, so the message sits one level deeper and the
+    // emoji is object.content. Reading it as a Like — which this connector did
+    // — produced a removal with a null messageId and an empty reaction.
     const mapped = talkBot.mapActivity({
-        type: 'Undo', actor: { id: 'users/ada' }, object: { id: '1' }, target: { id: 't' }, content: '\u{1F44D}',
+        type: 'Undo',
+        actor: { id: 'users/ada', name: 'Ada' },
+        object: {
+            type: 'Like',
+            actor: { id: 'users/ada', name: 'Ada' },
+            object: { type: 'Note', id: '1567', name: 'message' },
+            target: { type: 'Collection', id: 'n3xtc10ud', name: 'world' },
+            content: '\u{1F44D}',
+        },
+        target: { type: 'Collection', id: 'n3xtc10ud', name: 'world' },
     });
     assert.equal(mapped.event, 'talk.reaction.added');
     assert.equal(mapped.payload.removed, true);
+    assert.equal(mapped.payload.messageId, '1567');
+    assert.equal(mapped.payload.reaction, '\u{1F44D}');
+    assert.equal(mapped.payload.roomToken, 'n3xtc10ud');
+});
+
+test('a bot’s own reaction is reported as a bot, not as a person', () => {
+    const mapped = talkBot.mapActivity({
+        type: 'Like',
+        actor: { id: 'bots/bot-abc123', name: 'Bee Flow' },
+        object: { id: '1567', name: 'message' },
+        target: { id: 'tok', name: 'room' },
+        content: '\u{1F44D}',
+    });
+    assert.equal(mapped.payload.actorType, 'bots');
+    assert.equal(mapped.payload.actor, 'bot-abc123');
 });
 
 test('joins, leaves and system messages produce no trigger', () => {

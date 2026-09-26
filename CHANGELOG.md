@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [1.6.2] - 2026-09-26
+
+### Fixed
+- **The chat screenshot in the App Store listing is now the new one.** The App Store keeps its own copy of every screenshot, so the chat image replaced in 1.6.1 went on showing the old picture. It now has a new address, which the App Store picks up.
+
 ## [1.6.1] - 2026-09-26
 
 ### Changed

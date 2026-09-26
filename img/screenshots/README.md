@@ -10,7 +10,7 @@ listing's hero image.
 Every shot shows Nextcloud's own top bar with Bee Flow open in it. This is a
 Nextcloud listing, so the reader should see the app where they will use it.
 
-1. **`01-chat.png`**: a chat that works on Nextcloud files. The question
+1. **`01-chat-invoice.png`**: a chat that works on Nextcloud files. The question
    ("Summarise the latest invoice in /Invoices-Test…"), the tool calls
    (Nextcloud List Files, Nextcloud Read File) and the full answer are all on
    screen. The chat sidebar is collapsed to the rail.
@@ -51,3 +51,13 @@ workflow (`.github/workflows/connector-release.yml` in Bee-Flow-AI) mirrors
 from this folder. The App Store reads the `<screenshot>` list from the
 release's `info.xml`, so new or renamed shots appear with the next connector
 release. Keep each file under 500 KB.
+
+**Never replace an image under the same file name.** The listing does not
+load these URLs itself: it shows copies made by the App Store's image proxy
+(`usercontent.apps.nextcloud.com`, source in
+[nextcloud/usercontent.apps.nextcloud.com](https://github.com/nextcloud/usercontent.apps.nextcloud.com),
+`sync.php`). A periodic job downloads every screenshot URL once and never
+fetches that URL again, so a changed image under an old name keeps showing
+the old picture forever. A new image needs a new file name (1.6.1 overwrote
+`01-chat.png` in place; 1.6.2 renamed it to get the new image shown). A new
+name also shows as a broken image until that job's next run.

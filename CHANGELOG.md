@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [1.6.1] - 2026-09-26
+
+### Changed
+- **New screenshots in the App Store listing.** They now show Bee Flow where you use it, inside Nextcloud: a chat that reads an invoice from your files, an automation that handles new invoices, and a form built in Bee Flow Studio.
+
 ## [1.6.0] - 2026-09-14
 
 ### Added

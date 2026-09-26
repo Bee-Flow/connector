@@ -2,41 +2,52 @@
 
 The Nextcloud App Store listing for Bee Flow renders the images in this
 folder, in the order they're listed in `appinfo/info.xml` `<screenshot>`
-elements.
+elements. The logo (`../bee-flow-logo.png`) stays first: it doubles as the
+listing's hero image.
 
-## Required shots (commit them as 1920×1080 PNG)
+## The shots (1920×1080 PNG, all taken inside Nextcloud)
 
-1. **`01-chat.png`** — chat window with a real-looking conversation
-   inside the Nextcloud iframe. The Bee Flow top-bar icon should be
-   visible. Best shot: ask it to summarise an email, show the answer.
-2. **`02-onboarding.png`** — the 4-step admin onboarding wizard, on
-   step 2 (User sync mode) so the radio buttons + group multi-select
-   are visible.
-3. **`03-org-integrations.png`** — Settings → Organisation → Integrations,
-   the Nextcloud-integrations panel showing the org-wide checkboxes plus
-   one expanded per-group exception row.
-4. **`04-privacy-shield.png`** — a chat where Privacy Shield kicked in;
-   show the "Tokenised" badge under "How I got this answer" + the
-   tokenised payload visible in the raw-payload panel.
-5. *(optional)* **`05-multi-user.png`** — a Bee Flow user list showing
-   3-4 users that were auto-mirrored from Nextcloud.
-6. *(optional)* **`06-talk.png`** — once Talk-bot integration ships,
-   the bot replying in a Talk room.
+Every shot shows Nextcloud's own top bar with Bee Flow open in it. This is a
+Nextcloud listing, so the reader should see the app where they will use it.
 
-## How to update
+1. **`01-chat.png`**: a chat that works on Nextcloud files. The question
+   ("Summarise the latest invoice in /Invoices-Test…"), the tool calls
+   (Nextcloud List Files, Nextcloud Read File) and the full answer are all on
+   screen. The chat sidebar is collapsed to the rail.
+2. **`02-automation.png`**: the automation canvas with *Invoice intake*: a new
+   PDF in `/Invoices` is read, the details extracted, anything over €1,000
+   goes to Finance for approval, then a row in the invoice register and a
+   Talk message. Presenter mode on, *Wrap to fit*, then *Fit*; the legend
+   closed.
+3. **`03-form.png`**: a Studio app with a form (*Request form*) in Preview,
+   filled in with sample data, the AI builder panel hidden.
 
-Drop the PNGs in this folder, commit + push. Then update the
-`<screenshot>` URLs in `appinfo/info.xml` to point at:
+## How they were made
 
-```
-https://raw.githubusercontent.com/Bee-Flow/connector/main/img/screenshots/01-chat.png
-```
+On the local sandbox (`scripts/local-sandbox.sh`, HaRP mode, Nextcloud on
+`:8081`, signed in as `admin`), with Playwright: a 1440×810 viewport at device
+scale 4/3, which gives 1920×1080 with text large enough to read in the
+listing's carousel. Things that will trip up the next person:
 
-(replace `01-chat` per shot). After the next tag, the App Store fetches
-them automatically — no manual upload to apps.nextcloud.com needed.
+- **Navigate inside the app, not by URL.** A hard load of
+  `/exapps/bee_flow/app/...` reaches the connector's API proxy and answers
+  "Cannot GET". Load Bee Flow from the top bar, then move with the app's own
+  navigation (or `history.pushState` plus a `popstate` event in the frame).
+- **No faces, no real names.** The sandbox admin has a real photo as avatar.
+  Nextcloud's `/avatar/` requests can be intercepted, but Bee Flow keeps its
+  own copy as an inline `data:` image, so swap that one in the page right
+  before the capture. Sample data must be fictional (`example.com`
+  addresses, the invoices in `/Invoices-Test`).
+- **Check the answer's language.** Stored memories apply to every chat: the
+  sandbox admin has one saying they write in Dutch, and a question in English
+  got a Dutch answer.
+- **Ask for something read-only.** An open question ("go through all Q3
+  invoices") made the assistant build a Nextcloud Tables table on its own.
 
-## Sizing + format
+## Going live
 
-- 1920×1080 PNG preferred (16:9, matches modern desktops).
-- Keep file size under 500 KB each — use `pngquant` or `oxipng` if needed.
-- No personal data — use the demo tenant or anonymise emails / names.
+The files are served from `Bee-Flow/connector` `main`, which the release
+workflow (`.github/workflows/connector-release.yml` in Bee-Flow-AI) mirrors
+from this folder. The App Store reads the `<screenshot>` list from the
+release's `info.xml`, so new or renamed shots appear with the next connector
+release. Keep each file under 500 KB.

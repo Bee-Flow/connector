@@ -336,6 +336,18 @@ function buildEmbedProxy() {
                 proxyReq.removeHeader('cookie');
                 proxyReq.removeHeader('origin');
                 proxyReq.removeHeader('referer');
+                // Never let the shell hop be compressed either. Nextcloud's
+                // AppAPI proxy copies the browser's `Accept-Encoding: gzip`
+                // onto its request to us, the frontend host gzips text/html,
+                // and we pipe the bytes through. For HTML AppAPI does NOT
+                // stream: it buffers, decodes the gzip (the reply carries
+                // `x-encoded-content-encoding: gzip`) and injects its CSP
+                // nonce — and that decode path hands the browser an EMPTY
+                // 200. Measured 2026-09-10 on NC 34 / AppAPI 34: 0 bytes with
+                // gzip accepted, the full shell with identity. Assets are
+                // streamed and would survive, but one rule for the whole hop
+                // is the one that cannot regress.
+                proxyReq.setHeader('accept-encoding', 'identity');
             },
             error: (err, req, res) => {
                 // Retry once on a fresh socket, then fall through to the

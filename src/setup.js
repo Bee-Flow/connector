@@ -407,6 +407,26 @@ router.post('/', requireNcAdmin, limits.rebind, express.json(), async (req, res)
     res.json({ saved, probe: probeRes, restartRequired: false });
 });
 
+// First 16 hex chars of sha256(tenant key): enough for an admin to tell two
+// keys apart, never the key itself.
+function tenantKeyFingerprint() {
+    if (!config.tenantKey) return null;
+    return crypto.createHash('sha256').update(String(config.tenantKey)).digest('hex').slice(0, 16);
+}
+
+// A failed re-bootstrap, answered to the NC admin who pressed the button.
+function rebindFailed(res, err, action, uid, remediation) {
+    console.warn(`[Setup] ${action} FAILED for uid=${uid}: ${err.message}`);
+    // The message is a diagnostic for that admin (bootstrap.js writes them
+    // for a person); setup.html shows it as is.
+    res.status(502).json({
+        ok: false,
+        // eslint-disable-next-line no-restricted-syntax
+        error: err.message,
+        remediation: err.remediation || remediation,
+    });
+}
+
 // Rotate the per-install tenant key — drop the cached key + run a fresh
 // bootstrap against the same SaaS so the org binding survives but every
 // downstream signature changes. Surfaced via the "Rotate tenant key"
@@ -424,18 +444,10 @@ router.post('/rotate-tenant-key', requireNcAdmin, limits.rebind, express.json(),
         res.json({
             ok: true,
             organizationId: config.organizationId,
-            tenantKeyFingerprint: crypto.createHash('sha256')
-                .update(String(config.tenantKey))
-                .digest('hex')
-                .slice(0, 16),
+            tenantKeyFingerprint: tenantKeyFingerprint(),
         });
     } catch (err) {
-        console.warn(`[Setup] tenant-key rotation FAILED for uid=${uid}: ${err.message}`);
-        res.status(502).json({
-            ok: false,
-            error: err.message,
-            remediation: err.remediation || 'Check connector logs for the SaaS response, then retry.',
-        });
+        rebindFailed(res, err, `tenant-key rotation`, uid, 'Check connector logs for the SaaS response, then retry.');
     }
 });
 
@@ -458,17 +470,10 @@ router.post('/clear-cache', requireNcAdmin, limits.rebind, express.json(), async
             ok: true,
             organizationId: config.organizationId,
             organizationName: config.organizationName || null,
-            tenantKeyFingerprint: config.tenantKey
-                ? crypto.createHash('sha256').update(String(config.tenantKey)).digest('hex').slice(0, 16)
-                : null,
+            tenantKeyFingerprint: tenantKeyFingerprint(),
         });
     } catch (err) {
-        console.warn(`[Setup] organisation cache clear FAILED for uid=${uid}: ${err.message}`);
-        res.status(502).json({
-            ok: false,
-            error: err.message,
-            remediation: err.remediation || 'Check the connector logs for the Bee Flow server response, then retry.',
-        });
+        rebindFailed(res, err, `organisation cache clear`, uid, 'Check the connector logs for the Bee Flow server response, then retry.');
     }
 });
 
@@ -495,18 +500,10 @@ router.post('/apply-pairing-code', requireNcAdmin, limits.verify, express.json()
         res.json({
             ok: true,
             organizationId: config.organizationId,
-            tenantKeyFingerprint: crypto.createHash('sha256')
-                .update(String(config.tenantKey))
-                .digest('hex')
-                .slice(0, 16),
+            tenantKeyFingerprint: tenantKeyFingerprint(),
         });
     } catch (err) {
-        console.warn(`[Setup] pairing code redemption FAILED for uid=${uid}: ${err.message}`);
-        res.status(502).json({
-            ok: false,
-            error: err.message,
-            remediation: err.remediation || 'The pairing code may be expired or already redeemed. Generate a new one in your Bee Flow admin panel and try again.',
-        });
+        rebindFailed(res, err, `pairing code redemption`, uid, 'The pairing code may be expired or already redeemed. Generate a new one in your Bee Flow admin panel and try again.');
     }
 });
 

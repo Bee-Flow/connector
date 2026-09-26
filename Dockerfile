@@ -16,11 +16,11 @@
 #     docker build --build-arg HIVE_REF=v1.0.0 -t bf-connector:v1.0.0 .
 #
 # Override the source repo (e.g. for a fork) via HIVE_REPO:
-#     docker build --build-arg HIVE_REPO=tomkooy/bee-flow-fork \
+#     docker build --build-arg HIVE_REPO=<github-user>/bee-flow-fork \
 #                  --build-arg HIVE_REF=feature/foo .
 
 # ── Stage 1a: fetch the hive source at the pinned ref ────────────
-FROM node:22-alpine AS hive-src
+FROM node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85 AS hive-src
 
 # git is enough — no SSH client, no credentials. Anonymous HTTPS fetch
 # works once Bee-Flow/hive is public. While the repo is still private
@@ -51,7 +51,7 @@ RUN --mount=type=secret,id=gh_token,required=false \
     && rm -rf .git
 
 # ── Stage 1b: build the React SPA from the fetched source ────────
-FROM node:22-alpine AS spa-build
+FROM node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85 AS spa-build
 WORKDIR /spa
 
 # Lockfile-only layer first: `npm ci` re-runs ONLY when hive's dependencies
@@ -88,7 +88,7 @@ RUN find . -path ./node_modules -prune -o \( -name '*.jsx' -o -name '*.js' -o -n
 RUN npm run build -- --base=/index.php/apps/app_api/proxy/${APP_ID}/
 
 # ── Stage 2: connector runtime ────────────────────────────────
-FROM node:22-alpine AS runtime
+FROM node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85 AS runtime
 WORKDIR /app
 
 # Connector source is the build context. Paths are relative to the connector

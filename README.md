@@ -32,6 +32,14 @@ The fastest way to run this connector against a local Nextcloud — **without** 
 
 This builds the connector image, runs Nextcloud on `:8080` (admin/admin), installs AppAPI, registers a `manual-install` deployment daemon, and side-loads this connector. End state: open <http://localhost:8080>, click the bee in the top bar.
 
+### HaRP mode (streams arrive live)
+
+```bash
+HARP=1 ./scripts/local-sandbox.sh up      # or: ./scripts/local-sandbox.sh up --harp
+```
+
+The default sandbox reaches the connector through Nextcloud's AppAPI PHP proxy, which buffers every response until the ExApp is done (Nextcloud builds Guzzle with the synchronous `CurlHandler`), so SSE streams — chat, the builder — land in one burst at the end. `HARP=1` reproduces the production shape instead: a [HaRP](#deployment-modes-harp-vs-docker-socket-proxy) container (`bee-flow-harp`) plus an nginx front door (`bee-flow-nc-front`) on `:8080` that sends `/exapps/` to HaRP and everything else to Nextcloud, while the connector dials out over the FRP tunnel and publishes no port. What changes: Nextcloud stops publishing the host port (an existing sandbox is migrated onto the same volume), a `bee_flow_harp` daemon replaces `manual_dev`, the shared key lives in `.sandbox/harp.key` (gitignored), and the tenant key is cached in the `bee-flow-connector-data` volume so recreates don't re-provision an org. A plain `up` switches back. `clean` keeps the two volumes unless `FULL_CLEAN=1`. Both modes now also run a `bee-flow-nc-worker` sidecar (webhook + cron jobs) and set `allow_local_remote_servers`, without which Nextcloud refuses to call the connector at all ("violates local access rules").
+
 ## Switching between Bee Flow Cloud and a self-hosted server
 
 The connector ships with a small built-in picker page where an admin chooses where API traffic goes. Two big cards: **Bee Flow Cloud** (recommended) or **Self-hosted server** (paste your own URL, test it, save).
@@ -58,6 +66,7 @@ Subcommands:
 ./scripts/local-sandbox.sh down     # stop containers (keep data)
 ./scripts/local-sandbox.sh clean    # nuke containers + image
 FORCE=1 ./scripts/local-sandbox.sh up   # force re-register from info.xml
+HARP=1 ./scripts/local-sandbox.sh up    # HaRP mode — see above
 ```
 
 Full walkthrough — including the manual `occ` commands and verification steps — at <https://bee-flow.github.io/docs/getting-started/local-development/>.

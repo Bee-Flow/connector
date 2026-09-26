@@ -58,6 +58,13 @@ app.use('/', require('./automationEventsWebhook'));
 // signature scheme, so it too sits before the AppAPI gate.
 app.use('/', require('./talkBot'));
 
+// The Bee Flow SaaS pushes "re-sync the app menu now" here the moment an owner
+// toggles "Show in the Nextcloud app menu". Same caller and same tenant-key
+// HMAC as /nc/*, so it sits before the AppAPI gate too — and before the SaaS
+// catch-all proxy below, which would otherwise bounce the call back to the
+// SaaS that made it.
+require('./studioAppMenus').mountPushHook(app);
+
 app.use(appApiAuthMiddleware);
 
 // Body parsing sits AFTER the auth gate on purpose. Every route reached before

@@ -96,3 +96,43 @@ test('embed proxy falls back to next() (baked /public) when the cloud is unreach
         });
     });
 });
+
+// Nextcloud's AppAPI proxy copies the browser's `Accept-Encoding: gzip` onto
+// its request to us, the frontend host gzips text/html, and for `*.html`
+// AppAPI buffers + decodes the body to inject its CSP nonce — a path that
+// delivered a 200 with an EMPTY body (NC 34 / AppAPI 34, 2026-09-10). The shell
+// hop therefore asks for identity, whatever the browser asked for.
+test('embed proxy asks the frontend host for an uncompressed shell', (_, done) => {
+    let seenEncoding = null;
+    const upstream = http.createServer((req, res) => {
+        seenEncoding = req.headers['accept-encoding'];
+        res.setHeader('Content-Type', 'text/html');
+        res.end('<!doctype html><html><script>1</script></html>');
+    });
+    upstream.listen(0, () => {
+        process.env.BEEFLOW_EMBED_BASE_URL = `http://127.0.0.1:${upstream.address().port}`;
+        delete require.cache[require.resolve('../src/config')];
+        delete require.cache[require.resolve('../src/proxy')];
+        const { buildEmbedProxy: freshBuild } = require('../src/proxy');
+        const embedProxy = freshBuild();
+
+        const server = http.createServer((req, res) => {
+            req.__shellNext = () => { res.statusCode = 500; res.end('FELL_BACK'); };
+            embedProxy(req, res, req.__shellNext);
+        });
+        server.listen(0, () => {
+            const { port } = server.address();
+            http.get({ host: '127.0.0.1', port, path: '/index.html', headers: { 'accept-encoding': 'gzip, deflate, br' } }, (r) => {
+                let body = '';
+                r.on('data', (d) => { body += d; });
+                r.on('end', () => {
+                    server.close(); upstream.close();
+                    assert.equal(r.statusCode, 200);
+                    assert.equal(seenEncoding, 'identity', 'the browser\'s gzip preference must not reach the shell host');
+                    assert.match(body, /<script>1<\/script>/);
+                    done();
+                });
+            });
+        });
+    });
+});

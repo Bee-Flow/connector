@@ -86,7 +86,6 @@ test('the computed height fits the frame to its slot for any chrome height', () 
             setTimeout: () => {},
             ResizeObserver: undefined,
         };
-        // eslint-disable-next-line no-new-func
         new Function('document', 'OC', 'window', 'setTimeout', 'ResizeObserver', script)(
             sandbox.document, sandbox.OC, sandbox.window, sandbox.setTimeout, sandbox.ResizeObserver,
         );

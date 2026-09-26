@@ -1,0 +1,5 @@
+{
+  "_comment": "Highest eslint warning count nextcloud-connector may carry. Lower it with `node scripts/eslint-budget.mjs nextcloud-connector --update` after a clean-up; raising it is a deliberate edit that belongs in a commit message with a reason.",
+  "_generated": "2026-09-24",
+  "warnings": 0
+}

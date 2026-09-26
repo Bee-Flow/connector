@@ -29,7 +29,7 @@ function reqFor({ originalUrl, wireMethod = 'POST', override, ncUid = 'alice', t
 
 const now = () => Math.floor(Date.now() / 1000);
 // Calendar event create: path carries `@` (event UID `…@host`); also covers
-// email-named calendars (`tomkooy@beeflow.nl`).
+// email-named calendars (`tomsmit@beeflow.nl`).
 const DECODED = '/nc/remote.php/dav/calendars/alice/personal/9b2-uid@nc.test.ics';
 const ENCODED = '/nc/remote.php/dav/calendars/alice/personal/9b2-uid%40nc.test.ics';
 

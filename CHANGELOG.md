@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [1.6.0] - 2026-09-14
+
+### Added
+- **Apps published to the Nextcloud app menu appear right away.** Until now the connector only looked for newly published apps every two minutes, so an owner who ticked *Show in the Nextcloud app menu* had to wait — and got no word on whether it had worked. Bee Flow now tells the connector the moment something changes, the connector registers the icon on the spot, and the owner is told to reload Nextcloud to see it. The periodic check remains as a safety net (now every five minutes) for a Bee Flow server that predates this release or a message that did not get through.
+
+### Fixed
+- **App pages opened from the app menu now actually load.** The page behind a Studio app's icon was framed on a path Nextcloud does not decorate with its script permissions, so the app's own start-up script was blocked and the page stayed blank. On HaRP installs it also still went through Nextcloud's PHP layer, which buffers every live stream the app opens. Both are fixed the way the main Bee Flow entry was fixed in 1.5.0.
+
 ## [1.5.1] - 2026-08-28
 
 ### Fixed

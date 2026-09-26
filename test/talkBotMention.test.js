@@ -49,7 +49,7 @@ test('extractQuestion yields empty when the message is only a mention', () => {
 test('mapActivity exposes actorType so the loop guard can exclude bots', () => {
     const human = mapActivity({
         type: 'Create',
-        actor: { id: 'users/tomkooy', name: 'Tom' },
+        actor: { id: 'users/tomsmit', name: 'Tom' },
         object: { id: 5, name: 'message', content: JSON.stringify({ message: '@Bee Flow hi' }) },
         target: { id: 'room1', name: 'Team' },
     });

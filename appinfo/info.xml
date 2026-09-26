@@ -54,7 +54,7 @@ Full privacy policy: <https://beeflow.nl/privacy>.
 
 Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We support Bee Flow Cloud and can also help you get Bee Flow running on a self-managed or self-hosted Nextcloud.
         ]]></description>
-    <version>1.5.1</version>
+    <version>1.6.0</version>
     <licence>AGPL-3.0-or-later</licence>
     <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.nl/">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>
@@ -182,6 +182,7 @@ Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We su
               ^auth/                          → SaaS-proxied auth + OAuth flows
               ^heartbeat, ^init, ^enabled     → AppAPI lifecycle hooks
               ^webhook/nc-events              → NC events_listener forwarder
+              ^hooks/studio-menus             → Bee Flow push: "re-sync the app menu now" (HMAC)
               ^nc/                            → reverse proxy back to NC (HMAC)
         -->
         <routes>

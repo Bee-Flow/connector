@@ -8,7 +8,9 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "test:coverage": "c8 node --test test/*.test.js",
+    "lint": "eslint ."
   },
   "engines": {
     "node": ">=22.0.0 <23.0.0"
@@ -20,5 +22,10 @@
     "jsonwebtoken": "^9.0.2",
     "lucide-static": "^1.31.0",
     "undici": "^6.21.0"
+  },
+  "devDependencies": {
+    "c8": "^11.0.0",
+    "eslint": "^9.39.5",
+    "globals": "^17.12.0"
   }
 }

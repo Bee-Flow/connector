@@ -71,7 +71,7 @@ test('a forwarded delivery with the AppAPI secret is accepted (200) and forwarde
     const { server, port } = startRouter();
     const realFetch = global.fetch;
     const calls = [];
-    global.fetch = async (url, opts) => { calls.push(String(url)); return { ok: true, status: 200, text: async () => '{}', json: async () => ({}) }; };
+    global.fetch = async (url) => { calls.push(String(url)); return { ok: true, status: 200, text: async () => '{}', json: async () => ({}) }; };
     try {
         const body = {
             type: 'Create',

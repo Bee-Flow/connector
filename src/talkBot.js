@@ -4,7 +4,7 @@
  * Talk exposes no webhook-compatible event class, so `webhook_listeners`
  * cannot deliver chat messages (see webhookListeners.js). Bots are the
  * supported mechanism, and they are a better fit anyway: a bot is added to
- * specific conversations by their moderators, so a routine reacting to chat
+ * specific conversations by their moderators, so an automation reacting to chat
  * only ever sees rooms someone deliberately invited Bee Flow into. There is no
  * "listen to every conversation on the instance" mode, by design.
  *
@@ -59,7 +59,7 @@ const BOT_ROUTE = '/hooks/talk';
 const SECRET_FILE = 'talk-bot.json';
 
 const BOT_NAME = 'Bee Flow';
-const BOT_DESCRIPTION = 'Runs Bee Flow routines from this conversation. Add the bot to a conversation to let automations react to what is said in it.';
+const BOT_DESCRIPTION = 'Runs Bee Flow automations from this conversation. Add the bot to a conversation to let automations react to what is said in it.';
 
 let _secret = null;
 
@@ -249,12 +249,12 @@ function mapActivity(body) {
 
 // ── @mention → agent answer ─────────────────────────────────────────────────
 //
-// The bot forwards every message to the SaaS routines engine (below). ON TOP of
+// The bot forwards every message to the SaaS automations engine (below). ON TOP of
 // that, when a HUMAN @mentions "Bee Flow" in a conversation the bot is in, we
 // answer inline: strip the mention, run the Nextcloud agent task type (read-only
 // tools scoped to the mentioning user, the same provider the Assistant uses),
 // and post the reply back through Talk's bot API. This is the "@ in Talk"
-// experience — no routine to build.
+// experience — no automation to build.
 //
 // Fire-and-forget by design: an agent turn can take many seconds, and Talk needs
 // a prompt 200 on the webhook or it marks the bot unhealthy. So the webhook
@@ -419,7 +419,7 @@ router.post(BOT_ROUTE, express.json({ type: () => true, limit: '256kb' }), async
     }
 
     // "@ in Talk": a human @mentioning the bot gets an inline agent answer, on
-    // top of (not instead of) the routines forward below. Only humans, never a
+    // top of (not instead of) the automations forward below. Only humans, never a
     // bot's own messages — that would be an answer-to-my-own-answer loop.
     // Fire-and-forget so the webhook still returns promptly.
     if (mapped.event === 'talk.message.received'

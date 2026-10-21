@@ -81,7 +81,10 @@ const EVENTS = [
     { class: 'OCP\\Files\\Events\\Node\\NodeDeletedEvent', event: 'file.deleted' },
     { class: 'OCP\\Files\\Events\\Node\\NodeRenamedEvent', event: 'file.renamed' },
     { class: 'OCP\\Files\\Events\\Node\\NodeCopiedEvent', event: 'file.copied' },
-    { class: 'OCP\\Files\\Events\\Node\\NodeRestoredEvent', event: 'file.restored' },
+    // Optional: some Nextcloud versions refuse this class for webhooks (HTTP 400
+    // "not an event class compatible with webhooks"). A restore then arrives as
+    // the poller's file_restored activity instead; it is not a failure.
+    { class: 'OCP\\Files\\Events\\Node\\NodeRestoredEvent', event: 'file.restored', optional: true },
     // ── System tags ──────────────────────────────────────────────────────
     { class: 'OCP\\SystemTag\\TagAssignedEvent', event: 'file.tagged' },
     { class: 'OCP\\SystemTag\\TagUnassignedEvent', event: 'file.untagged' },
@@ -259,7 +262,7 @@ async function ensureWebhookListeners() {
         if (entry.optional) {
             // Forms/Tables not installed — expected, not an error.
             skipped++;
-            console.log(`[Webhooks] Skipped ${entry.event} (${entry.class}) — app not installed (HTTP ${r.status})`);
+            console.log(`[Webhooks] Skipped ${entry.event} (${entry.class}) — not available on this server, app not installed or class not webhook-capable (HTTP ${r.status})`);
             continue;
         }
         failed++;

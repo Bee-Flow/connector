@@ -184,7 +184,7 @@ function normalisePayload(event, envelope) {
             boardId: c.boardId ?? null,
             // Deck's `done` is an ISO timestamp when complete, null otherwise.
             // Passed through as-is: "when was it finished" is more useful to a
-            // routine than a boolean, and truthiness still reads as "is done".
+            // automation than a boolean, and truthiness still reads as "is done".
             done: c.done ?? null,
             archived: c.archived ?? null,
             duedate: c.duedate ?? null,
@@ -220,7 +220,7 @@ function normalisePayload(event, envelope) {
  * transition event, only `deck.card.changed`. Never a false positive. The
  * alternative (firing `completed` whenever `done` is merely set) would re-fire
  * on every subsequent edit of an already-finished card, which is the kind of
- * trigger that gets a routine switched off.
+ * trigger that gets an automation switched off.
  */
 const CARD_STATE = new Map();
 const CARD_STATE_MAX = 5000;
@@ -250,7 +250,7 @@ function deckTransitions(event, payload) {
 
     // The cache is the only place the card's previous stack exists, so the
     // payload is annotated here rather than in normalisePayload. `moved`
-    // without a "from" is half an event — a routine that files a card by where
+    // without a "from" is half an event — an automation that files a card by where
     // it came from cannot work without it.
     if (prev.stackId != null) payload.previousStackId = prev.stackId;
 
@@ -304,7 +304,7 @@ router.post(HOOK_PATH, express.json({ limit: '512kb' }), async (req, res) => {
 
     // One Nextcloud delivery can be more than one Bee Flow event: a Deck card
     // update that also completed the card is both `changed` and `completed`.
-    // Both are sent — a routine on `changed` should still fire, and the
+    // Both are sent — an automation on `changed` should still fire, and the
     // narrower trigger is the one most authors reach for.
     const events = [event, ...deckTransitions(event, payload)];
 

@@ -18,10 +18,10 @@ const fa = require('../src/filesActions');
 test('every entry points at the handler route the connector actually serves', () => {
     // A mismatch here is a menu entry that 404s on click, and the user sees
     // nothing but a console error.
-    const expected = fa.HANDLER_PATH.replace(/^\//, '');
+    const served = new Set([fa.HANDLER_PATH].map(p => p.replace(/^\//, '')));
     assert.ok(fa.ACTIONS.length > 0);
     for (const a of fa.ACTIONS) {
-        assert.equal(a.actionHandler, expected, `${a.name} must post to the served route`);
+        assert.ok(served.has(a.actionHandler), `${a.name} must post to a served route`);
         assert.ok(a.displayName && a.displayName.length > 3, `${a.name} needs a human label`);
         assert.ok(Number.isInteger(a.order), `${a.name} needs a stable order`);
     }
@@ -70,3 +70,36 @@ test('a malformed or empty payload yields no files rather than throwing', () => 
         assert.deepEqual(fa.parseFiles(body), []);
     }
 });
+
+// ── The Files start of Studio → Automations, removed ────────────────
+
+test('"Start a Bee Flow automation…" is no longer offered, and its handler is gone', () => {
+    assert.equal(fa.ACTIONS.find(a => a.name === 'beeflow_app_button'), undefined);
+    assert.ok(fa.RETIRED_ACTION_NAMES.includes('beeflow_app_button'));
+    const routes = [];
+    fa.registerRoutes({ post: (path) => routes.push(path) });
+    assert.deepEqual(routes, [fa.HANDLER_PATH]);
+});
+
+test('a retired entry is deleted from Nextcloud, so an install that had it loses it', async () => {
+    const calls = [];
+    const realFetch = global.fetch;
+    global.fetch = async (url, init) => { calls.push({ url: String(url), method: init.method, body: JSON.parse(init.body) }); return { ok: true, status: 200 }; };
+    try {
+        await fa.retireFilesActions();
+    } finally {
+        global.fetch = realFetch;
+    }
+    assert.deepEqual(calls.map(c => [c.method, c.body.name]), [['DELETE', 'beeflow_app_button']]);
+    assert.match(calls[0].url, /\/api\/v1\/ui\/files-actions-menu$/, 'deletion is v1-only');
+});
+
+test('parseFiles builds the path from the directory and name AppAPI sends', () => {
+    const [f] = fa.parseFiles({ files: [{ fileId: 9, name: '2026', directory: '/Invoices', mime: 'httpd/unix-directory', fileType: 'folder' }] });
+    assert.equal(f.path, '/Invoices/2026');
+    assert.equal(f.fileType, 'folder');
+    assert.equal(fa.parseFiles({ files: [{ fileId: 1, name: 'Scans', directory: '/' }] })[0].path, '/Scans');
+    assert.equal(fa.parseFiles({ files: [{ fileId: 1, path: '/kept/as/is', directory: '/x', name: 'y' }] })[0].path, '/kept/as/is');
+    assert.equal(fa.parseFiles({ files: [{ fileId: 1 }] })[0].path, null);
+});
+

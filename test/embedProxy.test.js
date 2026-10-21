@@ -31,6 +31,10 @@ test('SPA shell paths are classified as shell (proxied to /embed/)', () => {
         '/BeeFlow-logo.svg',
         '/img/screenshot.png',
         '/assets/index-abc123.js?v=2', // query preserved
+        '/monaco/vs/loader.js',       // code editor runtime (vite monacoSelfHost)
+        '/fonts/cabinet-grotesk/CabinetGrotesk-Variable.woff2',
+        '/module-shims/react-dom-client.js', // Studio app runtime
+        '/n8n-color.png',
     ]) {
         assert.equal(isSpaShellPath(p), true, `${p} should be a shell path`);
     }
@@ -46,6 +50,7 @@ test('API + client-route paths are NOT shell paths (stay on the SaaS api-proxy)'
         '/integrations/nextcloud',
         '/setup',          // handled by its own router, never the shell proxy
         '/nc/remote.php',  // HMAC reverse-proxy, mounted before auth
+        '/monacoish',      // only the folder, not a prefix match
     ]) {
         assert.equal(isSpaShellPath(p), false, `${p} should NOT be a shell path`);
     }

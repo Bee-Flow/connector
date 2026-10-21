@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The Nextcloud App Store reads the entry whose heading matches `<version>` in `appinfo/info.xml`.
 
+## [Unreleased]
+
+## [1.6.3] - 2026-10-21
+
+### Security
+- **The connector now runs on Node.js 22.23.4**, the security release of 20 October 2026. It fixes flaws in how certificates are checked when the connector connects to Nextcloud and to Bee Flow, in decompressing Brotli data, and in reusing kept-alive connections. OpenSSL and the trusted certificate list are updated along with it.
+- **undici 8.12.3**, the HTTP client the connector uses to reach Nextcloud, with the latest security fixes.
+- **The tunnel client that connects the connector to HaRP is rebuilt with Go 1.27.3**, which stops trusting the same compromised certificate authority.
+
+### Removed
+- **"Start a Bee Flow automation…" is no longer offered in the Files menu.** It never reached a release; a Nextcloud that got it from a development build loses the entry the next time the connector starts.
+
 ## [1.6.2] - 2026-09-26
 
 ### Fixed

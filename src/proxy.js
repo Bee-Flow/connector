@@ -91,13 +91,15 @@ function retryOnceOnNetworkError({ err, req, res, agent, middleware, onExhausted
     return true;
 }
 
-// The SPA "shell" — index.html + hashed /assets + logos/favicon — is the
+// The SPA "shell" — index.html + hashed /assets + logos/favicon, plus the
+// static folders the build copies next to them (/fonts, /module-shims for the
+// Studio app runtime, /monaco for the code editor) — is the
 // subset of connector-owned paths that make up the front-end bundle. These
 // are proxied to the cloud `/embed/` build (buildEmbedProxy). The connector-
 // LOCAL paths (/setup, /js/embed, /img/app.svg) are handled by their own
 // routes in server.js and never reach the shell proxy; client-side SPA routes
 // (e.g. /agents) are NOT shell paths and stay proxied to the SaaS API.
-const SPA_SHELL = /^\/(assets\/|js\/|img\/|favicon|app-icon\.svg$|BeeFlow-logo|bee-flow-logo|index\.html$|$)/;
+const SPA_SHELL = /^\/(assets\/|js\/|img\/|fonts\/|module-shims\/|monaco\/|favicon|app-icon\.svg$|n8n-color\.png$|BeeFlow-logo|bee-flow-logo|index\.html$|$)/;
 
 function isSpaShellPath(urlPath) {
     return SPA_SHELL.test(String(urlPath).split('?')[0]);

@@ -191,7 +191,7 @@ test('tag events expose both the list and a convenience first element', () => {
     assert.equal(payload.tagId, 3);
 });
 
-test('forms submissions carry the ids a routine needs to fetch the answers', () => {
+test('forms submissions carry the ids an automation needs to fetch the answers', () => {
     const payload = hook.normalisePayload('forms.submitted', {
         event: {
             class: 'OCA\\Forms\\Events\\FormSubmittedEvent',
@@ -302,7 +302,7 @@ const deckEnvelope = (card) => ({
     time: 1770000000,
 });
 
-test('deck card payload exposes the fields a routine filters on', () => {
+test('deck card payload exposes the fields an automation filters on', () => {
     const payload = hook.normalisePayload('deck.card.changed', deckEnvelope({
         id: 42, title: 'Ship it', description: 'desc', stackId: 7, boardId: 3,
         done: '2026-08-12T09:00:00+00:00', archived: false, duedate: '2026-08-20T00:00:00+00:00',

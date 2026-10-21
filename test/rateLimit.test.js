@@ -65,7 +65,7 @@ test('the window expires and the budget comes back', () => {
 // penalise() is what guards /nc/*, /hooks/talk and /hooks/nextcloud: those
 // callers are machines on one key, so billing their SUCCESSES would throttle
 // real deliveries while billing failures is the brute-force gate they need.
-test('penalise bills failures only, and a success clears the slate', () => {
+test('penalise bills failures only; a success on the shared key does NOT clear the penalty (BFSF-382)', () => {
     const gate = rateLimit.penalise('sig', { limit: 3, windowMs: 60_000 });
     assert.equal(gate.blocked(), false);
     gate.fail(); gate.fail();
@@ -73,7 +73,16 @@ test('penalise bills failures only, and a success clears the slate', () => {
     gate.fail();
     assert.equal(gate.blocked(), true, 'budget spent — further attempts refused');
     gate.succeed();
-    assert.equal(gate.blocked(), false, 'a valid signature resets the counter');
+    assert.equal(gate.blocked(), true, 'legitimate traffic must not erase the attacker\'s penalty');
+});
+
+test('penalise: a success on an explicit per-caller key clears only that caller', () => {
+    const gate = rateLimit.penalise('sig-key', { limit: 2, windowMs: 60_000 });
+    gate.fail('a'); gate.fail('a'); gate.fail('b'); gate.fail('b');
+    assert.equal(gate.blocked('a'), true);
+    gate.succeed('a');
+    assert.equal(gate.blocked('a'), false);
+    assert.equal(gate.blocked('b'), true, 'another caller\'s success leaves b\'s penalty alone');
 });
 
 test('key churn cannot grow a bucket without bound', () => {

@@ -101,6 +101,41 @@ function bodyHashOf(req) {
 // it cannot substitute different content. Adding true replay protection means
 // a client nonce in the signed message, not deduping the signature itself.
 
+// Canonical form: the connector's copy of server/integrations/ncSigning.js
+// (canonicalQuery, canonicalSignedPath; cross-repo vector in test/ncProxy.test.js
+// pins both). The AppAPI/HaRP hop re-encodes the query (`%20` -> `+`), so the
+// raw string can't be compared: decode each pair as form data and re-emit with
+// `% & = + #`, space, CR and LF escaped. Injective, and strict: an escape that
+// is not valid UTF-8 throws (URLSearchParams would fold %FF and %FE together).
+const CANONICAL_MARKER = 'c1';
+const escChars = (s, re) => s.replace(re,
+    (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'));
+const formDecode = (s) => decodeURIComponent(s.replace(/\+/g, ' '));
+
+function canonicalQuery(query) {
+    const out = [];
+    for (const part of String(query).split('&')) {
+        if (!part) continue;
+        const eq = part.indexOf('=');
+        const k = formDecode(eq < 0 ? part : part.slice(0, eq));
+        const v = eq < 0 ? '' : formDecode(part.slice(eq + 1));
+        out.push(`${escChars(k, /[%&=+# \r\n]/g)}=${escChars(v, /[%&=+# \r\n]/g)}`);
+    }
+    return out.join('&');
+}
+
+// Decoded path with `% ? CR LF` escaped, plus the canonical query. null when
+// any escape is invalid: the canonical scheme is then refused outright.
+function canonicalSignedPath(rawUrl) {
+    try {
+        const q = rawUrl.indexOf('?');
+        const path = escChars(decodeURIComponent(q < 0 ? rawUrl : rawUrl.slice(0, q)), /[%?\r\n]/g);
+        return q < 0 ? path : `${path}?${canonicalQuery(rawUrl.slice(q + 1))}`;
+    } catch {
+        return null;
+    }
+}
+
 // Constant-time HMAC verification of `<ts>.<sig>` using tenant key.
 // The SaaS sends `X-Beeflow-Sig: <unixSeconds>.<hexHmac>`. Skew tolerance
 // is governed by config.sigSkewSeconds (BEEFLOW_SIG_SKEW_SECONDS). Without
@@ -139,6 +174,21 @@ function verifyHmac(req) {
     const sigBuf = Buffer.from(sig, 'hex');
     if (sigBuf.length !== 32) return false;
 
+    // Canonical scheme: the message carries the `c1` marker, and ONLY that
+    // scheme accepts the canonical path. The pre-canonical forms (decoded and
+    // raw path, no marker) stay for an older SaaS during rollout; they can
+    // never verify a canonical signature, nor the reverse, because the marker is
+    // inside the HMAC. Without that separation a signature over `term=a%20b`
+    // would also verify the different request `term=a%2520b` via the decoded form.
+    // REMOVAL CRITERION (legacy forms): every SaaS signs `c1`.
+    const canonical = canonicalSignedPath(rawPath);
+    if (canonical !== null) {
+        const message = `${ts}\n${signedMethod}\n${canonical}\n${ncUid}\n${bodyHashOf(req)}\n${CANONICAL_MARKER}`;
+        const expected = crypto.createHmac('sha256', config.tenantKey).update(message).digest();
+        if (crypto.timingSafeEqual(expected, sigBuf)) return true;
+    }
+    // Legacy: a CR/LF in the path could otherwise forge extra message fields.
+    if (/[\r\n]/.test(decodedPath)) return false;
     const paths = decodedPath === rawPath ? [rawPath] : [decodedPath, rawPath];
     // v2 binds the body; v1 is the pre-body-hash form, accepted for one release
     // so a SaaS/connector version skew doesn't break customers mid-rollout.
@@ -297,4 +347,4 @@ function sigFailureStats() {
     return { ..._sigFailures };
 }
 
-module.exports = { mount, verifyHmac, isAllowedNcPath, ALLOWED_PREFIXES, sigFailureStats };
+module.exports = { mount, verifyHmac, canonicalQuery, canonicalSignedPath, isAllowedNcPath, ALLOWED_PREFIXES, sigFailureStats };

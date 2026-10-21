@@ -18,6 +18,29 @@
  * `execBatch` sends the whole multi-select in one call, so selecting twelve
  * files is one request, not twelve.
  *
+ * WHAT APPAPI SUPPORTS, read from app_api's own source (NC 35 sandbox,
+ * lib/Service/UI/FilesActionsMenuService.php, js/app_api-filesplugin.js,
+ * lib/Controller/TopMenuController.php):
+ *
+ *   - An entry is registered per ExApp, for EVERY user of the instance. There
+ *     is no per-user registration, no per-user visibility and no dynamic
+ *     label: `displayName` is one static string (translated through the
+ *     ExApp's l10n). No submenus.
+ *   - Visibility is decided in the browser by `mime` alone: a comma-separated
+ *     list, and an entry shows when EVERY selected node's mimetype CONTAINS
+ *     one of the entries (substring match). A folder's mimetype is
+ *     `httpd/unix-directory`. `permissions` is stored but the NC 35 plugin
+ *     does not check it.
+ *   - The handler receives `{ files: [nodeInfo, …] }`; a node carries
+ *     `fileId`, `name` (basename), `directory` (dirname), `mime`,
+ *     `fileType` ('file' | 'folder'), `permissions`, `userId`, … but NO
+ *     `path` and NOT the name of the entry that was clicked: one handler path
+ *     per entry is the only way to tell entries apart.
+ *   - A v2 handler may answer `{ redirect_handler: '<name>[/<rest>]' }`; the
+ *     browser then goes to `/apps/app_api/embedded/<appId>/<redirect_handler>
+ *     ?fileIds=<ids>`. That page 404s unless `<name>` is a REGISTERED TOP-MENU
+ *     entry, and it runs that entry's scripts; `<rest>` is free.
+ *
  * KNOWN INCOMPLETE, deliberately: the redirect lands on the Bee Flow SPA with
  * `?fileIds=` in the query, and the SPA does not read that parameter yet. So
  * today these entries open Bee Flow; they do not yet open it *with the file in
@@ -36,6 +59,11 @@ const UI_API_V1 = '/ocs/v2.php/apps/app_api/api/v1/ui/files-actions-menu';
 // which is correct: this is a user-initiated action and must carry their
 // identity, not the app's.
 const HANDLER_PATH = '/files-action';
+// Entries an earlier build registered and this one no longer offers. AppAPI
+// keeps an entry until someone deletes it, so the connector deletes these on
+// every start: "Start a Bee Flow automation…" (the Files start of Studio →
+// Automations handoff 5) was removed again before it reached a release.
+const RETIRED_ACTION_NAMES = Object.freeze(['beeflow_app_button']);
 
 /**
  * `permissions` is Nextcloud's bitmask; 1 = READ. Every entry here only reads,
@@ -73,8 +101,8 @@ const ACTIONS = [
         order: 11,
     },
     {
-        name: 'beeflow_routine',
-        displayName: 'Run a Bee Flow routine…',
+        name: 'beeflow_automation',
+        displayName: 'Run a Bee Flow automation…',
         actionHandler: HANDLER_PATH.replace(/^\//, ''),
         icon: 'img/app.svg',
         mime: 'file',
@@ -116,10 +144,24 @@ async function registerFilesActions() {
     }));
     const registered = results.filter(r => r.status === 'fulfilled').length;
     if (registered > 0) _registered = true;
+    await retireFilesActions();
     const failed = results.length - registered;
     console.log(`[FilesActions] ${registered}/${ACTIONS.length} menu entries registered`
         + (failed ? ` (${failed} failed — Nextcloud may predate the v2 UI API)` : ''));
     return { ok: failed === 0, registered, failed };
+}
+
+/** Delete the entries this connector no longer offers (RETIRED_ACTION_NAMES). Never throws. */
+async function retireFilesActions() {
+    if (!config.nextcloudUrl) return;
+    // Deletion is v1-only: there is no v2 DELETE route.
+    const url = `${config.nextcloudUrl}${UI_API_V1}`;
+    await Promise.allSettled(RETIRED_ACTION_NAMES.map(name => fetch(url, {
+        method: 'DELETE',
+        headers: appApiHeaders(),
+        body: JSON.stringify({ name }),
+        signal: AbortSignal.timeout(2_000),
+    }).catch(() => {})));
 }
 
 async function unregisterFilesActions() {
@@ -148,10 +190,19 @@ function parseFiles(body) {
         .map(f => ({
             fileId: f?.fileId ?? f?.fileid ?? f?.id ?? null,
             name: f?.name ?? null,
-            path: f?.path ?? null,
+            // AppAPI sends `directory` + `name`, not `path` (buildNodeInfo).
+            path: f?.path ?? joinPath(f?.directory, f?.name),
             mime: f?.mime ?? f?.mimetype ?? null,
+            fileType: f?.fileType ?? f?.type ?? null,
         }))
         .filter(f => f.fileId != null);
+}
+
+/** `directory` + `name` as one absolute path, or null when either is missing. */
+function joinPath(directory, name) {
+    if (typeof directory !== 'string' || typeof name !== 'string' || !name) return null;
+    const dir = directory.startsWith('/') ? directory : `/${directory}`;
+    return `${dir.replace(/\/+$/, '')}/${name}`;
 }
 
 function registerRoutes(app) {
@@ -173,7 +224,9 @@ module.exports = {
     registerFilesActions,
     unregisterFilesActions,
     registerRoutes,
+    retireFilesActions,
     parseFiles,
     ACTIONS,
+    RETIRED_ACTION_NAMES,
     HANDLER_PATH,
 };

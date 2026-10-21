@@ -128,3 +128,56 @@ test('the frame target is still resolved through OC.generateUrl', () => {
     // would 404 on every such install.
     assert.match(embedRoute, /OC\.generateUrl\('\$\{framePath\}'\)/);
 });
+
+// ── App buttons: the Files entry lands on this page with a token ────────────
+
+function runEmbed(pathname) {
+    const body = embedRoute.slice(embedRoute.indexOf('(function()'), embedRoute.lastIndexOf('})();') + 5);
+    const script = body.replace(/\$\{config\.appId\}/g, 'bee_flow').replace(/\$\{framePath\}/g, '/frame/');
+    const iframe = { style: { cssText: '', height: '' }, getBoundingClientRect: () => ({ top: 50 }) };
+    const sandbox = {
+        document: { getElementById: () => ({ innerHTML: '', appendChild() {} }), createElement: () => iframe },
+        OC: { generateUrl: (p) => p },
+        window: { innerHeight: 900, addEventListener() {}, location: pathname === undefined ? undefined : { pathname } },
+    };
+    new Function('document', 'OC', 'window', 'setTimeout', 'ResizeObserver', script)(
+        sandbox.document, sandbox.OC, sandbox.window, () => {}, undefined,
+    );
+    return iframe.src;
+}
+
+test('the Bee Flow page frames the SPA, whatever path it was reached on', () => {
+    assert.equal(runEmbed('/index.php/apps/app_api/embedded/bee_flow/main'), '/frame/');
+    // An old "Start a Bee Flow automation…" landing no longer hands anything on.
+    assert.equal(runEmbed('/index.php/apps/app_api/embedded/bee_flow/main/app-buttons/eyJ2IjoxfQ'), '/frame/');
+    assert.equal(runEmbed(undefined), '/frame/');
+});
+
+// ── Deep link: ?path=/app/... on the Nextcloud page reaches the SPA as ?ncPath= ──
+
+function frameSrcFor(search) {
+    const body = embedRoute.slice(embedRoute.indexOf('(function()'), embedRoute.lastIndexOf('})();') + 5);
+    const script = body.replace(/\$\{config\.appId\}/g, 'bee_flow').replace(/\$\{framePath\}/g, '/frame/');
+    const iframe = { style: { cssText: '', height: '' }, getBoundingClientRect: () => ({ top: 50 }) };
+    new Function('document', 'OC', 'window', 'setTimeout', 'ResizeObserver', script)(
+        { getElementById: () => ({ innerHTML: '', appendChild() {} }), createElement: () => iframe },
+        { generateUrl: (p) => p },
+        { innerHeight: 900, location: { search }, addEventListener() {} },
+        () => {}, undefined,
+    );
+    return iframe.src;
+}
+
+test('a valid in-app path is handed to the frame as ncPath', () => {
+    assert.equal(
+        frameSrcFor('?path=' + encodeURIComponent('/app/projects/p_1')),
+        '/frame/?ncPath=' + encodeURIComponent('/app/projects/p_1'),
+    );
+});
+
+test('anything but a relative in-app path is dropped', () => {
+    for (const bad of ['https://evil.example/app/x', '//evil.example', '/app/../admin', '/app//x', '/other', 'javascript:alert(1)']) {
+        assert.equal(frameSrcFor('?path=' + encodeURIComponent(bad)), '/frame/', bad);
+    }
+    assert.equal(frameSrcFor(''), '/frame/');
+});

@@ -20,7 +20,7 @@
 #                  --build-arg HIVE_REF=feature/foo .
 
 # ── Stage 1a: fetch the hive source at the pinned ref ────────────
-FROM node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85 AS hive-src
+FROM node:22.23.4-alpine@sha256:ce8d97f7cfc7c5386421eb932df20a29df99b1a7f469f6157d5c9956702ffadc AS hive-src
 
 # git is enough — no SSH client, no credentials. Anonymous HTTPS fetch
 # works once Bee-Flow/hive is public. While the repo is still private
@@ -51,7 +51,7 @@ RUN --mount=type=secret,id=gh_token,required=false \
     && rm -rf .git
 
 # ── Stage 1b: build the React SPA from the fetched source ────────
-FROM node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85 AS spa-build
+FROM node:22.23.4-alpine@sha256:ce8d97f7cfc7c5386421eb932df20a29df99b1a7f469f6157d5c9956702ffadc AS spa-build
 WORKDIR /spa
 
 # Lockfile-only layer first: `npm ci` re-runs ONLY when hive's dependencies
@@ -87,8 +87,23 @@ RUN find . -path ./node_modules -prune -o \( -name '*.jsx' -o -name '*.js' -o -n
 
 RUN npm run build -- --base=/index.php/apps/app_api/proxy/${APP_ID}/
 
+# Rebuild the HaRP-compatible 0.61.1 client with patched dependencies.
+# The source commit and module versions are fixed; the wire protocol stays 0.61.1.
+FROM golang:1.27.3-alpine@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS frp-build
+RUN apk add --no-cache git
+WORKDIR /src
+RUN git init -q . \
+    && git remote add origin https://github.com/fatedier/frp.git \
+    && git fetch --depth=1 origin 2a7aa69890690229f9c0e67e1d360ee094a56c84 \
+    && git checkout -q FETCH_HEAD \
+    && go get github.com/go-jose/go-jose/v4@v4.1.4 github.com/quic-go/quic-go@v0.49.1 \
+        golang.org/x/crypto@v0.55.0 golang.org/x/net@v0.57.0 golang.org/x/oauth2@v0.27.0 \
+    && go mod tidy \
+    && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/frpc ./cmd/frpc
+
 # ── Stage 2: connector runtime ────────────────────────────────
-FROM node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85 AS runtime
+FROM node:22.23.4-alpine@sha256:ce8d97f7cfc7c5386421eb932df20a29df99b1a7f469f6157d5c9956702ffadc AS runtime
+RUN apk upgrade --no-cache
 WORKDIR /app
 
 # Connector source is the build context. Paths are relative to the connector
@@ -103,7 +118,9 @@ RUN npm ci --omit=dev --no-audit --no-fund \
               node_modules/lucide-static/dist \
               node_modules/lucide-static/sprite.svg \
               node_modules/lucide-static/icon-nodes.json \
-              node_modules/lucide-static/tags.json
+              node_modules/lucide-static/tags.json \
+    && rm -rf /usr/local/lib/node_modules/npm /opt/yarn* \
+              /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/yarn /usr/local/bin/yarnpkg
 
 COPY src ./src
 COPY appinfo ./appinfo
@@ -119,26 +136,9 @@ COPY --from=spa-build /spa/dist ./public
 # namespace, not from a non-root UID inside the container.
 RUN apk add --no-cache bash curl ca-certificates tar
 
-# frpc, pinned. We do NOT use Alpine's `frp` package — its version floats and
-# FRP requires a client compatible with HaRP's bundled frps; a mismatch fails
-# the tunnel handshake silently and the ExApp becomes unreachable. Pin to the
-# version the Nextcloud HaRP guide ships (0.61.1). 0.61.1 is an immutable
-# tagged GitHub asset, so the reproducible-build promise above is preserved.
-# Bump FRP_VERSION in lockstep when HaRP bumps its frps. TARGETARCH is provided
-# by BuildKit (both CI workflows build amd64 + arm64 natively).
-ARG TARGETARCH
-ARG FRP_VERSION=0.61.1
-RUN set -eux; \
-    case "$TARGETARCH" in \
-        amd64) frp_arch=amd64 ;; \
-        arm64) frp_arch=arm64 ;; \
-        *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${frp_arch}.tar.gz" -o /tmp/frp.tgz; \
-    tar -xzf /tmp/frp.tgz -C /tmp; \
-    install -m 0755 "/tmp/frp_${FRP_VERSION}_linux_${frp_arch}/frpc" /usr/local/bin/frpc; \
-    rm -rf /tmp/frp.tgz "/tmp/frp_${FRP_VERSION}_linux_${frp_arch}"; \
-    frpc --version
+# The patched binary keeps the protocol expected by Nextcloud HaRP.
+COPY --from=frp-build /out/frpc /usr/local/bin/frpc
+RUN frpc --version
 
 COPY scripts/harp-start.sh /start.sh
 RUN chmod +x /start.sh

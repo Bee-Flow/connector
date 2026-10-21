@@ -158,10 +158,15 @@ app.get(['/api/languages/user/locales', '/api/languages/user/strings/:lang',
 // `app-icon.svg` is the favicon the shell's own index.html links to. It was
 // absent here, so it fell through to the SaaS API proxy and 404'd on every
 // embedded page load.
-const CONNECTOR_OWNED = /^\/(setup\/?(.*)?$|assets\/|js\/|img\/|favicon|app-icon\.svg$|BeeFlow-logo|bee-flow-logo|index\.html$|$)/;
+// The SPA shell paths come from proxy.js's isSpaShellPath, so a folder the
+// frontend build adds (/monaco, /fonts, /module-shims) is listed once: here it
+// once had its own copy of the list, and a path missing from it went to the
+// SaaS API proxy and 404'd.
+const CONNECTOR_SETUP = /^\/setup(\/|$)/;
+const isConnectorOwned = (urlPath) => CONNECTOR_SETUP.test(urlPath) || isSpaShellPath(urlPath);
 const proxy = buildApiProxy();
 app.use((req, res, next) => {
-    if (CONNECTOR_OWNED.test(req.url.split('?')[0])) return next();
+    if (isConnectorOwned(req.url.split('?')[0])) return next();
     return proxy(req, res, next);
 });
 
@@ -210,6 +215,17 @@ app.get(['/js/embed', '/js/embed.js'], (_req, res) => {
     content.innerHTML = '';
     var iframe = document.createElement('iframe');
     iframe.src = OC.generateUrl('${framePath}');
+    // Deep link: a mail link such as .../embedded/bee_flow/main?path=/app/projects/p1
+    // opens that screen inside the frame. Only a relative in-app path passes
+    // (no scheme, no '//', no '..'); the SPA reads it once as ?ncPath=
+    // (agent-hub utils/ncDeepLink.ts). Works for both frame targets.
+    try {
+        var want = new URLSearchParams(window.location.search).get('path');
+        if (want && want.indexOf('/app/') === 0 && /^[-A-Za-z0-9/_?=&.%]+$/.test(want)
+            && want.indexOf('//') < 0 && want.indexOf('..') < 0) {
+            iframe.src += '?ncPath=' + encodeURIComponent(want);
+        }
+    } catch (e) { /* no deep link: land on the home screen */ }
     // Height was hardcoded to calc(100vh - 50px), i.e. an assumption that
     // Nextcloud's chrome above #content is exactly 50px. It is not, and the
     // difference is paid by the BOTTOM of the frame — which is where the chat
@@ -246,7 +262,7 @@ app.get(['/js/embed', '/js/embed.js'], (_req, res) => {
 
 // Studio-app menu entries: /js/embed-app (the per-entry page script) and
 // /img/studio-app/<name>.svg (per-entry menu icons). Registered HERE — after
-// the SaaS-proxy gate (CONNECTOR_OWNED already excludes /js/ and /img/) and
+// the SaaS-proxy gate (isConnectorOwned already excludes /js/ and /img/) and
 // before the embed-shell proxy, which would otherwise forward these paths to
 // the cloud /embed/ build and 404. The sync loop that registers the entries
 // with AppAPI runs from heartbeat.js (/init) and the poller below.
@@ -314,7 +330,7 @@ const indexHtmlPath = path.join(publicDir, 'index.html');
 // Force no-store on index.html: it carries the hashed asset reference,
 // so a stale copy in browser/NC-proxy disk cache pins users to an old
 // SPA bundle. Hashed assets under /assets/ keep their long-cache.
-app.get('*', (_req, res) => {
+app.get('/{*splat}', (_req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
     res.set('Pragma', 'no-cache');
     res.set('Expires', '0');

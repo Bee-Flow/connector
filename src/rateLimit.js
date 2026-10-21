@@ -137,19 +137,30 @@ function limit(name, { limit: max, windowMs, keyOf = callerKey, message } = {}) 
  * window. That is a renewable outage, not rate limiting. The signature check is
  * one hash, so verifying before billing costs nothing worth saving.
  *
+ * A success never clears the shared global key (BFSF-382): other callers'
+ * good traffic must not reset the penalty an attacker has earned.
+ *
  * Only failures are billed, so a healthy Nextcloud delivering a thousand
  * webhooks is untouched while a thousand forged signatures are not.
  */
+const GLOBAL_KEY = 'global';
+
 function penalise(name, { limit: max, windowMs }) {
     return {
-        blocked(key = 'global') {
+        blocked(key = GLOBAL_KEY) {
             const entry = peek(name, key);
             return (entry.count || 0) >= max;
         },
-        fail(key = 'global') {
+        fail(key = GLOBAL_KEY) {
             return consume(name, key, { limit: max, windowMs });
         },
-        succeed(key = 'global') {
+        // A success must NOT clear the shared 'global' key: legitimate traffic
+        // would then erase an attacker's accumulated failures and the
+        // brute-force gate would never trip (BFSF-382). Failures on the shared
+        // key age out with their fixed window instead. A caller that passes
+        // its own key (one principal, one bucket) still gets the clean slate.
+        succeed(key = GLOBAL_KEY) {
+            if (key === GLOBAL_KEY) return;
             forget(name, key);
         },
         windowMs,

@@ -562,7 +562,7 @@ run_nc_container() {
     local vol="$1" args=()
     [ "$HARP" = "1" ] || args+=(-p "$NC_PORT:80")
     [ -z "$vol" ]     || args+=(-v "$vol:/var/www/html")
-    docker run -d --name "$NC_NAME" --network "$NETWORK" \
+    docker run -d --name "$NC_NAME" --network "$NETWORK" --restart unless-stopped \
         ${args[@]+"${args[@]}"} \
         "nextcloud:$NC_VERSION" >/dev/null
 }
@@ -1156,7 +1156,7 @@ cmd_up() {
         conn_args+=(-p "$PORT:$PORT")
     fi
     docker run -d --name "$CONN_NAME" \
-        --network "$NETWORK" \
+        --network "$NETWORK" --restart unless-stopped \
         "${conn_args[@]}" \
         "$IMAGE" >/dev/null
 

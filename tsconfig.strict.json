@@ -1,0 +1,6 @@
+{
+  // Counted by scripts/tsc-error-ratchet.mjs (.tsc-strict-ratchet.json). tsconfig.json is strict
+  // itself; this file repeats the flags so loosening tsconfig.json cannot slip past the ratchet.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "strict": true, "noImplicitAny": true, "strictNullChecks": true }
+}

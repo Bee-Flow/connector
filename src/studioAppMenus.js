@@ -49,10 +49,22 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const config = require('./config');
-const { withWarmupRetry } = require('./appApiClient');
+const { withWarmupRetry, appApiHeaders } = require('./appApiClient');
 const { ocsSucceeded } = require('./ocs');
 const { verifyHmac } = require('./ncProxy');
 const rateLimit = require('./rateLimit');
+const log = require('./log');
+const { errMessage } = require('./errors');
+
+/**
+ * One app the SaaS wants in the Nextcloud top menu.
+ * @typedef {{ id: string, name?: string, icon?: string | null }} StudioApp
+ * What is remembered per registered menu entry (the file survives restarts).
+ * @typedef {{ appId?: string, displayName: string, icon: string | null }} MenuEntry
+ * @typedef {{ entries: Record<string, MenuEntry> }} StudioMenuState
+ * What one sync pass reports.
+ * @typedef {{ ok: boolean, added?: number, removed?: number, updated?: number, skipped?: string, error?: string }} SyncResult
+ */
 
 const STATE_FILE = 'studio-app-menus.json';
 const LIST_PATH = '/api/nextcloud/studio-apps';
@@ -63,7 +75,7 @@ const LIST_PATH = '/api/nextcloud/studio-apps';
 const PUSH_HOOK_PATH = '/hooks/studio-menus';
 // Poll cadence — the backstop behind the push, not the primary path. Each tick
 // is one HTTPS GET to the SaaS and, when nothing changed, zero OCS calls.
-const SYNC_INTERVAL_MS = (parseInt(process.env.BEEFLOW_STUDIO_MENU_SYNC_SECONDS, 10) || 300) * 1000;
+const SYNC_INTERVAL_MS = (parseInt(process.env.BEEFLOW_STUDIO_MENU_SYNC_SECONDS ?? '', 10) || 300) * 1000;
 // Forged-signature budget for the push hook: same shape as /nc/* (ncProxy.js).
 // Only failures are billed, so a chatty but honest SaaS is never throttled.
 const pushSigLimiter = rateLimit.penalise('studio-menus-sig', { limit: 60, windowMs: 60_000 });
@@ -90,6 +102,10 @@ const MAX_DISPLAY_NAME = 32;
 // URL path segment.
 const B32 = 'abcdefghijklmnopqrstuvwxyz234567';
 
+/**
+ * @param {unknown} appId
+ * @returns {string | null}
+ */
 function menuNameForAppId(appId) {
     const hex = String(appId || '').toLowerCase().replace(/-/g, '');
     if (!/^[0-9a-f]{32}$/.test(hex)) return null;
@@ -110,6 +126,10 @@ function menuNameForAppId(appId) {
     return name.length <= MAX_NAME ? name : null;
 }
 
+/**
+ * @param {unknown} name
+ * @returns {string | null}
+ */
 function appIdForMenuName(name) {
     const m = /^sa_([a-z2-7]{26})$/.exec(String(name || ''));
     if (!m) return null;
@@ -135,6 +155,8 @@ function appIdForMenuName(name) {
  * Fit a display name into the column. Truncation is visible ("…") rather than
  * silent, because the alternative — what shipped in 1.4.0 — was AppAPI
  * refusing the whole entry for a long app name and nothing saying why.
+ * @param {unknown} displayName
+ * @returns {string}
  */
 function fitDisplayName(displayName) {
     const clean = String(displayName || '').trim() || 'App';
@@ -147,9 +169,12 @@ function statePath() {
     return path.join(config.persistentStorage, STATE_FILE);
 }
 
+/**
+ * @returns {StudioMenuState}
+ */
 function loadState() {
     try {
-        const raw = JSON.parse(fs.readFileSync(statePath(), 'utf8'));
+        const raw = /** @type {{ entries?: Record<string, MenuEntry> | null } | null} */ (JSON.parse(fs.readFileSync(statePath(), 'utf8')));
         if (!raw || typeof raw.entries !== 'object' || raw.entries === null) return { entries: {} };
         // Drop entries whose name predates the current encoding. 1.4.0 wrote
         // `sa_<32 hex>` (35 chars) into this file as "registered" while
@@ -157,6 +182,7 @@ function loadState() {
         // not fit varchar(32). They therefore do not exist on the NC side and
         // must not be carried forward, or every sync would try (and fail) to
         // unregister a row that was never there.
+        /** @type {Record<string, MenuEntry>} */
         const entries = {};
         for (const [name, entry] of Object.entries(raw.entries)) {
             if (appIdForMenuName(name)) entries[name] = entry;
@@ -167,18 +193,25 @@ function loadState() {
     }
 }
 
+/**
+ * @param {StudioMenuState} state
+ */
 function saveState(state) {
     try {
         fs.mkdirSync(config.persistentStorage, { recursive: true });
         fs.writeFileSync(statePath(), JSON.stringify(state, null, 2), { mode: 0o600 });
     } catch (err) {
-        console.warn(`[StudioAppMenus] Could not persist state: ${err.message}`);
+        log.warn(`[StudioAppMenus] Could not persist state: ${errMessage(err)}`);
     }
 }
 
 // ── SaaS: fetch the desired list ────────────────────────────────────
 
+/**
+ * @returns {Promise<StudioApp[] | null>}
+ */
 async function fetchDesiredApps() {
+    if (!config.tenantKey || !config.ncInstanceId) throw new Error('connector not yet bootstrapped');
     const ts = Math.floor(Date.now() / 1000);
     const sig = crypto.createHmac('sha256', config.tenantKey)
         .update(`${ts}\nGET\n${LIST_PATH}\n`).digest('hex');
@@ -199,7 +232,7 @@ async function fetchDesiredApps() {
     if (!res.ok) {
         throw new Error(`SaaS answered HTTP ${res.status}`);
     }
-    const data = await res.json().catch(() => null);
+    const data = /** @type {{ apps?: StudioApp[] } | null} */ (await res.json().catch(() => null));
     if (!data || !Array.isArray(data.apps)) throw new Error('SaaS answered without an apps list');
     return data.apps;
 }
@@ -207,17 +240,6 @@ async function fetchDesiredApps() {
 // ── AppAPI OCS registration calls ───────────────────────────────────
 // Service-level auth (empty uid), 409 = already registered = success — the
 // same contract heartbeat.js uses for the main entry.
-
-function appApiHeaders() {
-    return {
-        'Content-Type': 'application/json',
-        'OCS-APIRequest': 'true',
-        'Accept': 'application/json',
-        'EX-APP-ID': config.appId,
-        'EX-APP-VERSION': config.appVersion,
-        'AUTHORIZATION-APP-API': Buffer.from(`:${config.appSecret}`).toString('base64'),
-    };
-}
 
 /**
  * One OCS call, checked properly.
@@ -228,6 +250,10 @@ function appApiHeaders() {
  * then persist them as done so they were never retried. Both layers are checked
  * by the shared `ocsSucceeded` helper (src/ocs.js); the thrown error carries the
  * OCS code so the log names the actual reason.
+ * @param {string} method
+ * @param {string} url
+ * @param {object} body
+ * @param {string} label
  */
 async function ocsCall(method, url, body, label) {
     const res = await withWarmupRetry(() => fetch(url, {
@@ -246,6 +272,10 @@ async function ocsCall(method, url, body, label) {
     }
 }
 
+/**
+ * @param {string} name
+ * @param {string} displayName
+ */
 async function registerEntry(name, displayName) {
     const base = `${config.nextcloudUrl}/ocs/v1.php/apps/app_api/api/v1/ui`;
     await ocsCall('POST', `${base}/top-menu`, {
@@ -262,6 +292,9 @@ async function registerEntry(name, displayName) {
     }, `embed-app-script:${name}`);
 }
 
+/**
+ * @param {string} name
+ */
 async function unregisterEntry(name) {
     const base = `${config.nextcloudUrl}/ocs/v1.php/apps/app_api/api/v1/ui`;
     // Script first: a menu entry without its script is a blank page, but a
@@ -282,7 +315,9 @@ async function unregisterEntry(name) {
 // tell an owner whether their app is in the menu, and the desired list may
 // have changed after the running pass fetched it. Every push that arrives
 // during one pass shares the same follow-up, so N pushes cost one extra pass.
+/** @type {Promise<SyncResult> | null} */
 let _running = null;
+/** @type {Promise<SyncResult> | null} */
 let _followUp = null;
 
 /**
@@ -290,6 +325,7 @@ let _followUp = null;
  * Silently a no-op until bootstrap has produced a tenant key + instance id;
  * skips (does not queue) when a pass is already running — poller semantics.
  * Returns { ok, added, removed, updated, skipped? } for logging/tests.
+ * @returns {Promise<SyncResult>}
  */
 function syncStudioAppMenus() {
     if (!config.tenantKey || !config.ncInstanceId) return Promise.resolve({ ok: true, skipped: 'not_bootstrapped' });
@@ -302,6 +338,7 @@ function syncStudioAppMenus() {
  * The push entry point: runs a pass now, or — when one is in flight — waits for
  * it and runs exactly one more, so the result always reflects a list fetched
  * AFTER the caller's change was saved.
+ * @returns {Promise<SyncResult>}
  */
 function requestSync() {
     if (!_running) return syncStudioAppMenus();
@@ -312,16 +349,21 @@ function requestSync() {
     return _followUp;
 }
 
+/**
+ * @returns {Promise<SyncResult>}
+ */
 async function _runPass() {
+    /** @type {StudioApp[] | null} */
     let apps;
     try {
         apps = await fetchDesiredApps();
     } catch (err) {
-        console.warn(`[StudioAppMenus] Could not fetch app list (keeping current menu): ${err.message}`);
-        return { ok: false, error: err.message };
+        log.warn(`[StudioAppMenus] Could not fetch app list (keeping current menu): ${errMessage(err)}`);
+        return { ok: false, error: errMessage(err) };
     }
     if (apps === null) return { ok: true, skipped: 'server_without_endpoint' };
 
+    /** @type {Map<string, MenuEntry>} */
     const desired = new Map();
     for (const app of apps) {
         const name = menuNameForAppId(app && app.id);
@@ -357,7 +399,7 @@ async function _runPass() {
                 updated++;
             }
         } catch (err) {
-            console.warn(`[StudioAppMenus] Register ${name} failed: ${err.message}`);
+            log.warn(`[StudioAppMenus] Register ${name} failed: ${errMessage(err)}`);
         }
     }
 
@@ -370,24 +412,25 @@ async function _runPass() {
             delete registered[name];
             removed++;
         } catch (err) {
-            console.warn(`[StudioAppMenus] Unregister ${name} failed: ${err.message}`);
+            log.warn(`[StudioAppMenus] Unregister ${name} failed: ${errMessage(err)}`);
         }
     }
 
     state.entries = registered;
     saveState(state);
     if (added || removed || updated) {
-        console.log(`[StudioAppMenus] Synced: +${added} -${removed} ~${updated} (now ${Object.keys(registered).length})`);
+        log.info(`[StudioAppMenus] Synced: +${added} -${removed} ~${updated} (now ${Object.keys(registered).length})`);
     }
     return { ok: true, added, removed, updated };
 }
 
+/** @type {NodeJS.Timeout | null} */
 let _pollTimer = null;
 
 function startPolling() {
     if (_pollTimer) return;
     _pollTimer = setInterval(() => {
-        syncStudioAppMenus().catch(err => console.warn(`[StudioAppMenus] Sync failed: ${err.message}`));
+        syncStudioAppMenus().catch(err => log.warn(`[StudioAppMenus] Sync failed: ${errMessage(err)}`));
     }, SYNC_INTERVAL_MS);
     // A background convenience must never keep the process alive on its own.
     if (typeof _pollTimer.unref === 'function') _pollTimer.unref();
@@ -482,7 +525,10 @@ const LUCIDE_ICON_DIR = (() => {
     }
 })();
 
-/** 'LayoutGrid' → 'layout-grid', 'Building2' → 'building-2'. */
+/**
+ * 'LayoutGrid' → 'layout-grid', 'Building2' → 'building-2'.
+ * @param {unknown} iconName
+ */
 function lucideFileName(iconName) {
     return String(iconName || '')
         .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
@@ -490,6 +536,7 @@ function lucideFileName(iconName) {
         .toLowerCase();
 }
 
+/** @type {Map<string, string | null>} */
 const _iconCache = new Map();
 
 /**
@@ -501,12 +548,14 @@ const _iconCache = new Map();
  * `currentColor` is pinned to black because Nextcloud recolors menu icons with
  * a CSS filter over a standalone SVG, where `currentColor` has no context to
  * inherit from.
+ * @param {unknown} iconName
+ * @returns {string | null}
  */
 function lucideIconSvg(iconName) {
     if (!LUCIDE_ICON_DIR || !iconName) return null;
     const file = lucideFileName(iconName);
     if (!/^[a-z0-9-]+$/.test(file)) return null;
-    if (_iconCache.has(file)) return _iconCache.get(file);
+    if (_iconCache.has(file)) return _iconCache.get(file) ?? null;
     let svg = null;
     try {
         svg = fs.readFileSync(path.join(LUCIDE_ICON_DIR, `${file}.svg`), 'utf8')
@@ -525,6 +574,9 @@ function lucideIconSvg(iconName) {
  * dark on transparent — never the app's accent color. The letter comes from
  * the connector's own persisted state (display names never leave the org's
  * Nextcloud), with a neutral fallback when state is missing.
+ * @param {unknown} displayName
+ * @param {unknown} iconName
+ * @returns {string}
  */
 function buildEntryIconSvg(displayName, iconName) {
     const lucide = lucideIconSvg(iconName);
@@ -532,6 +584,10 @@ function buildEntryIconSvg(displayName, iconName) {
     return buildLetterIconSvg(displayName);
 }
 
+/**
+ * @param {unknown} displayName
+ * @returns {string}
+ */
 function buildLetterIconSvg(displayName) {
     const match = String(displayName || '').trim().match(/[\p{L}\p{N}]/u);
     const letter = (match ? match[0] : '•').toUpperCase()
@@ -562,6 +618,7 @@ function buildLetterIconSvg(displayName) {
  * reconcile itself failed (`ok:false`). A 5xx here would count against the
  * connector in HaRP's bad-response blacklist and in AppAPI's health view, for
  * what is a SaaS-side or OCS-side problem; the SaaS reads `ok` instead.
+ * @param {import('express').Express} app
  */
 function mountPushHook(app) {
     app.post(PUSH_HOOK_PATH, express.raw({ type: () => true, limit: '64kb' }), async (req, res) => {
@@ -582,13 +639,13 @@ function mountPushHook(app) {
             const parsed = JSON.parse(Buffer.isBuffer(req.body) ? req.body.toString('utf8') : '{}');
             if (parsed && typeof parsed.reason === 'string') reason = parsed.reason.slice(0, 40);
         } catch (_) { /* informational only */ }
-        console.log(`[StudioAppMenus] Push from Bee Flow (${reason}) — syncing now`);
+        log.info(`[StudioAppMenus] Push from Bee Flow (${reason}) — syncing now`);
 
         let result;
         try {
             result = await requestSync();
         } catch (err) {
-            result = { ok: false, error: err.message };
+            result = { ok: false, error: errMessage(err) };
         }
         res.json({
             ok: result.ok !== false,
@@ -601,6 +658,9 @@ function mountPushHook(app) {
     });
 }
 
+/**
+ * @param {import('express').Express} app
+ */
 function registerRoutes(app) {
     app.get(['/js/embed-app', '/js/embed-app.js'], (_req, res) => {
         res.type('application/javascript').send(buildEmbedAppScript());

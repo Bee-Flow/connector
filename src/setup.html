@@ -302,11 +302,10 @@
 <div class="card">
     <h2 style="margin-top: 0;">Rotate tenant key</h2>
     <p>
-        Drops the cached tenant key and asks the SaaS to mint a fresh one bound to the
-        same organisation. Use this if the current key is suspected leaked, or when
-        rolling credentials as part of regular hygiene. The connector keeps the
-        previous key as a fallback if the rotation fails, so a momentary SaaS
-        outage can't strand the install.
+        Asks the Bee Flow server for a fresh tenant key for the same organisation;
+        the old key stops working at once. Use this if the current key is suspected
+        leaked, or when rolling credentials as part of regular hygiene. If the
+        rotation fails, the current key stays in use.
     </p>
     <div class="actions">
         <button class="btn-secondary" id="btn-rotate-key">Rotate tenant key</button>
@@ -615,9 +614,9 @@
         btnRotate.addEventListener('click', async () => {
             if (!confirm(
                 'Rotate the tenant key for this Nextcloud install?\n\n'
-              + 'The current key will be dropped and the SaaS will mint a fresh one. '
-              + 'All in-flight sessions will need to re-handshake (a brief reload). '
-              + 'On rotation failure the previous key is restored automatically.'
+              + 'The Bee Flow server issues a fresh key and the current one stops working. '
+              + 'Open Bee Flow pages may need a reload. '
+              + 'If the rotation fails, the current key stays in use.'
             )) return;
             statusRotateInline.textContent = 'Rotating…';
             btnRotate.disabled = true;
@@ -629,7 +628,8 @@
                 rotateOutput.style.display = 'block';
                 if (d.ok) {
                     statusRotateInline.textContent =
-                        '✅ Rotated — new fingerprint ' + d.tenantKeyFingerprint;
+                        '✅ Rotated — fingerprint ' + d.previousTenantKeyFingerprint
+                        + ' → ' + d.tenantKeyFingerprint;
                 } else {
                     statusRotateInline.textContent =
                         '❌ ' + (d.error || 'rotation failed');

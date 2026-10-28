@@ -16,9 +16,11 @@
 
 const config = require('./config');
 const setupConfig = require('./setupConfig');
-const { withWarmupRetry } = require('./appApiClient');
+const { withWarmupRetry, appApiHeaders } = require('./appApiClient');
 const { ocsSucceeded } = require('./ocs');
 const { parseAllowedUrl } = require('./remoteHost');
+const log = require('./log');
+const { errMessage } = require('./errors');
 
 const FORM_ID = 'beeflow_admin';
 const FIELD_MODE = 'deployment_mode';
@@ -64,17 +66,6 @@ const FORM_SCHEME = {
     ],
 };
 
-function appApiHeaders() {
-    return {
-        'Content-Type': 'application/json',
-        'OCS-APIRequest': 'true',
-        'Accept': 'application/json',
-        'EX-APP-ID': config.appId,
-        'EX-APP-VERSION': config.appVersion,
-        'AUTHORIZATION-APP-API': Buffer.from(`:${config.appSecret}`).toString('base64'),
-    };
-}
-
 async function registerSettingsForm() {
     const url = `${config.nextcloudUrl}/ocs/v1.php/apps/app_api/api/v1/ui/settings`;
     const res = await withWarmupRetry(() => fetch(url, {
@@ -90,9 +81,15 @@ async function registerSettingsForm() {
     if (!ok) {
         throw new Error(`Settings form register HTTP ${res.status}${code === null ? '' : ` / OCS ${code}`}: ${body.slice(0, 200)}`);
     }
-    console.log(`[Init] Declarative settings form registered (${FORM_ID})`);
+    log.info(`[Init] Declarative settings form registered (${FORM_ID})`);
 }
 
+/**
+ * The two appconfig keys this panel owns, by key.
+ * @typedef {Record<string, string | undefined>} StoredValues
+ */
+
+/** @returns {Promise<StoredValues>} */
 async function _readStoredValues() {
     const url = `${config.nextcloudUrl}/ocs/v1.php/apps/app_api/api/v1/ex-app/config/get-values`;
     const res = await fetch(url, {
@@ -104,11 +101,12 @@ async function _readStoredValues() {
     if (!res.ok) {
         throw new Error(`Read settings HTTP ${res.status}`);
     }
-    const body = await res.json();
+    const body = /** @type {{ ocs?: { data?: { configkey?: string, configvalue?: string }[] } } | null} */ (await res.json());
     // OCS wraps payloads as `{ ocs: { meta: {...}, data: [...] } }`. NC's
     // get-values returns an array of `{ configkey, configvalue }` pairs;
     // missing keys are simply absent rather than null.
     const data = body?.ocs?.data ?? [];
+    /** @type {StoredValues} */
     const out = {};
     for (const row of data) {
         if (row?.configkey) out[row.configkey] = row.configvalue;
@@ -116,6 +114,10 @@ async function _readStoredValues() {
     return out;
 }
 
+/**
+ * @param {StoredValues} values
+ * @returns {string | null}
+ */
 function _resolveTargetUrl(values) {
     // Only act when an explicit value exists in NC. Falling through to the
     // form's `default` here would silently flip a freshly-installed sandbox
@@ -132,19 +134,21 @@ function _resolveTargetUrl(values) {
     try {
         parseAllowedUrl(url, { label: 'Self-hosted API URL' });
     } catch (err) {
-        console.warn(`[Settings] ignoring the configured Bee Flow server URL: ${err.message}`);
+        log.warn(`[Settings] ignoring the configured Bee Flow server URL: ${errMessage(err)}`);
         return null;
     }
     return url;
 }
 
+/** @type {string | null} */
 let _lastApplied = null;
 
 let _envPinLogged = false;
 
 async function applyStoredValuesIfChanged() {
-    // Precedence: an explicit BEEFLOW_API_BASE_URL env var is a deliberate
-    // admin lock and wins over the picker — the same rule bootstrap and
+    // Precedence: a BEEFLOW_API_BASE_URL naming a server other than Cloud is
+    // a deliberate admin lock (config.apiBaseUrlLocked; AppAPI always injects
+    // the Cloud default, which is not a lock) and wins over the picker — the same rule bootstrap and
     // server.js already enforce (server.js only applies a stored apiBaseUrl
     // when the env is unset). Without this guard the poll fought the env pin:
     // it kept trying to switch to the stored value every interval, and each
@@ -152,18 +156,19 @@ async function applyStoredValuesIfChanged() {
     // e.g. a `http://localhost:3001` typed into the form on a box whose
     // container reaches the host at a LAN IP, which strands the app keyless
     // for the width of every retry.
-    if (process.env.BEEFLOW_API_BASE_URL) {
+    if (config.apiBaseUrlLocked) {
         if (!_envPinLogged) {
-            console.log(`[Settings] BEEFLOW_API_BASE_URL is set (${process.env.BEEFLOW_API_BASE_URL}) — the admin picker is informational and will not repoint the connector.`);
+            log.info(`[Settings] BEEFLOW_API_BASE_URL is set (${process.env.BEEFLOW_API_BASE_URL}) — the admin picker is informational and will not repoint the connector.`);
             _envPinLogged = true;
         }
         return;
     }
+    /** @type {StoredValues} */
     let values;
     try {
         values = await _readStoredValues();
     } catch (err) {
-        console.warn(`[Settings] poll failed (non-fatal): ${err.message}`);
+        log.warn(`[Settings] poll failed (non-fatal): ${errMessage(err)}`);
         return;
     }
     const target = _resolveTargetUrl(values);
@@ -178,26 +183,21 @@ async function applyStoredValuesIfChanged() {
         return;
     }
 
-    console.log(`[Settings] apiBaseUrl change requested: ${config.apiBaseUrl} → ${target}`);
-    const previousUrl = config.apiBaseUrl;
-    config.apiBaseUrl = target;
+    log.info(`[Settings] apiBaseUrl change requested: ${config.apiBaseUrl} → ${target}`);
 
     // Try the new target. If bootstrap fails (e.g. Cloud picked from a
     // localhost-only sandbox NC, or a typo in the self-hosted URL), the
-    // bootstrap layer rolls back its tenant key — we mirror that here by
-    // restoring the previous apiBaseUrl so the next API request keeps
-    // working against the old, healthy target instead of stranding the
-    // user with a blank app.
+    // bootstrap layer rolls back the key AND the server URL, so the next API
+    // request keeps working against the old, healthy target. A server that
+    // wants the emailed code first counts as applied: the switch is pending
+    // on that server, and polling again would only open another pending
+    // binding there every minute (until it answers 429).
     let rebootstrapOk = true;
     try {
-        const bootstrap = require('./bootstrap');
-        if (typeof bootstrap.invalidateAndRebootstrap === 'function') {
-            await bootstrap.invalidateAndRebootstrap();
-        }
+        await require('./bootstrap').invalidateAndRebootstrap({ apiBaseUrl: target });
     } catch (err) {
         rebootstrapOk = false;
-        config.apiBaseUrl = previousUrl;
-        console.warn(`[Settings] re-bootstrap failed; keeping previous apiBaseUrl ${previousUrl}. Detail: ${err.message}`);
+        log.warn(`[Settings] re-bootstrap failed; keeping previous apiBaseUrl ${config.apiBaseUrl}. Detail: ${errMessage(err)}`);
     }
 
     if (rebootstrapOk) {
@@ -207,7 +207,7 @@ async function applyStoredValuesIfChanged() {
                 apiBaseUrl: target,
             });
         } catch (err) {
-            console.warn(`[Settings] persistence skipped: ${err.message}`);
+            log.warn(`[Settings] persistence skipped: ${errMessage(err)}`);
         }
         _lastApplied = fingerprint;
     }
@@ -216,6 +216,7 @@ async function applyStoredValuesIfChanged() {
     // the radio off and on for the connector to reattempt.
 }
 
+/** @type {NodeJS.Timeout | null} */
 let _pollTimer = null;
 
 function startPolling() {

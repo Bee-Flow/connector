@@ -50,6 +50,7 @@ const path = require('path');
 
 const HANDSHAKE_TIMEOUT_MS = 8000;
 
+/** @param {string} msg */
 function log(msg) {
     process.stderr.write(`[nc-tls-trust] ${msg}\n`);
 }
@@ -60,18 +61,28 @@ function log(msg) {
  *    fires when the certificate verifies, so ok && authorized ⇒ trusted.
  *  - caPems (optional) → trust these PEM CA(s) IN ADDITION to Node's bundled
  *    roots for this check (used to test an explicit / HaRP-mounted CA).
+ *
+ * @typedef {{ ok: true, authorized: boolean } | { ok: false, error: Error }} HandshakeResult
+ * @param {string} host
+ * @param {number} port
+ * @param {string | undefined} servername
+ * @param {boolean} strict
+ * @param {readonly string[]} [caPems]
+ * @returns {Promise<HandshakeResult>}
  */
 function handshake(host, port, servername, strict, caPems) {
     return new Promise((resolve) => {
         let settled = false;
+        /** @param {HandshakeResult} v */
         const done = (v) => { if (!settled) { settled = true; resolve(v); } };
         // SNI must be a hostname, never an IP literal (RFC 6066).
         const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(servername || '') || (servername || '').includes(':');
+        /** @type {import('node:tls').ConnectionOptions} */
         const opts = { host, port, rejectUnauthorized: strict, timeout: HANDSHAKE_TIMEOUT_MS };
         if (servername && !isIp) opts.servername = servername;
         if (caPems && caPems.length) {
             // tls `ca` REPLACES the defaults, so include the bundled roots too.
-            opts.ca = [].concat(tls.rootCertificates, caPems);
+            opts.ca = [...tls.rootCertificates, ...caPems];
         }
         const socket = tls.connect(opts, () => {
             const authorized = socket.authorized;
@@ -84,8 +95,10 @@ function handshake(host, port, servername, strict, caPems) {
 }
 
 /** PEM CAs HaRP / AppAPI may mount when NC is reached over a non-public CA. */
+/** @returns {string[]} */
 function mountedCaPems() {
     const dir = '/usr/local/share/ca-certificates';
+    /** @type {string[]} */
     const out = [];
     try {
         for (const f of fs.readdirSync(dir)) {
@@ -96,7 +109,12 @@ function mountedCaPems() {
     return out;
 }
 
-/** True when every target's certificate verifies with the given extra CAs. */
+/**
+ * True when every target's certificate verifies with the given extra CAs.
+ * @param {readonly TlsTarget[]} targets
+ * @param {readonly string[]} caPems
+ * @returns {Promise<boolean>}
+ */
 async function verifiesWith(targets, caPems) {
     for (const t of targets) {
         const s = await handshake(t.host, t.port, t.servername, true, caPems);
@@ -105,11 +123,17 @@ async function verifiesWith(targets, caPems) {
     return true;
 }
 
-/** HTTPS Nextcloud targets to probe (NEXTCLOUD_URL + a distinct public URL). */
+/**
+ * HTTPS Nextcloud targets to probe (NEXTCLOUD_URL + a distinct public URL).
+ * @typedef {{ key: string, host: string, port: number, servername: string }} TlsTarget
+ * @returns {TlsTarget[]}
+ */
 function httpsTargets() {
+    /** @type {TlsTarget[]} */
     const targets = [];
     for (const raw of [process.env.NEXTCLOUD_URL, process.env.BEEFLOW_NC_PUBLIC_URL]) {
         if (!raw) continue;
+        /** @type {URL} */
         let u;
         try { u = new URL(raw); } catch { continue; }
         if (u.protocol !== 'https:') continue; // plain HTTP → no TLS to decide
@@ -121,7 +145,10 @@ function httpsTargets() {
     return targets;
 }
 
-/** Resolve the posture: {} | {caCert} | {insecure:true}. */
+/**
+ * Resolve the posture: {} | {caCert} | {insecure:true}.
+ * @returns {Promise<{ caCert?: string, insecure?: boolean }>}
+ */
 async function decide() {
     const targets = httpsTargets();
     if (!targets.length) return {};
@@ -178,6 +205,7 @@ async function main() {
     try { fs.rmSync(caPath, { force: true }); } catch { /* ignore */ }
 
     const d = await decide();
+    /** @type {string[]} */
     const lines = [];
     if (d.caCert) {
         fs.writeFileSync(caPath, d.caCert.endsWith('\n') ? d.caCert : d.caCert + '\n', { mode: 0o600 });
@@ -195,7 +223,7 @@ async function main() {
 // Run only when invoked directly; exporting helpers keeps them unit-testable.
 if (require.main === module) {
     main().catch((err) => {
-        log(`non-fatal error: ${err && err.message ? err.message : err}`);
+        log(`non-fatal error: ${err instanceof Error && err.message ? err.message : err}`);
         process.exit(0); // never block connector boot
     });
 }

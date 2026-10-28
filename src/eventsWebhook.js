@@ -18,11 +18,29 @@
 const express = require('express');
 const crypto = require('crypto');
 const config = require('./config');
+const log = require('./log');
+const { errMessage } = require('./errors');
+
+/**
+ * NC's event payload. Its shape differs per event class, so every field is optional.
+ * @typedef {object} NcEventPayload
+ * @property {string} [eventType]
+ * @property {string | { userId?: string }} [event]
+ * @property {string} [userId]
+ * @property {string} [uid]
+ * @property {{ UID?: string, uid?: string }} [user]
+ * @property {string} [groupId]
+ * @property {{ gid?: string }} [group]
+ */
 
 // NC's event payload uses class names like OCP\User\Events\UserCreatedEvent.
 // Map them to the simplified events ncUserGroupSync.js understands.
+/**
+ * @param {unknown} eventType
+ * @returns {string | null}
+ */
 function mapEvent(eventType) {
-    if (!eventType) return null;
+    if (typeof eventType !== 'string') return null;
     if (eventType.endsWith('UserCreatedEvent')) return 'user.created';
     if (eventType.endsWith('UserDeletedEvent')) return 'user.deleted';
     if (eventType.endsWith('UserChangedEvent')) return 'user.updated';
@@ -33,15 +51,23 @@ function mapEvent(eventType) {
 
 // Pull the affected uid out of the event payload. NC's events carry the
 // user object differently per event class, so be tolerant.
+/**
+ * @param {NcEventPayload | undefined} payload
+ * @returns {string | null}
+ */
 function extractUid(payload) {
     return payload?.userId
         || payload?.uid
         || payload?.user?.UID
         || payload?.user?.uid
-        || payload?.event?.userId
+        || (typeof payload?.event === 'object' ? payload.event?.userId : undefined)
         || null;
 }
 
+/**
+ * @param {NcEventPayload | undefined} payload
+ * @returns {string | null}
+ */
 function extractGroupId(payload) {
     return payload?.groupId || payload?.group?.gid || null;
 }
@@ -49,11 +75,12 @@ function extractGroupId(payload) {
 const router = express.Router();
 
 router.post('/webhook/nc-events', express.json({ limit: '256kb' }), async (req, res) => {
-    const eventType = req.body?.eventType || req.body?.event;
+    const payload = /** @type {NcEventPayload | undefined} */ (req.body);
+    const eventType = payload?.eventType || payload?.event;
     const event = mapEvent(eventType);
     if (!event) return res.json({ ignored: eventType });
-    const ncUid = extractUid(req.body);
-    const groupId = extractGroupId(req.body);
+    const ncUid = extractUid(payload);
+    const groupId = extractGroupId(payload);
     if (!ncUid) return res.status(400).json({ error: 'No uid in payload' });
 
     if (!config.tenantKey || !config.ncInstanceId) {
@@ -80,10 +107,10 @@ router.post('/webhook/nc-events', express.json({ limit: '256kb' }), async (req, 
         });
         if (!r.ok) {
             const t = await r.text().catch(() => '');
-            console.warn(`[EventsWebhook] SaaS returned ${r.status}: ${t.slice(0, 200)}`);
+            log.warn(`[EventsWebhook] SaaS returned ${r.status}: ${t.slice(0, 200)}`);
         }
     } catch (err) {
-        console.warn(`[EventsWebhook] forward failed: ${err.message}`);
+        log.warn(`[EventsWebhook] forward failed: ${errMessage(err)}`);
     }
     res.json({ ok: true, event, ncUid });
 });

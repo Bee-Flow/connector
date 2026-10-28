@@ -20,7 +20,7 @@
 #                  --build-arg HIVE_REF=feature/foo .
 
 # ── Stage 1a: fetch the hive source at the pinned ref ────────────
-FROM node:22.23.4-alpine@sha256:ce8d97f7cfc7c5386421eb932df20a29df99b1a7f469f6157d5c9956702ffadc AS hive-src
+FROM node:22.23.4-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS hive-src
 
 # git is enough — no SSH client, no credentials. Anonymous HTTPS fetch
 # works once Bee-Flow/hive is public. While the repo is still private
@@ -51,7 +51,7 @@ RUN --mount=type=secret,id=gh_token,required=false \
     && rm -rf .git
 
 # ── Stage 1b: build the React SPA from the fetched source ────────
-FROM node:22.23.4-alpine@sha256:ce8d97f7cfc7c5386421eb932df20a29df99b1a7f469f6157d5c9956702ffadc AS spa-build
+FROM node:22.23.4-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS spa-build
 WORKDIR /spa
 
 # Lockfile-only layer first: `npm ci` re-runs ONLY when hive's dependencies
@@ -89,7 +89,7 @@ RUN npm run build -- --base=/index.php/apps/app_api/proxy/${APP_ID}/
 
 # Rebuild the HaRP-compatible 0.61.1 client with patched dependencies.
 # The source commit and module versions are fixed; the wire protocol stays 0.61.1.
-FROM golang:1.27.3-alpine@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS frp-build
+FROM golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS frp-build
 RUN apk add --no-cache git
 WORKDIR /src
 RUN git init -q . \
@@ -102,7 +102,7 @@ RUN git init -q . \
     && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/frpc ./cmd/frpc
 
 # ── Stage 2: connector runtime ────────────────────────────────
-FROM node:22.23.4-alpine@sha256:ce8d97f7cfc7c5386421eb932df20a29df99b1a7f469f6157d5c9956702ffadc AS runtime
+FROM node:22.23.4-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS runtime
 RUN apk upgrade --no-cache
 WORKDIR /app
 

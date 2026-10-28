@@ -153,12 +153,23 @@ test('a cross-site POST is refused — AppAPI does no CSRF check for us', () => 
 });
 
 test('the SPA in its Nextcloud iframe is same-origin and passes', () => {
-    for (const site of ['same-origin', 'same-site', 'none']) {
+    for (const site of ['same-origin', 'none']) {
         const { nexted } = run(security.rejectCrossSiteWrites, {
             method: 'POST', path: '/setup', headers: { 'sec-fetch-site': site },
         });
         assert.equal(nexted, true, `sec-fetch-site: ${site} must pass`);
     }
+});
+
+// A sibling subdomain (x.example.com next to cloud.example.com) is same-SITE:
+// its credentialed no-cors POST carries the Nextcloud cookies, the strict one
+// included, and AppAPI's proxy does no CSRF check of its own.
+test('a same-site POST from a sibling subdomain is refused', () => {
+    const { res, nexted } = run(security.rejectCrossSiteWrites, {
+        method: 'POST', path: '/setup/clear-cache', headers: { 'sec-fetch-site': 'same-site' },
+    });
+    assert.equal(nexted, false);
+    assert.equal(res.statusCode, 403);
 });
 
 test('server-to-server callers (no Sec-Fetch-Site) pass and are judged by their signature', () => {

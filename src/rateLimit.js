@@ -29,32 +29,50 @@
  */
 
 'use strict';
+const log = require('./log');
 
 // Cap on distinct keys held per bucket. Reached only under deliberate churn
 // (a caller varying the key); the oldest entries are dropped first, which at
 // worst forgives an old offender rather than locking out a new caller.
 const MAX_KEYS_PER_BUCKET = 10_000;
 
+/** @typedef {{ count: number, resetAt: number }} BucketEntry */
+/** @typedef {Map<string, BucketEntry>} Bucket */
+
+/** @type {Map<string, Bucket>} */
 const _buckets = new Map(); // name → Map(key → { count, resetAt })
 
+/**
+ * @param {string} name
+ * @returns {Bucket}
+ */
 function _bucket(name) {
     let b = _buckets.get(name);
     if (!b) { b = new Map(); _buckets.set(name, b); }
     return b;
 }
 
+/**
+ * @param {Bucket} bucket
+ * @param {number} now
+ */
 function _sweep(bucket, now) {
     for (const [key, entry] of bucket) {
         if (entry.resetAt <= now) bucket.delete(key);
         else break; // insertion order ≈ expiry order for a fixed window
     }
     while (bucket.size > MAX_KEYS_PER_BUCKET) {
-        bucket.delete(bucket.keys().next().value);
+        const oldest = bucket.keys().next().value;
+        if (oldest === undefined) break;
+        bucket.delete(oldest);
     }
 }
 
 /**
  * Consume one unit from `name`/`key`.
+ * @param {string} name
+ * @param {string} key
+ * @param {{ limit: number, windowMs: number }} options
  * @returns {{allowed: boolean, remaining: number, retryAfter: number}}
  *          retryAfter is whole seconds, suitable for the header of the same name.
  */
@@ -78,14 +96,23 @@ function consume(name, key, { limit, windowMs }) {
     };
 }
 
-/** Read the current state without consuming — used by tests and diagnostics. */
+/**
+ * Read the current state without consuming — used by tests and diagnostics.
+ * @param {string} name
+ * @param {string} key
+ * @returns {{ count: number, resetAt?: number }}
+ */
 function peek(name, key) {
     const entry = _bucket(name).get(String(key));
     if (!entry || entry.resetAt <= Date.now()) return { count: 0 };
     return { count: entry.count, resetAt: entry.resetAt };
 }
 
-/** Forget a key — called when a caller succeeds, so a good request clears the slate. */
+/**
+ * Forget a key — called when a caller succeeds, so a good request clears the slate.
+ * @param {string} name
+ * @param {string} key
+ */
 function forget(name, key) {
     _bucket(name).delete(String(key));
 }
@@ -99,6 +126,8 @@ function reset() { _buckets.clear(); }
  * Nextcloud's AppAPI proxy, so `req.ip` is Nextcloud for all of them and would
  * put every user in one bucket. The Nextcloud uid is the real principal here,
  * and it is established by the AppAPI gate before any of these routes run.
+ * @param {import('express').Request} req
+ * @returns {string}
  */
 function callerKey(req) {
     return req?.beeflow?.user?.uid || 'anonymous';
@@ -109,12 +138,15 @@ function callerKey(req) {
  *
  * Answers 429 with `Retry-After` when the budget is spent, as the manual
  * prescribes for `IRateLimitExceededException`.
+ * @param {string} name
+ * @param {{ limit: number, windowMs: number, keyOf?: (req: import('express').Request) => string, message?: string }} options
+ * @returns {import('express').RequestHandler}
  */
-function limit(name, { limit: max, windowMs, keyOf = callerKey, message } = {}) {
+function limit(name, { limit: max, windowMs, keyOf = callerKey, message }) {
     return function rateLimitMiddleware(req, res, next) {
         const verdict = consume(name, keyOf(req), { limit: max, windowMs });
         if (verdict.allowed) return next();
-        console.warn(`[RateLimit] ${name} exceeded by ${keyOf(req)} — ${max}/${Math.round(windowMs / 1000)}s`);
+        log.warn(`[RateLimit] ${name} exceeded by ${keyOf(req)} — ${max}/${Math.round(windowMs / 1000)}s`);
         res.set('Retry-After', String(verdict.retryAfter));
         return res.status(429).json({
             ok: false,
@@ -145,6 +177,10 @@ function limit(name, { limit: max, windowMs, keyOf = callerKey, message } = {}) 
  */
 const GLOBAL_KEY = 'global';
 
+/**
+ * @param {string} name
+ * @param {{ limit: number, windowMs: number }} options
+ */
 function penalise(name, { limit: max, windowMs }) {
     return {
         blocked(key = GLOBAL_KEY) {

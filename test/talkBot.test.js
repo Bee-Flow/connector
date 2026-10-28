@@ -217,3 +217,38 @@ test('joins, leaves and system messages produce no trigger', () => {
     assert.equal(talkBot.mapActivity(null), null);
     assert.equal(talkBot.mapActivity('nonsense'), null);
 });
+
+// Talk gives a bot webhook limited time. The forward to Bee Flow may take up to
+// 10 s and its outcome is only logged, so the delivery must be answered first.
+test('the delivery is answered before the forward to Bee Flow finishes', async () => {
+    config.tenantKey = 'test-tenant-key';
+    config.ncInstanceId = 'nc-instance';
+    const { server, port } = startRouter();
+    const realFetch = global.fetch;
+    let release;
+    const forwardDone = new Promise((r) => { release = r; });
+    global.fetch = async () => { await forwardDone; return { ok: true, status: 200, text: async () => '{}' }; };
+    try {
+        const t0 = Date.now();
+        const r = await realFetch(`http://127.0.0.1:${port}/hooks/talk`, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                'authorization-app-api': appApiAuth('', config.appSecret),
+                'ex-app-id': config.appId,
+            },
+            body: JSON.stringify({
+                type: 'Create',
+                actor: { id: 'users/ada', name: 'Ada' },
+                object: { id: '9', name: 'message', content: JSON.stringify({ message: 'hello there' }) },
+                target: { id: 'room1', name: 'General' },
+            }),
+        });
+        assert.equal(r.status, 200);
+        assert.ok(Date.now() - t0 < 1000, 'Talk must not wait for the Bee Flow server');
+    } finally {
+        release();
+        global.fetch = realFetch;
+        server.close();
+    }
+});

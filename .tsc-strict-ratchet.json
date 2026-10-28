@@ -1,0 +1,5 @@
+{
+  "_comment": "Most errors `tsc -p nextcloud-connector/tsconfig.strict.json` may report. Lower it with `node scripts/tsc-error-ratchet.mjs nextcloud-connector --update` after typing code; raising it is a deliberate edit that belongs in a commit message with a reason.",
+  "_generated": "2026-10-26",
+  "errors": 0
+}

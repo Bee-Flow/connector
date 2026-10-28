@@ -9,6 +9,41 @@ The Nextcloud App Store reads the entry whose heading matches `<version>` in `ap
 
 ## [Unreleased]
 
+## [1.6.5] - 2026-10-28
+
+### Security
+- **The connector no longer sends your Nextcloud app secret to Bee Flow.** Requests the connector passed on to the Bee Flow server and to beeflow.nl carried the secret that AppAPI uses to authenticate the app. The connector now forwards only a fixed list of harmless headers. See "After updating" below.
+- **"Rotate tenant key" now really issues a new key.** The old key stops working, and the setup page shows the old and the new fingerprint.
+- **Stricter request checks.** Requests from sibling subdomains can no longer trigger changes, and oversized uploads are refused before they are read into memory.
+
+### Fixed
+- **The Bee Flow bot stays in your Talk conversations** across restarts and updates, and it registers cleanly on every start, instead of failing with an error (#281).
+- **The bot answers only when you @mention it**, and it answers Talk promptly.
+- **"Cloud or self-hosted" under Settings → Artificial Intelligence now works.** A server switch takes effect without a restart, and a failed switch goes back completely. Switching to a server that asks for an email code shows the code screen.
+- **Assistant providers and Files menu entries appear as soon as Bee Flow is connected**, also after a late email code. The Files menu entries open Bee Flow instead of a "page not found".
+- **Automatic triggers keep working after the key changes**, and no longer fire twice after you change the public Nextcloud address.
+- **If Bee Flow was unreachable when the connector first started, it retries by itself.**
+- **Many open chats no longer block other requests**, and the built-in copy of the app is used when beeflow.nl answers with an error.
+- **Moving, copying and restoring files through Bee Flow works** (they returned "403 Forbidden").
+- **Webhook listeners register even while Nextcloud is still starting up.**
+
+### Added
+- Settings for administrators who need them (0 means off or no limit): `BEEFLOW_UPSTREAM_MAX_SOCKETS` (default 0), `BEEFLOW_BOOTSTRAP_RETRY_MS` (60000), `BEEFLOW_NC_PROXY_MAX_BODY_MB` (100) and `BEEFLOW_NC_PROXY_MAX_INFLIGHT_MB` (512).
+
+### After updating
+Rotate the app secret once: run `occ app_api:app:unregister bee_flow` (without `--rm-data`, so your settings and tenant key stay) and then `occ app_api:app:register bee_flow --wait-finish`. Unregistering removes the Talk bot, so add "Bee Flow" to your conversations again once. Webhooks, Assistant providers and Files menu entries come back on their own.
+
+## [1.6.4] - 2026-10-28
+
+### Security
+- **Request handling is updated to body-parser 2.4.0 and qs 6.16.1.** Both fix ways in which a specially crafted request could keep the connector busy.
+
+### Fixed
+- **"Clear organisation cache" on the setup page now reports the name of the Bee Flow organisation the connector is linked to.** The name in its result was always empty.
+
+### Changed
+- **The connector's log lines share one structured format**, so they are easier to search and to send to a log system.
+
 ## [1.6.3] - 2026-10-21
 
 ### Security

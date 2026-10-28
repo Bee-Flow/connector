@@ -37,17 +37,87 @@ const crypto = require('crypto');
 const config = require('./config');
 const { hookSecret, EVENT_BY_CLASS, HOOK_PATH } = require('./webhookListeners');
 const rateLimit = require('./rateLimit');
+const log = require('./log');
+const { errMessage } = require('./errors');
 
 // Brute-force gate on the hook secret. Nextcloud's background job always sends
 // the right one, so only failures are billed and real deliveries never throttle.
+/**
+ * What Nextcloud's webhook_listeners app posts for one event. The shape depends on the event class, so
+ * every field is optional and only the ones a mapper below reads are listed.
+ *
+ * @typedef {object} HookNode
+ * @property {string | number} [id]
+ * @property {string} [path]
+ *
+ * @typedef {object} HookCard
+ * @property {string | number} [id]
+ * @property {string} [title]
+ * @property {string | null} [description]
+ * @property {string | number} [stackId]
+ * @property {string | number} [boardId]
+ * @property {string | boolean | null} [done]
+ * @property {string | boolean | null} [archived]
+ * @property {string | null} [duedate]
+ * @property {({ title?: string } | null)[]} [labels]
+ * @property {({ participant?: { uid?: string, primaryKey?: string } } | null)[]} [assignedUsers]
+ *
+ * @typedef {object} HookEventBody
+ * @property {string} [class]
+ * @property {HookNode} [node]
+ * @property {HookNode} [source]
+ * @property {HookNode} [target]
+ * @property {string} [objectType]
+ * @property {(string | number)[]} [objectIds]
+ * @property {(string | number)[]} [tagIds]
+ * @property {{ uri?: string, component?: string }} [objectData]
+ * @property {{ id?: string | number, uri?: string }} [calendarData]
+ * @property {{ id?: string | number, uri?: string }} [targetCalendarData]
+ * @property {{ id?: string | number, uri?: string }} [sourceCalendarData]
+ * @property {string | number} [calendarId]
+ * @property {string | number} [targetCalendarId]
+ * @property {string | number} [sourceCalendarId]
+ * @property {{ id?: string | number, hash?: string, title?: string, ownerId?: string }} [form]
+ * @property {{ id?: string | number, userId?: string, timestamp?: number }} [submission]
+ * @property {string | number} [tableId]
+ * @property {string | number} [rowId]
+ * @property {Record<string, unknown>} [values]
+ * @property {Record<string, unknown>} [previousValues]
+ * @property {HookCard} [card]
+ *
+ * @typedef {object} HookEnvelope
+ * @property {HookEventBody} [event]
+ * @property {{ uid?: string, displayName?: string }} [user]
+ * @property {number} [time]  unix seconds
+ *
+ * The normalised payload sent on to the SaaS. The deck fields are named because deckTransitions()
+ * reads and writes them; the rest differs per event.
+ * @typedef {{
+ *   [key: string]: unknown,
+ *   cardId?: string | number | null,
+ *   done?: string | boolean | null,
+ *   stackId?: string | number | null,
+ *   previousStackId?: string | number,
+ * }} HookPayload
+ */
+
 const secretLimiter = rateLimit.penalise('nc-hook-secret', { limit: 60, windowMs: 60_000 });
 
-/** Bee Flow trigger id for a Nextcloud event class, or null if unregistered. */
+/**
+ * Bee Flow trigger id for a Nextcloud event class, or null if unregistered.
+ * @param {unknown} eventClass
+ * @returns {string | null}
+ */
 function mapEvent(eventClass) {
     if (!eventClass || typeof eventClass !== 'string') return null;
     return EVENT_BY_CLASS[eventClass] || null;
 }
 
+/**
+ * @param {unknown} a
+ * @param {unknown} b
+ * @returns {boolean}
+ */
 function safeEqual(a, b) {
     const bufA = Buffer.from(String(a || ''), 'utf8');
     const bufB = Buffer.from(String(b || ''), 'utf8');
@@ -61,6 +131,8 @@ function safeEqual(a, b) {
  * speaks user-relative paths (`/Documents/x.pdf`), so strip the prefix. Paths
  * outside a user's `files` root (versions, trashbin, appdata) are returned
  * unchanged and carry `relative: false` so the SaaS can tell them apart.
+ * @param {unknown} rawPath
+ * @returns {{ path: string | null, owner: string | null, relative: boolean }}
  */
 function toUserRelativePath(rawPath) {
     if (!rawPath || typeof rawPath !== 'string') return { path: null, owner: null, relative: false };
@@ -69,6 +141,7 @@ function toUserRelativePath(rawPath) {
     return { path: m[2] || '/', owner: m[1], relative: true };
 }
 
+/** @param {HookNode | null | undefined} node */
 function nodeFields(node) {
     if (!node || typeof node !== 'object') {
         return { id: null, path: null, name: null, extension: null, kind: 'file', owner: null };
@@ -90,6 +163,11 @@ function nodeFields(node) {
     };
 }
 
+/**
+ * @param {string} event  the Bee Flow trigger id
+ * @param {HookEnvelope} envelope
+ * @returns {HookPayload}
+ */
 function normalisePayload(event, envelope) {
     const e = envelope.event || {};
     const actor = envelope.user?.uid || null;
@@ -221,22 +299,35 @@ function normalisePayload(event, envelope) {
  * alternative (firing `completed` whenever `done` is merely set) would re-fire
  * on every subsequent edit of an already-finished card, which is the kind of
  * trigger that gets an automation switched off.
+ * @type {Map<string | number, { done: string | boolean | null, stackId: string | number | null }>}
  */
 const CARD_STATE = new Map();
 const CARD_STATE_MAX = 5000;
 
+/**
+ * @param {string | number | null | undefined} cardId
+ * @param {{ done: string | boolean | null, stackId: string | number | null }} state
+ */
 function rememberCard(cardId, state) {
     if (cardId == null) return;
     // Re-insert so the Map's insertion order is a true LRU tail.
     CARD_STATE.delete(cardId);
     CARD_STATE.set(cardId, state);
     while (CARD_STATE.size > CARD_STATE_MAX) {
-        CARD_STATE.delete(CARD_STATE.keys().next().value);
+        const oldest = CARD_STATE.keys().next().value;
+        if (oldest === undefined) break;
+        CARD_STATE.delete(oldest);
     }
 }
 
+/**
+ * @param {string} event
+ * @param {HookPayload | null | undefined} payload  gets `previousStackId` when the card moved
+ * @returns {string[]}
+ */
 function deckTransitions(event, payload) {
-    const id = payload?.cardId;
+    if (!payload) return [];
+    const id = payload.cardId;
     if (id == null) return [];
     const next = { done: payload.done ?? null, stackId: payload.stackId ?? null };
 
@@ -254,6 +345,7 @@ function deckTransitions(event, payload) {
     // it came from cannot work without it.
     if (prev.stackId != null) payload.previousStackId = prev.stackId;
 
+    /** @type {string[]} */
     const extra = [];
     if (!prev.done && next.done) extra.push('deck.card.completed');
     if (prev.stackId != null && next.stackId != null && prev.stackId !== next.stackId) {
@@ -286,6 +378,7 @@ router.post(HOOK_PATH, express.json({ limit: '512kb' }), async (req, res) => {
     }
     secretLimiter.succeed();
 
+    /** @type {HookEnvelope} */
     const envelope = req.body || {};
     const eventClass = envelope.event?.class;
     const event = mapEvent(eventClass);
@@ -295,7 +388,9 @@ router.post(HOOK_PATH, express.json({ limit: '512kb' }), async (req, res) => {
         return res.json({ ignored: eventClass || null });
     }
 
-    if (!config.ncInstanceId) {
+    // Read once: the loop below awaits, and a re-bootstrap may clear the key in between.
+    const tenantKey = config.tenantKey;
+    if (!config.ncInstanceId || !tenantKey) {
         return res.status(503).json({ error: 'Connector not yet bootstrapped' });
     }
 
@@ -317,7 +412,7 @@ router.post(HOOK_PATH, express.json({ limit: '512kb' }), async (req, res) => {
         const ts = Math.floor(Date.now() / 1000);
         const path = '/api/automation/events/nextcloud';
         const message = `${ts}\nPOST\n${path}\n${body}`;
-        const sig = crypto.createHmac('sha256', config.tenantKey).update(message).digest('hex');
+        const sig = crypto.createHmac('sha256', tenantKey).update(message).digest('hex');
 
         try {
             const r = await fetch(`${config.apiBaseUrl}${path}`, {
@@ -333,12 +428,12 @@ router.post(HOOK_PATH, express.json({ limit: '512kb' }), async (req, res) => {
             });
             if (!r.ok) {
                 const t = await r.text().catch(() => '');
-                console.warn(`[AutomationEvents] SaaS returned ${r.status} for ${name}: ${t.slice(0, 200)}`);
+                log.warn(`[AutomationEvents] SaaS returned ${r.status} for ${name}: ${t.slice(0, 200)}`);
             }
         } catch (err) {
             // Keep going: a failure forwarding `changed` must not swallow the
             // `completed` the author actually subscribed to.
-            console.warn(`[AutomationEvents] forward failed for ${name}: ${err.message}`);
+            log.warn(`[AutomationEvents] forward failed for ${name}: ${errMessage(err)}`);
         }
     }
     // Always 200 to Nextcloud so the background job doesn't enter a retry
@@ -346,9 +441,10 @@ router.post(HOOK_PATH, express.json({ limit: '512kb' }), async (req, res) => {
     res.json({ ok: true, event, events });
 });
 
-module.exports = router;
-module.exports.mapEvent = mapEvent;
-module.exports.normalisePayload = normalisePayload;
-module.exports.toUserRelativePath = toUserRelativePath;
-module.exports.deckTransitions = deckTransitions;
-module.exports._resetCardState = () => CARD_STATE.clear();
+module.exports = Object.assign(router, {
+    mapEvent,
+    normalisePayload,
+    toUserRelativePath,
+    deckTransitions,
+    _resetCardState: () => CARD_STATE.clear(),
+});

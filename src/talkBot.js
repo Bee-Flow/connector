@@ -42,9 +42,11 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const config = require('./config');
-const { withWarmupRetry } = require('./appApiClient');
+const { withWarmupRetry, appApiHeaders } = require('./appApiClient');
 const { secretMatches, decodeAuthHeader } = require('./auth');
 const rateLimit = require('./rateLimit');
+const log = require('./log');
+const { errMessage } = require('./errors');
 
 // Brute-force gate on the inbound AppAPI shared-secret check. AppAPI itself
 // never presents a bad one, so only failures are billed and real deliveries are
@@ -61,21 +63,26 @@ const SECRET_FILE = 'talk-bot.json';
 const BOT_NAME = 'Bee Flow';
 const BOT_DESCRIPTION = 'Runs Bee Flow automations from this conversation. Add the bot to a conversation to let automations react to what is said in it.';
 
+/** @type {string | null} */
 let _secret = null;
 
+/** @returns {string} */
 function secretPath() {
     return path.join(config.persistentStorage, SECRET_FILE);
 }
 
+/** @returns {string | null} */
 function loadSecret() {
     if (_secret) return _secret;
     try {
-        const raw = JSON.parse(fs.readFileSync(secretPath(), 'utf8'));
+        // nosemgrep: ajinabraham.njsscan.generic.hardcoded_secrets.node_secret -- reads the bot secret from its file at runtime; nothing is hardcoded
+        const raw = /** @type {{ secret?: unknown } | null} */ (JSON.parse(fs.readFileSync(secretPath(), 'utf8')));
         if (raw && typeof raw.secret === 'string' && raw.secret) _secret = raw.secret;
     } catch (_) { /* not registered yet, or unreadable — treated as absent */ }
     return _secret;
 }
 
+/** @param {string} secret */
 function saveSecret(secret) {
     _secret = secret;
     try {
@@ -84,63 +91,82 @@ function saveSecret(secret) {
     } catch (err) {
         // Non-fatal: the bot works until the container restarts, at which point
         // re-registration mints a fresh secret anyway.
-        console.warn(`[TalkBot] could not persist the bot secret: ${err.message}`);
+        log.warn(`[TalkBot] could not persist the bot secret: ${errMessage(err)}`);
     }
 }
 
-function appApiHeaders() {
-    return {
-        'Content-Type': 'application/json',
-        'OCS-APIRequest': 'true',
-        'Accept': 'application/json',
-        'EX-APP-ID': config.appId,
-        'EX-APP-VERSION': config.appVersion,
-        'AUTHORIZATION-APP-API': Buffer.from(`:${config.appSecret}`).toString('base64'),
-    };
+/** @returns {Promise<Response>} */
+function postRegistration() {
+    return withWarmupRetry(() => fetch(`${config.nextcloudUrl}${TALK_BOT_API}`, {
+        method: 'POST',
+        headers: appApiHeaders(),
+        body: JSON.stringify({ name: BOT_NAME, route: BOT_ROUTE, description: BOT_DESCRIPTION }),
+        signal: AbortSignal.timeout(5_000),
+    }), { label: 'talk-bot', budgetMs: 30_000 });
 }
 
 /**
  * Register the bot with Talk (via AppAPI) and keep the secret it returns.
- * Idempotent: re-registering the same (appId, route) reuses the existing
- * secret upstream rather than minting a new one.
+ *
+ * NOT idempotent upstream: AppAPI mints a new secret on every registration,
+ * and Talk refuses a bot whose URL is already registered with another secret
+ * (an OCS 500, "Bot with the same URL and a different secret is already
+ * registered"; the cause is only in Nextcloud's log). So on every start after
+ * the first, the POST fails (#281):
+ *   - with a stored secret, that is the bot Talk already has: keep it. Deleting
+ *     it to re-register would also drop the bot from every conversation it was
+ *     added to (the same reason a container stop no longer unregisters it,
+ *     see shutdown.js).
+ *   - without one (fresh volume), the registered bot is unusable to us (no
+ *     secret to verify deliveries or sign replies with): remove it and
+ *     register again.
  */
 async function registerTalkBot() {
-    const url = `${config.nextcloudUrl}${TALK_BOT_API}`;
+    /** @type {Response} */
     let res;
     try {
-        res = await withWarmupRetry(() => fetch(url, {
-            method: 'POST',
-            headers: appApiHeaders(),
-            body: JSON.stringify({ name: BOT_NAME, route: BOT_ROUTE, description: BOT_DESCRIPTION }),
-            signal: AbortSignal.timeout(5_000),
-        }), { label: 'talk-bot', budgetMs: 30_000 });
+        res = await postRegistration();
     } catch (err) {
-        console.warn(`[TalkBot] registration request failed: ${err.message}`);
+        log.warn(`[TalkBot] registration request failed: ${errMessage(err)}`);
         return { ok: false, reason: 'request-failed' };
     }
 
     if (res.status === 404 || res.status === 501) {
         // Talk not installed. Perfectly normal — chat triggers are simply
         // unavailable on this instance.
-        console.log('[TalkBot] Talk is not installed on this Nextcloud — chat triggers unavailable.');
+        log.info('[TalkBot] Talk is not installed on this Nextcloud — chat triggers unavailable.');
         return { ok: false, reason: 'talk-missing' };
     }
+    if (!res.ok && loadSecret()) {
+        log.info(`[TalkBot] already registered (Nextcloud answered HTTP ${res.status} to a re-registration); keeping the stored secret.`);
+        return { ok: true, reason: 'kept-existing' };
+    }
     if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        console.warn(`[TalkBot] registration failed (HTTP ${res.status}): ${body.slice(0, 160)}`);
-        return { ok: false, reason: `http-${res.status}` };
+        log.info(`[TalkBot] registration refused (HTTP ${res.status}) and no stored secret: removing the existing bot and registering again. Conversations that had the bot must add it again.`);
+        await unregisterTalkBot();
+        try {
+            res = await postRegistration();
+        } catch (err) {
+            log.warn(`[TalkBot] registration request failed: ${errMessage(err)}`);
+            return { ok: false, reason: 'request-failed' };
+        }
+        if (!res.ok) {
+            const body = await res.text().catch(() => '');
+            log.warn(`[TalkBot] registration failed (HTTP ${res.status}): ${body.slice(0, 160)}`);
+            return { ok: false, reason: `http-${res.status}` };
+        }
     }
 
-    const body = await res.json().catch(() => null);
+    const body = /** @type {{ ocs?: { data?: { secret?: string } } } | null} */ (await res.json().catch(() => null));
     const secret = body?.ocs?.data?.secret;
     if (!secret) {
         // Without the secret we cannot verify a single delivery, so treat this
         // as a failure rather than reporting a bot that can never be trusted.
-        console.warn('[TalkBot] Nextcloud did not return a bot secret — chat triggers will not work.');
+        log.warn('[TalkBot] Nextcloud did not return a bot secret — chat triggers will not work.');
         return { ok: false, reason: 'no-secret' };
     }
     saveSecret(secret);
-    console.log('[TalkBot] registered — add "Bee Flow" to a conversation to enable chat triggers there.');
+    log.info('[TalkBot] registered — add "Bee Flow" to a conversation to enable chat triggers there.');
     return { ok: true };
 }
 
@@ -160,6 +186,8 @@ async function unregisterTalkBot() {
  * empty userId for this service-level forward) — the same boundary auth.js
  * enforces for browser traffic. Constant-time via secretMatches; EX-APP-ID is
  * checked when present. Returns false on a missing/mismatched secret.
+ * @param {import('express').Request} req
+ * @returns {boolean}
  */
 function verifyInboundAppApi(req) {
     const decoded = decodeAuthHeader(req.headers['authorization-app-api']);
@@ -172,6 +200,51 @@ function verifyInboundAppApi(req) {
 /**
  * Activity Streams envelope → Bee Flow trigger. Returns null for anything we
  * don't turn into a trigger (joins, leaves, system messages).
+ *
+ * @typedef {object} ActivityObject
+ * @property {string | number} [id]
+ * @property {string} [name]
+ * @property {string} [content]
+ * @property {string} [mediaType]
+ * @property {{ object?: { id?: string | number } }} [inReplyTo]
+ * @property {ActivityObject} [object]  the reacted-to message, inside an `Undo`
+ *
+ * @typedef {object} TalkActivity  an Activity Streams 2.0 envelope as Talk sends it
+ * @property {string} [type]
+ * @property {{ id?: string, name?: string }} [actor]
+ * @property {{ id?: string, name?: string }} [target]
+ * @property {ActivityObject} [object]
+ * @property {string} [content]
+ *
+ * @typedef {object} TalkMessagePayload
+ * @property {string | number | null} messageId
+ * @property {string | number | null} roomToken
+ * @property {string | null} roomName
+ * @property {string | null} actor
+ * @property {string | null} actorType
+ * @property {string | null} actorName
+ * @property {string} message
+ * @property {Record<string, unknown> | null} parameters  mention placeholders by key
+ * @property {boolean} isMarkdown
+ * @property {string | number | null} inReplyTo
+ * @property {string} datetime
+ *
+ * @typedef {object} TalkReactionPayload
+ * @property {string | number | null} messageId
+ * @property {string | number | null} roomToken
+ * @property {string | null} roomName
+ * @property {string | null} actor
+ * @property {string | null} actorType
+ * @property {string | null} actorName
+ * @property {string} reaction
+ * @property {boolean} removed
+ * @property {string} datetime
+ *
+ * @typedef {{ event: 'talk.message.received', payload: TalkMessagePayload }
+ *   | { event: 'talk.reaction.added', payload: TalkReactionPayload }} MappedActivity
+ *
+ * @param {TalkActivity | null | undefined} body
+ * @returns {MappedActivity | null}
  */
 function mapActivity(body) {
     if (!body || typeof body !== 'object') return null;
@@ -188,9 +261,10 @@ function mapActivity(body) {
         // rendered mentions live in parameters, so the raw message keeps
         // placeholders like {mention-call1}. Callers get both.
         let message = '';
+        /** @type {Record<string, unknown> | null} */
         let parameters = null;
         try {
-            const parsed = JSON.parse(body.object.content || '{}');
+            const parsed = /** @type {{ message?: unknown, parameters?: Record<string, unknown> | null }} */ (JSON.parse(body.object.content || '{}'));
             message = typeof parsed.message === 'string' ? parsed.message : '';
             parameters = parsed.parameters || null;
         } catch (_) { message = String(body.object.content || ''); }
@@ -262,24 +336,25 @@ function mapActivity(body) {
 
 const AGENT_TASK_TYPE = 'core:contextagent:interaction';
 
-// Does this message @mention the bot? Prefer Talk's structured mention
-// parameters (the accurate "@" signal); fall back to the bot name appearing in
-// the raw text so it still works if a delivery omits parameters.
+// Does this message @mention the bot? Talk's structured mention parameters are
+// the accurate "@" signal. Only a message that carries NO mention at all falls
+// back to the text, and then only to a literal "@Bee Flow": "the Bee Flow
+// report is late" used to start an agent run as that user and post the answer
+// to the room.
+/** @param {{ parameters?: Record<string, unknown> | null, message?: string } | null | undefined} payload */
 function mentionsBot(payload) {
     const params = payload?.parameters;
-    if (params && typeof params === 'object') {
-        for (const v of Object.values(params)) {
-            if (v && typeof v === 'object'
-                && String(v.name || '').toLowerCase() === BOT_NAME.toLowerCase()) {
-                return true;
-            }
-        }
+    const mentions = params && typeof params === 'object' ? Object.values(params) : [];
+    if (mentions.length) {
+        return mentions.some(v => v && typeof v === 'object' && 'name' in v
+            && String(v.name || '').toLowerCase() === BOT_NAME.toLowerCase());
     }
-    return /(^|\s)@?bee\s*flow\b/i.test(String(payload?.message || ''));
+    return /(^|\s)@bee\s*flow\b/i.test(String(payload?.message || ''));
 }
 
 // Recover the question from a mention message: drop Talk's {mention-…}
 // placeholders and a literal "@Bee Flow", collapse whitespace.
+/** @param {{ message?: string } | null | undefined} payload */
 function extractQuestion(payload) {
     return String(payload?.message || '')
         .replace(/\{mention-[^}]*\}/g, ' ')
@@ -290,7 +365,12 @@ function extractQuestion(payload) {
 
 // Ask the SaaS agent, reusing the same signed execute endpoint the Task
 // Processing providers use. Returns the answer text (possibly empty).
+/**
+ * @param {{ question: string, ncUid: string | null, roomToken: string | number }} args
+ * @returns {Promise<string>}
+ */
 async function askSaaSAgent({ question, ncUid, roomToken }) {
+    if (!config.tenantKey || !config.ncInstanceId) throw new Error('connector not yet bootstrapped');
     const apiPath = '/api/nextcloud/task-processing/execute';
     const body = JSON.stringify({
         taskType: AGENT_TASK_TYPE,
@@ -316,7 +396,7 @@ async function askSaaSAgent({ question, ncUid, roomToken }) {
     if (!res.ok) {
         throw new Error(`SaaS ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
     }
-    const data = await res.json().catch(() => null);
+    const data = /** @type {{ output?: string | { output?: string } } | null} */ (await res.json().catch(() => null));
     const out = data?.output;
     if (out && typeof out === 'object') return String(out.output || '').trim();
     return typeof out === 'string' ? out.trim() : '';
@@ -324,6 +404,11 @@ async function askSaaSAgent({ question, ncUid, roomToken }) {
 
 // Post a message back to a conversation as the bot. Auth is the bot signature
 // over RANDOM + message (spreed docs/bots.md), NOT a user session.
+/**
+ * @param {string | number} token
+ * @param {string} msg
+ * @param {string | number | null | undefined} replyTo
+ */
 async function _sendBotMessage(token, msg, replyTo) {
     const secret = loadSecret();
     if (!secret) throw new Error('no bot secret — cannot post');
@@ -333,6 +418,7 @@ async function _sendBotMessage(token, msg, replyTo) {
     const signature = crypto.createHmac('sha256', secret).update(random + msg).digest('hex');
     const referenceId = crypto.createHash('sha256').update(`${random}:${msg}`).digest('hex');
     const url = `${config.nextcloudUrl}/ocs/v2.php/apps/spreed/api/v1/bot/${encodeURIComponent(token)}/message`;
+    /** @type {{ message: string, referenceId: string, replyTo?: number }} */
     const bodyObj = { message: msg, referenceId };
     if (Number.isFinite(Number(replyTo)) && Number(replyTo) > 0) bodyObj.replyTo = Number(replyTo);
     const res = await fetch(url, {
@@ -350,6 +436,11 @@ async function _sendBotMessage(token, msg, replyTo) {
     return res;
 }
 
+/**
+ * @param {string | number} token
+ * @param {unknown} message
+ * @param {string | number | null | undefined} [replyTo]
+ */
 async function postBotMessage(token, message, replyTo) {
     const msg = String(message || '').slice(0, 32000);
     if (!msg) return;
@@ -365,6 +456,7 @@ async function postBotMessage(token, message, replyTo) {
     }
 }
 
+/** @param {TalkMessagePayload} payload */
 async function handleMention(payload) {
     const roomToken = payload?.roomToken;
     if (!roomToken) return;
@@ -372,15 +464,15 @@ async function handleMention(payload) {
     if (!question) {
         await postBotMessage(roomToken,
             'Hi! Mention me with a question — e.g. "@Bee Flow what changed in my calendar today?"',
-            payload.messageId).catch(e => console.warn(`[TalkBot] reply failed: ${e.message}`));
+            payload.messageId).catch(e => log.warn(`[TalkBot] reply failed: ${errMessage(e)}`));
         return;
     }
     try {
         const answer = await askSaaSAgent({ question, ncUid: payload.actor, roomToken });
         await postBotMessage(roomToken, answer || 'I could not find an answer to that.', payload.messageId);
-        console.log(`[TalkBot] answered @mention in room ${roomToken} (uid=${payload.actor})`);
+        log.info(`[TalkBot] answered @mention in room ${roomToken} (uid=${log.ref(payload.actor)})`);
     } catch (err) {
-        console.warn(`[TalkBot] @mention answer failed for room ${roomToken}: ${err.message}`);
+        log.warn(`[TalkBot] @mention answer failed for room ${roomToken}: ${errMessage(err)}`);
         await postBotMessage(roomToken,
             'Sorry — I could not answer that just now. Please try again in a moment.',
             payload.messageId).catch(() => {});
@@ -406,6 +498,7 @@ router.post(BOT_ROUTE, express.json({ type: () => true, limit: '256kb' }), async
     }
     sigLimiter.succeed();
 
+    /** @type {TalkActivity | null} */
     const body = (req.body && typeof req.body === 'object') ? req.body : null;
     const mapped = mapActivity(body);
     if (!mapped) {
@@ -426,7 +519,7 @@ router.post(BOT_ROUTE, express.json({ type: () => true, limit: '256kb' }), async
         && mapped.payload.actorType === 'users'
         && mentionsBot(mapped.payload)) {
         handleMention(mapped.payload)
-            .catch(err => console.warn(`[TalkBot] handleMention crashed: ${err.message}`));
+            .catch(err => log.warn(`[TalkBot] handleMention crashed: ${errMessage(err)}`));
     }
 
     const payloadBody = JSON.stringify({
@@ -439,36 +532,48 @@ router.post(BOT_ROUTE, express.json({ type: () => true, limit: '256kb' }), async
     const sig = crypto.createHmac('sha256', config.tenantKey)
         .update(`${ts}\nPOST\n${apiPath}\n${payloadBody}`).digest('hex');
 
-    try {
-        const r = await fetch(`${config.apiBaseUrl}${apiPath}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Beeflow-Source': 'nextcloud-connector',
-                'X-Beeflow-NC-Instance-Id': config.ncInstanceId,
-                'X-Beeflow-Sig': `${ts}.${sig}`,
-            },
-            body: payloadBody,
-            signal: AbortSignal.timeout(10_000),
-        });
-        if (!r.ok) {
-            const t = await r.text().catch(() => '');
-            console.warn(`[TalkBot] SaaS returned ${r.status}: ${t.slice(0, 200)}`);
-        }
-    } catch (err) {
-        console.warn(`[TalkBot] forward failed: ${err.message}`);
-    }
+    // Answer Talk first, forward afterwards. The forward may take up to 10 s,
+    // which can outlast the time Talk (through AppAPI's bot proxy) gives a
+    // webhook before it counts the delivery as failed; the outcome of the
+    // forward is only ever logged, so Talk has nothing to wait for.
     res.json({ ok: true, event: mapped.event });
+    forwardToBeeFlow(apiPath, payloadBody, `${ts}.${sig}`, /** @type {string} */ (config.ncInstanceId))
+        .catch(err => log.warn(`[TalkBot] forward failed: ${errMessage(err)}`));
 });
 
-module.exports = router;
-module.exports.registerTalkBot = registerTalkBot;
-module.exports.unregisterTalkBot = unregisterTalkBot;
-module.exports.verifyInboundAppApi = verifyInboundAppApi;
-module.exports.mapActivity = mapActivity;
-module.exports.loadSecret = loadSecret;
-module.exports.saveSecret = saveSecret;
-module.exports.mentionsBot = mentionsBot;
-module.exports.extractQuestion = extractQuestion;
-module.exports.BOT_ROUTE = BOT_ROUTE;
-module.exports.BOT_NAME = BOT_NAME;
+/**
+ * @param {string} apiPath
+ * @param {string} payloadBody
+ * @param {string} signature
+ * @param {string} ncInstanceId
+ */
+async function forwardToBeeFlow(apiPath, payloadBody, signature, ncInstanceId) {
+    const r = await fetch(`${config.apiBaseUrl}${apiPath}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Beeflow-Source': 'nextcloud-connector',
+            'X-Beeflow-NC-Instance-Id': ncInstanceId,
+            'X-Beeflow-Sig': signature,
+        },
+        body: payloadBody,
+        signal: AbortSignal.timeout(10_000),
+    });
+    if (!r.ok) {
+        const t = await r.text().catch(() => '');
+        log.warn(`[TalkBot] SaaS returned ${r.status}: ${t.slice(0, 200)}`);
+    }
+}
+
+module.exports = Object.assign(router, {
+    registerTalkBot,
+    unregisterTalkBot,
+    verifyInboundAppApi,
+    mapActivity,
+    loadSecret,
+    saveSecret,
+    mentionsBot,
+    extractQuestion,
+    BOT_ROUTE,
+    BOT_NAME,
+});

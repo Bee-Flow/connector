@@ -103,3 +103,37 @@ test('parseFiles builds the path from the directory and name AppAPI sends', () =
     assert.equal(fa.parseFiles({ files: [{ fileId: 1 }] })[0].path, null);
 });
 
+
+// AppAPI turns `redirect_handler` into /apps/app_api/embedded/<appId>/<value>
+// and that route needs a registered top-menu name: '' was a 404 page for every
+// entry. Assert the handler names exactly the entry the connector registers.
+test('a Files action redirects to the top-menu entry the connector registers', async (t) => {
+    const http = require('node:http');
+    const express = require('express');
+    const heartbeat = require('../src/heartbeat');
+    const posted = [];
+    t.mock.method(globalThis, 'fetch', async (url, init) => {
+        if (String(url).includes('/ui/top-menu')) posted.push(JSON.parse(init.body).name);
+        return new Response(JSON.stringify({ ocs: { meta: { statuscode: 200 }, data: [] } }), { status: 200 });
+    });
+    await heartbeat.registerTopMenu();
+    t.mock.restoreAll();
+
+    const app = express();
+    app.use(express.json());
+    fa.registerRoutes(app);
+    const server = http.createServer(app);
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    try {
+        const res = await fetch(`http://127.0.0.1:${server.address().port}${fa.ACTIONS[0].actionHandler.replace(/^\/?/, '/')}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files: [{ fileId: 42, name: 'a.txt', directory: '/' }] }),
+        });
+        const body = await res.json();
+        assert.equal(posted.length, 1);
+        assert.ok(body.redirect_handler, 'an empty redirect_handler lands on a Nextcloud 404');
+        assert.equal(body.redirect_handler, posted[0]);
+    } finally {
+        server.close();
+    }
+});

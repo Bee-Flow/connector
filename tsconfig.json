@@ -1,0 +1,22 @@
+{
+  // JSDoc type checking of the plain JS, no build step: `npm run typecheck`. Strict: the budget in
+  // .tsc-strict-ratchet.json (scripts/tsc-error-ratchet.mjs, via tsconfig.strict.json) is 0 and stays there.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "module": "node20",
+    "moduleResolution": "node16",
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.js", "types/**/*.d.ts"]
+}

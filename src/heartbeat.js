@@ -10,10 +10,11 @@
  *   PUT  /enabled?...   — MUST answer 200; carries no side effect beyond a log
  *                         line. It deliberately does NOT unregister anything:
  *                         AppAPI sends no auth header here either, so wiring
- *                         `unregisterEventListeners` onto it would hand every
- *                         container on the docker network a teardown primitive
- *                         for the customer's Nextcloud registrations. Teardown
- *                         happens on SIGTERM instead (server.js gracefulShutdown).
+ *                         a teardown onto it would hand every container on the
+ *                         docker network a teardown primitive for the
+ *                         customer's Nextcloud registrations. Nothing tears down
+ *                         on SIGTERM either (shutdown.js); AppAPI cleans up on
+ *                         a real uninstall.
  *
  * Why /init returns immediately: AppAPI's `--wait-finish` polls the status
  * field and blocks until init=100 or an error appears. If /init does work
@@ -22,10 +23,14 @@
  */
 
 const config = require('./config');
-const { withWarmupRetry } = require('./appApiClient');
+const { withWarmupRetry, appApiHeaders } = require('./appApiClient');
 const { decodeAuthHeader, secretMatches, HDR } = require('./auth');
 const { ocsSucceeded } = require('./ocs');
 const rateLimit = require('./rateLimit');
+const log = require('./log');
+const { errMessage } = require('./errors');
+const { singleFlight } = require('./singleFlight');
+const { TOP_MENU_NAME } = require('./filesActions');
 
 /**
  * Is this caller presenting the AppAPI shared secret?
@@ -39,6 +44,8 @@ const rateLimit = require('./rateLimit');
  * container name, i.e. exactly the internal-network shape
  * developer_manual/prologue/security.html calls out under "Sensitive data
  * exposure". Those fields go only to a caller that holds the secret.
+ * @param {import('express').Request} req
+ * @returns {boolean}
  */
 function isTrustedLifecycleCaller(req) {
     const decoded = decodeAuthHeader(req.headers?.[HDR.auth]);
@@ -80,6 +87,11 @@ function isTrustedLifecycleCaller(req) {
 const INIT_UNTRUSTED_LIMIT = 3;
 const INIT_UNTRUSTED_WINDOW_MS = 15 * 60 * 1000;
 
+/**
+ * @param {string} route
+ * @param {string} why  completes the sentence in the one log line
+ * @returns {boolean}
+ */
 function untrustedLifecycleAllowed(route, why) {
     const verdict = rateLimit.consume(`lifecycle-${route}`, 'untrusted', {
         limit: INIT_UNTRUSTED_LIMIT,
@@ -93,7 +105,7 @@ function untrustedLifecycleAllowed(route, why) {
         windowMs: INIT_UNTRUSTED_WINDOW_MS,
     });
     if (warn.allowed) {
-        console.warn(`[Lifecycle] ignoring /${route} from a caller with no AppAPI shared secret — `
+        log.warn(`[Lifecycle] ignoring /${route} from a caller with no AppAPI shared secret — `
             + `more than ${INIT_UNTRUSTED_LIMIT} in ${INIT_UNTRUSTED_WINDOW_MS / 60_000} minutes. `
             + `AppAPI calls it on install and upgrade only; a loop of unauthenticated calls is `
             + `someone on this docker network ${why}. `
@@ -102,6 +114,7 @@ function untrustedLifecycleAllowed(route, why) {
     return false;
 }
 
+/** @param {import('express').Express} app */
 function registerLifecycle(app) {
     app.get('/heartbeat', (req, res) => {
         // Surface bootstrap state so the NC admin viewing the ExApp page
@@ -110,8 +123,11 @@ function registerLifecycle(app) {
         // advisory for our own diagnostics (consumed by the SPA error
         // overlay and `app_api:app:heartbeat` operators).
         const trusted = isTrustedLifecycleCaller(req);
+        /** @type {ReturnType<typeof import('./bootstrap').getPendingState> | null} */
         let pending = null;
+        /** @type {ReturnType<typeof import('./bootstrap').getLastErrorState> | null} */
         let lastError = null;
+        /** @type {typeof import('./bootstrap') | null} */
         let bs = null;
         try {
             bs = require('./bootstrap');
@@ -173,10 +189,10 @@ function registerLifecycle(app) {
 
         setImmediate(() => {
             runInitInBackground().catch(err => {
-                console.error(`[Init] Background setup failed: ${err.message}`);
+                log.error(`[Init] Background setup failed: ${errMessage(err)}`);
                 // Surface the error to AppAPI so `--wait-finish` exits cleanly
                 // instead of polling forever.
-                reportInitProgress(0, err.message).catch(() => {});
+                reportInitProgress(0, errMessage(err)).catch(() => {});
             });
         });
     });
@@ -194,7 +210,7 @@ function registerLifecycle(app) {
         if (!isTrustedLifecycleCaller(req)
             && !untrustedLifecycleAllowed('enabled', 'filling the container log')) return;
 
-        console.log(`[Lifecycle] enabled=${req.query?.enabled === '1'}`);
+        log.info(`[Lifecycle] enabled=${req.query?.enabled === '1'}`);
     });
 }
 
@@ -205,8 +221,10 @@ function registerLifecycle(app) {
 // concurrent second run pure cost: before this guard the runs stacked, and 20
 // requests put 380 requests in flight against Nextcloud at once. Callers that
 // arrive mid-run join the run already in progress and see its outcome.
+/** @type {Promise<void> | null} */
 let _initInFlight = null;
 
+/** @returns {Promise<void>} */
 function runInitInBackground() {
     if (_initInFlight) return _initInFlight;
     _initInFlight = runInitOnce().finally(() => { _initInFlight = null; });
@@ -224,7 +242,7 @@ async function runInitOnce() {
             const { bootstrapIfNeeded } = require('./bootstrap');
             await bootstrapIfNeeded();
         } catch (err) {
-            console.warn(`[Init] Bootstrap retry failed (non-fatal): ${err.message}`);
+            log.warn(`[Init] Bootstrap retry failed (non-fatal): ${errMessage(err)}`);
         }
     }
     await reportInitProgress(25).catch(() => {});
@@ -232,13 +250,13 @@ async function runInitOnce() {
     // 2. NC UI registrations — independent, run in parallel.
     const declarativeSettings = require('./declarativeSettings');
     await Promise.allSettled([
-        registerTopMenu().catch(err => console.warn(`[Init] TopMenu register failed: ${err.message}`)),
-        registerEmbedScript().catch(err => console.warn(`[Init] Embed script register failed: ${err.message}`)),
-        declarativeSettings.registerSettingsForm().catch(err => console.warn(`[Init] Settings form register failed: ${err.message}`)),
+        registerTopMenu().catch(err => log.warn(`[Init] TopMenu register failed: ${errMessage(err)}`)),
+        registerEmbedScript().catch(err => log.warn(`[Init] Embed script register failed: ${errMessage(err)}`)),
+        declarativeSettings.registerSettingsForm().catch(err => log.warn(`[Init] Settings form register failed: ${errMessage(err)}`)),
         // Studio-app menu entries (a top-menu icon per published app). A no-op
         // until bootstrap has a tenant key; the poller catches up afterwards.
         require('./studioAppMenus').syncStudioAppMenus()
-            .catch(err => console.warn(`[Init] Studio-app menu sync failed: ${err.message}`)),
+            .catch(err => log.warn(`[Init] Studio-app menu sync failed: ${errMessage(err)}`)),
     ]);
     declarativeSettings.startPolling();
     await reportInitProgress(60).catch(() => {});
@@ -247,18 +265,7 @@ async function runInitOnce() {
     await registerEventListeners();
     await reportInitProgress(100).catch(() => {});
 
-    console.log(`[Init] Background setup completed in ${Date.now() - t0}ms`);
-}
-
-function appApiHeaders() {
-    return {
-        'Content-Type': 'application/json',
-        'OCS-APIRequest': 'true',
-        'Accept': 'application/json',
-        'EX-APP-ID': config.appId,
-        'EX-APP-VERSION': config.appVersion,
-        'AUTHORIZATION-APP-API': Buffer.from(`:${config.appSecret}`).toString('base64'),
-    };
+    log.info(`[Init] Background setup completed in ${Date.now() - t0}ms`);
 }
 
 async function registerTopMenu() {
@@ -267,7 +274,7 @@ async function registerTopMenu() {
         method: 'POST',
         headers: appApiHeaders(),
         body: JSON.stringify({
-            name: 'main',
+            name: TOP_MENU_NAME,
             displayName: 'Bee Flow',
             icon: 'img/app.svg',
             adminRequired: 0,
@@ -282,7 +289,7 @@ async function registerTopMenu() {
     if (!ok) {
         throw new Error(`TopMenu register HTTP ${res.status}${code === null ? '' : ` / OCS ${code}`}: ${body.slice(0, 200)}`);
     }
-    console.log('[Init] TopMenu entry registered');
+    log.info('[Init] TopMenu entry registered');
 }
 
 // Registers a JS file that NC will inject into the embedded template. The
@@ -295,7 +302,7 @@ async function registerEmbedScript() {
         headers: appApiHeaders(),
         body: JSON.stringify({
             type: 'top_menu',
-            name: 'main',
+            name: TOP_MENU_NAME,
             path: 'js/embed',
             afterAppId: '',
         }),
@@ -307,7 +314,7 @@ async function registerEmbedScript() {
     if (!ok) {
         throw new Error(`Script register HTTP ${res.status}${code === null ? '' : ` / OCS ${code}`}: ${body.slice(0, 200)}`);
     }
-    console.log('[Init] Embed script registered');
+    log.info('[Init] Embed script registered');
 }
 
 // Real-time event subscriptions now go through Nextcloud's bundled
@@ -322,48 +329,54 @@ async function registerEmbedScript() {
 // "Sync now", Deck stays on the activity poller, and Talk is handled by the
 // Talk-bot webhook rather than an event subscription.
 async function registerEventListeners() {
-    const { ensureWebhookListeners, startRetry } = require('./webhookListeners');
     const { registerTalkBot } = require('./talkBot');
-    const { registerTaskProcessing } = require('./taskProcessing');
-    const { registerFilesActions } = require('./filesActions');
     // Independent of the webhook registration: Talk bots are a different
     // mechanism with a different failure mode (Talk simply not installed).
-    await registerTalkBot().catch(err => console.warn(`[Init] Talk bot registration failed: ${err.message}`));
-    await registerTaskProcessing().catch(err => console.warn(`[Init] Task Processing registration failed: ${err.message}`));
-    // AppAPI mounts its Files plugin only if some ExApp has registered a file
-    // action, so this call is what puts Bee Flow in the right-click menu at all.
-    await registerFilesActions().catch(err => console.warn(`[Init] Files action registration failed: ${err.message}`));
-    const result = await ensureWebhookListeners().catch(err => {
-        console.warn(`[Init] Webhook registration failed: ${err.message}`);
-        return { ok: false };
-    });
-    if (!result.ok) {
-        // Bootstrap may still be in flight, or the admin may not have enabled
-        // webhook_listeners yet. Keep trying quietly in the background.
-        startRetry();
-    }
-    console.log('[Init] Real-time user/group sync is not available via webhooks '
+    await registerTalkBot().catch(err => log.warn(`[Init] Talk bot registration failed: ${errMessage(err)}`));
+    await registerTenantKeyDependents();
+    log.info('[Init] Real-time user/group sync is not available via webhooks '
         + '(Nextcloud\'s User/Group events are not webhook-compatible); the periodic '
         + 'sync backstop and manual "Sync now" remain in use.');
 }
 
-async function unregisterEventListeners() {
-    const { unregisterWebhookListeners } = require('./webhookListeners');
-    const { unregisterTalkBot } = require('./talkBot');
-    const { unregisterTaskProcessing } = require('./taskProcessing');
-    const { unregisterFilesActions } = require('./filesActions');
-    await Promise.allSettled([
-        unregisterWebhookListeners(),
-        unregisterTalkBot(),
-        unregisterTaskProcessing(),
-        unregisterFilesActions(),
-    ]);
-}
+// The registrations that need a tenant key: the Assistant (Task Processing)
+// providers, the Files actions and the webhook rows (whose secret derives from
+// the key). They run from /init and again every time a key becomes active
+// (bootstrap.onTenantKeyReady): a key that arrives after boot (an emailed code
+// entered later, a pairing code, a Bee Flow server that was down at boot) used
+// to leave Nextcloud with no Bee Flow provider and no Files entries until a
+// restart, and a CHANGED key left every webhook row sending the old secret.
+// Coalesced: a call during a run for the same key joins it.
+const registerTenantKeyDependents = singleFlight(async () => {
+    if (!config.tenantKey) return;
+    const { ensureWebhookListeners, startRetry } = require('./webhookListeners');
+    const { registerTaskProcessing } = require('./taskProcessing');
+    const { registerFilesActions } = require('./filesActions');
+    await registerTaskProcessing().catch(err => log.warn(`[Init] Task Processing registration failed: ${errMessage(err)}`));
+    // AppAPI mounts its Files plugin only if some ExApp has registered a file
+    // action, so this call is what puts Bee Flow in the right-click menu at all.
+    await registerFilesActions().catch(err => log.warn(`[Init] Files action registration failed: ${errMessage(err)}`));
+    const result = await ensureWebhookListeners().catch(err => {
+        log.warn(`[Init] Webhook registration failed: ${errMessage(err)}`);
+        return { ok: false };
+    });
+    if (!result.ok) {
+        // The admin may not have enabled webhook_listeners yet. Keep trying
+        // quietly in the background.
+        startRetry();
+    }
+}, () => config.tenantKey);
+
+require('./bootstrap').onTenantKeyReady(registerTenantKeyDependents);
 
 // Reports init progress to AppAPI. Spec: PUT /ocs/v2.php/apps/app_api/ex-app/status
 // with `{progress: 0-100, error?: string}`. AppAPI's `waitInitStepFinish`
 // polls the same field every 0.1s; reporting 100 unblocks `--wait-finish`,
 // reporting `error` does the same with a failure exit.
+/**
+ * @param {number} percent
+ * @param {string} [errorMessage]
+ */
 async function reportInitProgress(percent, errorMessage) {
     const url = `${config.nextcloudUrl}/ocs/v2.php/apps/app_api/ex-app/status`;
     const body = errorMessage
@@ -382,8 +395,8 @@ async function reportInitProgress(percent, errorMessage) {
 
 module.exports = {
     registerLifecycle,
-    unregisterEventListeners,
     runInitInBackground,
+    registerTenantKeyDependents,
     registerTopMenu,
     registerEmbedScript,
     INIT_UNTRUSTED_LIMIT,

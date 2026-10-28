@@ -19,6 +19,8 @@ const { appApiAuthMiddleware } = require('./auth');
 const { securityHeaders, rejectCrossSiteWrites } = require('./security');
 const { registerLifecycle } = require('./heartbeat');
 const { buildApiProxy, buildEmbedProxy, isSpaShellPath } = require('./proxy');
+const log = require('./log');
+const { errMessage } = require('./errors');
 
 // Apply the Nextcloud TLS posture decided at boot (scripts/ncTlsTrust.js) BEFORE
 // any NC-bound fetch runs. No-op when the NC cert is publicly trusted; otherwise
@@ -96,15 +98,15 @@ app.use('/', require('./eventsWebhook'));
 // Routes auth-checked by appApiAuthMiddleware above (admin only via NC).
 const setupConfig = require('./setupConfig');
 const stored = setupConfig.init(config.persistentStorage);
-if (stored && !process.env.BEEFLOW_API_BASE_URL && stored.apiBaseUrl) {
+if (stored && !config.apiBaseUrlLocked && stored.apiBaseUrl) {
     config.apiBaseUrl = stored.apiBaseUrl;
-    console.log(`[Setup] applying user-chosen apiBaseUrl: ${config.apiBaseUrl} (${stored.mode})`);
+    log.info(`[Setup] applying user-chosen apiBaseUrl: ${config.apiBaseUrl} (${stored.mode})`);
 }
 // Admin-supplied public NC URL — only used when the env override is unset.
 // Same precedence rule as apiBaseUrl: env wins, then picker, then fallback.
 if (stored && !process.env.BEEFLOW_NC_PUBLIC_URL && stored.publicNcUrl) {
     config.nextcloudPublicUrl = stored.publicNcUrl;
-    console.log(`[Setup] applying user-chosen publicNcUrl: ${config.nextcloudPublicUrl}`);
+    log.info(`[Setup] applying user-chosen publicNcUrl: ${config.nextcloudPublicUrl}`);
 }
 app.use('/setup', require('./setup'));
 
@@ -136,7 +138,7 @@ require('./filesActions').registerRoutes(app);
 const { runInitInBackground } = require('./heartbeat');
 setImmediate(() => {
     runInitInBackground().catch(err => {
-        console.warn(`[Boot] UI re-registration failed (non-fatal): ${err.message}`);
+        log.warn(`[Boot] UI re-registration failed (non-fatal): ${errMessage(err)}`);
     });
 });
 
@@ -163,6 +165,7 @@ app.get(['/api/languages/user/locales', '/api/languages/user/strings/:lang',
 // once had its own copy of the list, and a path missing from it went to the
 // SaaS API proxy and 404'd.
 const CONNECTOR_SETUP = /^\/setup(\/|$)/;
+/** @param {string} urlPath */
 const isConnectorOwned = (urlPath) => CONNECTOR_SETUP.test(urlPath) || isSpaShellPath(urlPath);
 const proxy = buildApiProxy();
 app.use((req, res, next) => {
@@ -343,7 +346,7 @@ app.get('/{*splat}', (_req, res) => {
 // on the next /init lifecycle hit.
 const { bootstrapIfNeeded } = require('./bootstrap');
 bootstrapIfNeeded().catch(err => {
-    console.error(`[Bootstrap] Failed: ${err.message}. Will retry on /init.`);
+    log.error(`[Bootstrap] Failed: ${errMessage(err)}. Will retry on /init.`);
 });
 
 // HaRP-compatible: when HP_SHARED_KEY is set (HaRP daemon mode), bind to a
@@ -355,33 +358,20 @@ if (process.env.HP_SHARED_KEY) {
     try { fs2.unlinkSync(sockPath); } catch (_) { /* socket may not exist yet */ }
     app.listen(sockPath, () => {
         try { fs2.chmodSync(sockPath, 0o660); } catch (_) {}
-        console.log(`[BeeFlowConnector] ${config.appId} v${config.appVersion} listening on unix:${sockPath} (HaRP mode)`);
-        console.log(`[BeeFlowConnector] SaaS target: ${config.apiBaseUrl}`);
-        console.log(`[BeeFlowConnector] Nextcloud:   ${config.nextcloudUrl}`);
+        log.info(`[BeeFlowConnector] ${config.appId} v${config.appVersion} listening on unix:${sockPath} (HaRP mode)`);
+        log.info(`[BeeFlowConnector] SaaS target: ${config.apiBaseUrl}`);
+        log.info(`[BeeFlowConnector] Nextcloud:   ${config.nextcloudUrl}`);
     });
 } else {
     app.listen(config.appPort, config.appHost, () => {
-        console.log(`[BeeFlowConnector] ${config.appId} v${config.appVersion} listening on ${config.appHost}:${config.appPort}`);
-        console.log(`[BeeFlowConnector] SaaS target: ${config.apiBaseUrl}`);
-        console.log(`[BeeFlowConnector] Nextcloud:   ${config.nextcloudUrl}`);
+        log.info(`[BeeFlowConnector] ${config.appId} v${config.appVersion} listening on ${config.appHost}:${config.appPort}`);
+        log.info(`[BeeFlowConnector] SaaS target: ${config.apiBaseUrl}`);
+        log.info(`[BeeFlowConnector] Nextcloud:   ${config.nextcloudUrl}`);
     });
 }
 
-// Best-effort unregister of NC event-listeners on shutdown so stale
-// subscriptions don't accumulate after restarts. Re-registered on next
-// /init by registerEventListeners().
-let _shuttingDown = false;
-async function gracefulShutdown(signal) {
-    if (_shuttingDown) return;
-    _shuttingDown = true;
-    console.log(`[BeeFlowConnector] ${signal} — unregistering NC event listeners`);
-    try {
-        const { unregisterEventListeners } = require('./heartbeat');
-        await unregisterEventListeners();
-    } catch (err) {
-        console.warn(`[BeeFlowConnector] Unregister failed: ${err.message}`);
-    }
-    process.exit(0);
-}
+// A stop is not an uninstall: exit without unregistering anything (see
+// shutdown.js for what the old teardown did to the Talk bot).
+const gracefulShutdown = require('./shutdown').createShutdownHandler();
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));

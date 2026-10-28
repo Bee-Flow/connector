@@ -22,6 +22,10 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const config = require('./config');
+const log = require('./log');
+const { errMessage } = require('./errors');
+
+/** @typedef {import('../types/types').NextcloudUser} NextcloudUser */
 
 const HDR = {
     auth: 'authorization-app-api',
@@ -81,6 +85,8 @@ const ANON_OK = /^\/(assets\/|js\/|img\/|index\.html$|favicon|$)|\.(svg|png|jpe?
  * page script, and is exactly this question. Where it is absent (very old
  * browsers, server-to-server), fall back to a GET that explicitly asked for
  * HTML — never a bare `*&#47;*`.
+ * @param {import('express').Request} req
+ * @returns {boolean}
  */
 function isDocumentNavigation(req) {
     if (req.method !== 'GET' && req.method !== 'HEAD') return false;
@@ -90,8 +96,13 @@ function isDocumentNavigation(req) {
     return accept.includes('text/html');
 }
 
+/**
+ * @param {unknown} header  the raw AUTHORIZATION-APP-API header value
+ * @returns {{ userId: string, secret: string } | null}
+ */
 function decodeAuthHeader(header) {
     if (!header || typeof header !== 'string') return null;
+    /** @type {string} */
     let decoded;
     try {
         decoded = Buffer.from(header, 'base64').toString('utf8');
@@ -104,6 +115,11 @@ function decodeAuthHeader(header) {
 }
 
 /**
+ * The part of `GET /ocs/v2.php/cloud/users/{uid}` this file reads.
+ * @typedef {{ ocs?: { data?: { id: string, email?: string | null, displayname?: string, display_name?: string, groups?: string[] } } }} OcsUserResponse
+ */
+
+/**
  * Look up a Nextcloud user via OCS using the same shared-secret auth.
  *
  * Cached per-uid for 60s. The connector hits this on EVERY browser request
@@ -111,10 +127,15 @@ function decodeAuthHeader(header) {
  * and derive the user's email. Without the cache, each request adds an
  * extra HTTP round-trip to NC just to get data that rarely changes —
  * doubling perceived latency on every SPA action.
+ * @type {Map<string, { user: NextcloudUser, expiresAt: number }>}
  */
 const _userCache = new Map(); // uid → { user, expiresAt }
 const USER_CACHE_TTL_MS = 60_000;
 
+/**
+ * @param {string} uid
+ * @returns {Promise<NextcloudUser>}
+ */
 async function fetchNextcloudUser(uid) {
     const now = Date.now();
     const cached = _userCache.get(uid);
@@ -134,7 +155,7 @@ async function fetchNextcloudUser(uid) {
     if (!res.ok) {
         throw new Error(`OCS user lookup failed: HTTP ${res.status}`);
     }
-    const body = await res.json();
+    const body = /** @type {OcsUserResponse | null} */ (await res.json());
     const data = body?.ocs?.data;
     if (!data) throw new Error('OCS user lookup returned no data');
     const user = {
@@ -156,6 +177,10 @@ async function fetchNextcloudUser(uid) {
     return user;
 }
 
+/**
+ * @param {NextcloudUser} user
+ * @returns {string}
+ */
 function mintSaasJwt(user) {
     if (!config.tenantKey) {
         const err = new Error('Tenant key not configured — bootstrap may have failed');
@@ -199,6 +224,10 @@ function mintSaasJwt(user) {
 const _appSecretBuf = Buffer.from(String(config.appSecret), 'utf8');
 let _lastSecretWarnAt = 0;
 
+/**
+ * @param {string | null | undefined} secret
+ * @returns {boolean}
+ */
 function secretMatches(secret) {
     const got = Buffer.from(String(secret == null ? '' : secret), 'utf8');
     if (got.length !== _appSecretBuf.length) return false;
@@ -207,17 +236,23 @@ function secretMatches(secret) {
 
 // Once a minute at most: a broken deployment retries on every SPA poll, and a
 // log line per request buries the one that explains the fix.
+/** @param {string} userId */
 function warnSecretMismatch(userId) {
     const now = Date.now();
     if (now - _lastSecretWarnAt < 60_000) return;
     _lastSecretWarnAt = now;
-    console.warn(`[Auth] rejected a request for uid=${userId || '(service)'}: the `
+    log.warn(`[Auth] rejected a request for uid=${userId ? log.ref(userId) : '(service)'}: the `
         + `AUTHORIZATION-APP-API shared secret does not match this container's APP_SECRET. `
         + `If this is not an attack, Nextcloud and the container hold different secrets — `
         + `re-register the ExApp (occ app_api:app:unregister ${config.appId} && `
         + `occ app_api:app:register ${config.appId} --force-scopes) to mint a matching pair.`);
 }
 
+/**
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {import('express').NextFunction} next
+ */
 function appApiAuthMiddleware(req, res, next) {
     if (LIFECYCLE_PATHS.has(req.path)) return next();
     // Public assets fetched server-to-server by NC (menu icon, embed JS).
@@ -255,11 +290,12 @@ function appApiAuthMiddleware(req, res, next) {
 
     fetchNextcloudUser(decoded.userId)
         .then(user => {
+            /** @type {string} */
             let token;
             try {
                 token = mintSaasJwt(user);
             } catch (e) {
-                if (e.code !== 'TENANT_KEY_MISSING') throw e;
+                if (!(e instanceof Error) || e.code !== 'TENANT_KEY_MISSING') throw e;
                 // Bootstrap/verification in flight (no tenant key yet).
                 // Connector-owned /setup routes still need to know which NC
                 // user is driving setup — expose the identity with a null jwt.
@@ -283,8 +319,8 @@ function appApiAuthMiddleware(req, res, next) {
             req.beeflow = { user, jwt: token };
             next();
         })
-        .catch(err => {
-            console.warn(`[Auth] User lookup failed for ${decoded.userId}: ${err.message}`);
+        .catch((/** @type {unknown} */ err) => {
+            log.warn(`[Auth] User lookup failed for ${log.ref(decoded.userId)}: ${errMessage(err)}`);
             // When a browser hits the embedded SPA route (Accept: text/html)
             // while bootstrap is in-flight (no tenant key) or NC OCS is
             // briefly unreachable, returning raw JSON paints a useless error

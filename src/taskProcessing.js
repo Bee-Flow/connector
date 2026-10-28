@@ -42,7 +42,9 @@
  */
 
 const config = require('./config');
-const { withWarmupRetry } = require('./appApiClient');
+const { withWarmupRetry, appApiHeaders } = require('./appApiClient');
+const log = require('./log');
+const { errMessage } = require('./errors');
 
 const REGISTER_API = '/ocs/v2.php/apps/app_api/api/v1/ai_provider/task_processing';
 const TP_API = '/ocs/v2.php/taskprocessing';
@@ -57,6 +59,15 @@ const PROVIDER_PREFIX = 'bee_flow';
 // provider that has a non-empty shape (the agent) and left the Assistant with
 // "No provider found". Keep in sync with
 // https://github.com/nextcloud/server/blob/master/lib/public/TaskProcessing/EShapeType.php
+/**
+ * @typedef {{ name: string, description: string, shape_type: number }} TaskShape
+ * @typedef {{ id: string, name: string, expectedRuntime: number, optionalInputShape?: TaskShape[], optionalOutputShape?: TaskShape[] }} TaskType
+ * A task as Nextcloud's TaskProcessing API hands it out (only the fields read here).
+ * @typedef {{ id: string | number, type: string, input?: Record<string, unknown>, userId?: string | null, customId?: string | null, appId?: string | null }} NcTask
+ * What a finished task reports back: the output shapes by name.
+ * @typedef {Record<string, unknown>} TaskOutput
+ */
+
 const EShapeType = {
     Number: 0, Text: 1, Image: 2, Audio: 3, Video: 4, File: 5, Enum: 6,
     ListOfNumbers: 10, ListOfTexts: 11, ListOfImages: 12,
@@ -77,6 +88,7 @@ const EShapeType = {
  * watchdog deadline from it (see watchdogMsFor). Keep it roughly honest per
  * type: too low and slow-but-fine answers get killed, too high and a hung SaaS
  * leaves the user on a spinner for longer than they will wait.
+ * @type {TaskType[]}
  */
 const TASK_TYPES = [
     { id: 'core:text2text', name: 'Bee Flow', expectedRuntime: 30 },
@@ -128,23 +140,14 @@ const TASK_TYPES = [
 // The rule is the one in the header: a provider that errors on every task is
 // worse for the user than no provider, because Nextcloud still routes to it.
 
+/** @param {string} taskTypeId */
 function providerId(taskTypeId) {
     // Provider ids must be unique per instance; namespacing by app id keeps us
     // from colliding with llm2 or integration_openai when several are enabled.
     return `${PROVIDER_PREFIX}:${taskTypeId}`;
 }
 
-function appApiHeaders() {
-    return {
-        'Content-Type': 'application/json',
-        'OCS-APIRequest': 'true',
-        'Accept': 'application/json',
-        'EX-APP-ID': config.appId,
-        'EX-APP-VERSION': config.appVersion,
-        'AUTHORIZATION-APP-API': Buffer.from(`:${config.appSecret}`).toString('base64'),
-    };
-}
-
+/** @param {TaskType} taskType */
 function providerDefinition(taskType) {
     return {
         id: providerId(taskType.id),
@@ -204,10 +207,10 @@ async function registerTaskProcessing() {
         .filter(x => x.r.status === 'rejected');
     const failed = failures.length;
     if (registered > 0) _registered = true;
-    console.log(`[TaskProcessing] ${registered}/${TASK_TYPES.length} providers registered`
+    log.info(`[TaskProcessing] ${registered}/${TASK_TYPES.length} providers registered`
         + (failed ? ` (${failed} failed)` : ''));
     for (const { id, r } of failures) {
-        console.warn(`[TaskProcessing] provider '${id}' failed to register: ${r.reason?.message || r.reason}`);
+        log.warn(`[TaskProcessing] provider '${id}' failed to register: ${errMessage(/** @type {PromiseRejectedResult} */ (r).reason)}`);
     }
     return { ok: failed === 0, registered, failed, failedIds: failures.map(f => f.id) };
 }
@@ -225,6 +228,10 @@ async function unregisterTaskProcessing() {
 
 // ── Task execution ──────────────────────────────────────────────────────────
 
+/**
+ * @param {string} id  provider id
+ * @returns {Promise<NcTask | null>}
+ */
 async function fetchNextTask(id) {
     const params = new URLSearchParams();
     params.append('providerIds[]', id);
@@ -237,11 +244,16 @@ async function fetchNextTask(id) {
     });
     if (res.status === 404) return null; // nothing queued
     if (!res.ok) throw new Error(`next task HTTP ${res.status}`);
-    const body = await res.json().catch(() => null);
+    const body = /** @type {{ ocs?: { data?: { task?: NcTask } } } | null} */ (await res.json().catch(() => null));
     return body?.ocs?.data?.task || null;
 }
 
+/**
+ * @param {string | number} taskId
+ * @param {{ output?: TaskOutput, errorMessage?: string, userFacingErrorMessage?: string }} result
+ */
 async function reportResult(taskId, { output, errorMessage, userFacingErrorMessage }) {
+    /** @type {{ output?: TaskOutput, errorMessage?: string, userFacingErrorMessage?: string }} */
     const payload = {};
     if (output) payload.output = output;
     if (errorMessage) payload.errorMessage = errorMessage;
@@ -251,16 +263,9 @@ async function reportResult(taskId, { output, errorMessage, userFacingErrorMessa
         headers: appApiHeaders(),
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(10_000),
-    }).catch(err => console.warn(`[TaskProcessing] could not report result for ${taskId}: ${err.message}`));
+    }).catch(err => log.warn(`[TaskProcessing] could not report result for ${taskId}: ${errMessage(err)}`));
 }
 
-/**
- * Hand a task to the Bee Flow SaaS.
- *
- * Signed with the tenant key over the body, the same scheme every other
- * connector→SaaS call uses. `taskType` travels alongside the input so the SaaS
- * can pick the right prompt without re-deriving it from shapes.
- */
 /**
  * How long we let one task run before giving up on it.
  *
@@ -278,6 +283,7 @@ const WATCHDOG_FACTOR = 6;
 const WATCHDOG_MIN_MS = 60_000;
 const WATCHDOG_MAX_MS = 5 * 60 * 1000;
 
+/** @param {string} taskTypeId */
 function watchdogMsFor(taskTypeId) {
     const t = TASK_TYPES.find(x => x.id === taskTypeId);
     const derived = (t?.expectedRuntime ?? 30) * WATCHDOG_FACTOR * 1000;
@@ -304,8 +310,19 @@ const USER_ERRORS = {
     unconfigured: 'Bee Flow is not finished setting up on this server yet. Please ask your administrator to check the Bee Flow app settings.',
 };
 
+/**
+ * Hand a task to the Bee Flow SaaS.
+ *
+ * Signed with the tenant key over the body, the same scheme every other
+ * connector→SaaS call uses. `taskType` travels alongside the input so the SaaS
+ * can pick the right prompt without re-deriving it from shapes.
+ * @param {NcTask} task
+ * @param {{ timeoutMs?: number }} [options]
+ * @returns {Promise<TaskOutput>}
+ */
 async function executeViaSaaS(task, { timeoutMs } = {}) {
     const crypto = require('crypto');
+    if (!config.tenantKey || !config.ncInstanceId) throw new Error('connector not yet bootstrapped');
     const path = '/api/nextcloud/task-processing/execute';
     const body = JSON.stringify({
         taskType: task.type,
@@ -337,14 +354,17 @@ async function executeViaSaaS(task, { timeoutMs } = {}) {
         const text = await res.text().catch(() => '');
         throw new Error(`Bee Flow returned ${res.status}: ${text.slice(0, 200)}`);
     }
-    const data = await res.json().catch(() => null);
-    if (!data || typeof data.output !== 'object') {
+    const data = /** @type {{ output?: TaskOutput } | null} */ (await res.json().catch(() => null));
+    if (!data || typeof data.output !== 'object' || data.output === null) {
         throw new Error('Bee Flow returned no output');
     }
     return data.output;
 }
 
-/** Run one task to completion and report the outcome, whatever it is. */
+/**
+ * Run one task to completion and report the outcome, whatever it is.
+ * @param {NcTask} task
+ */
 async function runTask(task) {
     const timeoutMs = watchdogMsFor(task.type);
     try {
@@ -354,14 +374,15 @@ async function runTask(task) {
         // AbortSignal.timeout rejects with a TimeoutError; anything else is the
         // SaaS answering badly. The distinction is the difference between "wait
         // and retry" and "something is broken", so the user gets to know which.
-        const timedOut = err?.name === 'TimeoutError' || /aborted|timeout/i.test(err?.message || '');
+        const message = errMessage(err);
+        const timedOut = (err instanceof Error && err.name === 'TimeoutError') || /aborted|timeout/i.test(message);
         // Two messages on purpose: Nextcloud shows the user-facing one and
         // keeps the detailed one for admins. Never leak the SaaS URL or status
         // text to an end user.
-        console.warn(`[TaskProcessing] task ${task.id} (${task.type}) failed after `
-            + `${timedOut ? `${timeoutMs}ms watchdog` : 'upstream error'}: ${err.message}`);
+        log.warn(`[TaskProcessing] task ${task.id} (${task.type}) failed after `
+            + `${timedOut ? `${timeoutMs}ms watchdog` : 'upstream error'}: ${message}`);
         await reportResult(task.id, {
-            errorMessage: timedOut ? `Bee Flow watchdog fired after ${timeoutMs}ms: ${err.message}` : err.message,
+            errorMessage: timedOut ? `Bee Flow watchdog fired after ${timeoutMs}ms: ${message}` : message,
             userFacingErrorMessage: timedOut ? USER_ERRORS.timeout : USER_ERRORS.upstream,
         });
     }
@@ -379,6 +400,7 @@ const MAX_TASKS_PER_DRAIN = 50;
 // the running drain re-fetches until the queue is empty, so it will pick the
 // new task up anyway, and starting a second pool would just double the
 // concurrency we deliberately bounded.
+/** @type {Set<string>} */
 const _draining = new Set();
 
 /**
@@ -392,6 +414,12 @@ const _draining = new Set();
 // drainProvider so the concurrency, re-entrancy and budget behaviour can be
 // tested without a Nextcloud to fetch from — the properties that matter here
 // are about scheduling, not about HTTP.
+/**
+ * @param {{ fetchNextTask: (id: string) => Promise<NcTask | null>, runTask: (task: NcTask) => Promise<void> }} deps
+ * @param {string} id  provider id
+ * @param {{ concurrency?: number }} [options]
+ * @returns {Promise<number>} how many tasks were started
+ */
 async function _drainWith({ fetchNextTask: fetchNext, runTask: run }, id, { concurrency = MAX_CONCURRENT_PER_PROVIDER } = {}) {
     if (_draining.has(id)) return 0;
     _draining.add(id);
@@ -401,11 +429,12 @@ async function _drainWith({ fetchNextTask: fetchNext, runTask: run }, id, { conc
 
         const worker = async () => {
             while (!queueEmpty && started < MAX_TASKS_PER_DRAIN) {
+                /** @type {NcTask | null} */
                 let task;
                 try {
                     task = await fetchNext(id);
                 } catch (err) {
-                    console.warn(`[TaskProcessing] could not fetch next task for ${id}: ${err.message}`);
+                    log.warn(`[TaskProcessing] could not fetch next task for ${id}: ${errMessage(err)}`);
                     // Stop the whole pool: if Nextcloud is refusing us, the
                     // other workers will only produce the same error N times.
                     queueEmpty = true;
@@ -426,6 +455,10 @@ async function _drainWith({ fetchNextTask: fetchNext, runTask: run }, id, { conc
     }
 }
 
+/**
+ * @param {string} id  provider id
+ * @param {{ concurrency?: number }} [opts]
+ */
 async function drainProvider(id, opts) {
     return _drainWith({ fetchNextTask, runTask }, id, opts);
 }
@@ -449,6 +482,7 @@ const POLL_FAST_MS = 5_000;
 const POLL_IDLE_MS = 300_000;
 const POLL_BACKOFF_AFTER_EMPTY = 6;
 
+/** @type {NodeJS.Timeout | null} */
 let _pollTimer = null;
 let _emptyRounds = 0;
 
@@ -458,7 +492,7 @@ async function pollOnce() {
         try {
             found += await drainProvider(providerId(t.id));
         } catch (err) {
-            console.warn(`[TaskProcessing] poll failed for ${t.id}: ${err.message}`);
+            log.warn(`[TaskProcessing] poll failed for ${t.id}: ${errMessage(err)}`);
         }
     }
     if (found > 0) _emptyRounds = 0; else _emptyRounds += 1;
@@ -473,7 +507,7 @@ function scheduleNextPoll() {
     if (_pollTimer) clearTimeout(_pollTimer);
     _pollTimer = setTimeout(() => {
         pollOnce()
-            .catch(err => console.warn(`[TaskProcessing] poll error: ${err.message}`))
+            .catch(err => log.warn(`[TaskProcessing] poll error: ${errMessage(err)}`))
             .finally(scheduleNextPoll);
     }, currentPollDelay());
     // Never hold the process open for a poll.
@@ -491,6 +525,10 @@ function stopPolling() {
     _emptyRounds = 0;
 }
 
+/**
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ */
 function handleTrigger(req, res) {
     const id = String(req.query.providerId || '');
     res.json({ status: 'ok' });
@@ -501,10 +539,11 @@ function handleTrigger(req, res) {
     scheduleNextPoll();
     setImmediate(() => {
         drainProvider(id).catch(err =>
-            console.warn(`[TaskProcessing] drain failed for ${id}: ${err.message}`));
+            log.warn(`[TaskProcessing] drain failed for ${id}: ${errMessage(err)}`));
     });
 }
 
+/** @param {import('express').Express} app */
 function registerRoutes(app) {
     // Nextcloud calls this when a task is scheduled for one of our providers.
     // Answer immediately and drain in the background: AppAPI's request has its

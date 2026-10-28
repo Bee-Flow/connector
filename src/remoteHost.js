@@ -47,10 +47,12 @@ const METADATA_HOSTS = new Set([
     'instance-data',
 ]);
 
+/** @param {string} ip */
 function isLinkLocalV4(ip) {
     return /^169\.254\./.test(ip);
 }
 
+/** @param {string} ip */
 function isLinkLocalV6(ip) {
     const lower = ip.toLowerCase();
     // fe80::/10 plus the IPv6 metadata endpoints AWS and friends publish.
@@ -59,7 +61,11 @@ function isLinkLocalV6(ip) {
         || lower.startsWith('fd00:ec2:');
 }
 
-/** Is this literal IP one we refuse to connect to? */
+/**
+ * Is this literal IP one we refuse to connect to?
+ * @param {string | null | undefined} ip
+ * @returns {boolean}
+ */
 function isBlockedAddress(ip) {
     if (!ip) return false;
     const bare = ip.replace(/^\[|\]$/g, '');
@@ -76,6 +82,10 @@ function isBlockedAddress(ip) {
 }
 
 class RemoteHostError extends Error {
+    /**
+     * @param {string} message
+     * @param {string} [code]
+     */
     constructor(message, code) {
         super(message);
         this.code = code || 'invalid_remote_host';
@@ -85,12 +95,15 @@ class RemoteHostError extends Error {
 /**
  * Syntactic checks only — no DNS. Use where a synchronous answer is required
  * (config persistence, settings reconciliation).
+ * @param {unknown} raw
+ * @param {{ label?: string }} [options]
  * @returns {URL} the parsed URL
  * @throws {RemoteHostError}
  */
 function parseAllowedUrl(raw, { label = 'URL' } = {}) {
     const value = String(raw || '').trim();
     if (!value) throw new RemoteHostError(`${label} is required`, 'missing_url');
+    /** @type {URL} */
     let url;
     try {
         url = new URL(value);
@@ -121,6 +134,8 @@ function parseAllowedUrl(raw, { label = 'URL' } = {}) {
  * hostname whose A record simply *is* the metadata endpoint is caught, which is
  * the case that actually shows up.
  *
+ * @param {unknown} raw
+ * @param {{ label?: string }} [options]
  * @returns {Promise<URL>}
  * @throws {RemoteHostError}
  */
@@ -128,6 +143,7 @@ async function assertAllowedUrl(raw, { label = 'URL' } = {}) {
     const url = parseAllowedUrl(raw, { label });
     if (net.isIP(url.hostname.replace(/^\[|\]$/g, ''))) return url; // literal, already checked
 
+    /** @type {import('node:dns').LookupAddress[]} */
     let records;
     try {
         records = await dns.lookup(url.hostname, { all: true });

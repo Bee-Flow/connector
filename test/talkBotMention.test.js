@@ -17,9 +17,23 @@ test('a structured mention parameter naming the bot counts as a mention', () => 
     }), true);
 });
 
-test('the bot name in raw text counts as a mention when parameters are absent', () => {
+test('a literal "@Bee Flow" counts as a mention when the message carries no mention parameters', () => {
     assert.equal(mentionsBot({ message: 'hey @Bee Flow, summarise this' }), true);
-    assert.equal(mentionsBot({ message: 'HEY BEE FLOW help' }), true);
+    assert.equal(mentionsBot({ message: '@beeflow help', parameters: {} }), true);
+});
+
+// "the Bee Flow report is late" used to start an agent run as the sender and
+// post the answer to the room.
+test('the words "Bee Flow" without an @ are not a mention', () => {
+    assert.equal(mentionsBot({ message: 'the Bee Flow report is late' }), false);
+    assert.equal(mentionsBot({ message: 'HEY BEE FLOW help' }), false);
+});
+
+test('mention parameters that name someone else win over the text', () => {
+    assert.equal(mentionsBot({
+        message: '{mention-user1} can you check the @Bee Flow report?',
+        parameters: { 'mention-user1': { type: 'user', id: 'ada', name: 'Ada' } },
+    }), false);
 });
 
 test('an unrelated message with an unrelated mention is not a mention of the bot', () => {

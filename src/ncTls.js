@@ -32,28 +32,36 @@
 const fs = require('fs');
 const https = require('https');
 const config = require('./config');
+const log = require('./log');
+const { errMessage } = require('./errors');
 
 const caFile = (process.env.BEEFLOW_NC_CA_FILE || '').trim();
 const insecure = process.env.BEEFLOW_NC_TLS_INSECURE === '1';
 
 // Connection options applied to the Nextcloud origin only. null ⇒ default
 // (verify normally).
+/** @type {{ ca?: Buffer, rejectUnauthorized?: boolean } | null} */
 let connectOpts = null;
+/** @type {'default' | 'ca' | 'insecure'} */
 let mode = 'default';
 if (caFile) {
     try {
         connectOpts = { ca: fs.readFileSync(caFile) };
         mode = 'ca';
     } catch (e) {
-        console.warn(`[ncTls] could not read BEEFLOW_NC_CA_FILE (${caFile}): ${e.message} — keeping strict verification`);
+        log.warn(`[ncTls] could not read BEEFLOW_NC_CA_FILE (${caFile}): ${errMessage(e)} — keeping strict verification`);
     }
 } else if (insecure) {
     connectOpts = { rejectUnauthorized: false };
     mode = 'insecure';
 }
 
-/** Set of NC origins (internal + public) whose TLS posture we override. */
+/**
+ * Set of NC origins (internal + public) whose TLS posture we override.
+ * @returns {Set<string>}
+ */
 function ncOrigins() {
+    /** @type {Set<string>} */
     const set = new Set();
     for (const u of [config.nextcloudUrl, config.nextcloudPublicUrl]) {
         if (!u) continue;
@@ -79,6 +87,7 @@ function installNcDispatcher() {
     if (installed || !connectOpts) return;
     installed = true;
 
+    /** @type {typeof import('undici')} */
     let undici;
     try {
         undici = require('undici');
@@ -88,10 +97,10 @@ function installNcDispatcher() {
         // a last resort so the connector can still bootstrap (clearly logged);
         // for CA-pinning there is no global equivalent, so stay strict.
         if (mode === 'insecure') {
-            console.warn('[ncTls] undici unavailable — falling back to process-global TLS relaxation (Nextcloud bootstrap will work but other TLS verification is also relaxed)');
+            log.warn('[ncTls] undici unavailable — falling back to process-global TLS relaxation (Nextcloud bootstrap will work but other TLS verification is also relaxed)');
             process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
         } else {
-            console.warn(`[ncTls] undici unavailable — cannot scope NC TLS (${e.message}); keeping strict verification`);
+            log.warn(`[ncTls] undici unavailable — cannot scope NC TLS (${errMessage(e)}); keeping strict verification`);
         }
         return;
     }
@@ -102,17 +111,72 @@ function installNcDispatcher() {
     const base = getGlobalDispatcher();
 
     class NcRouter extends Dispatcher {
+        /**
+         * @param {import('undici').Dispatcher.DispatchOptions} opts
+         * @param {import('undici').Dispatcher.DispatchHandler} handler
+         */
         dispatch(opts, handler) {
             let origin = opts.origin;
             if (origin && typeof origin !== 'string') origin = origin.origin;
-            return (origins.has(origin) ? ncAgent : base).dispatch(opts, handler);
+            return (origins.has(String(origin)) ? ncAgent : base).dispatch(opts, handler);
         }
-        async close() { await ncAgent.close(); if (base.close) await base.close(); }
-        async destroy(err) { await ncAgent.destroy(err); if (base.destroy) await base.destroy(err); }
+        // close() and destroy() have the promise form and the callback form (undici's
+        // Dispatcher declares both), so the overloads are spelled out; the router only
+        // forwards to the two dispatchers it fronts.
+        /**
+         * @overload
+         * @returns {Promise<void>}
+         */
+        /**
+         * @overload
+         * @param {() => void} callback
+         * @returns {void}
+         */
+        /**
+         * @param {() => void} [callback]
+         * @returns {Promise<void> | void}
+         */
+        close(callback) {
+            const done = (async () => { await ncAgent.close(); if (base.close) await base.close(); })();
+            if (!callback) return done;
+            done.then(callback, callback);
+        }
+        /**
+         * @overload
+         * @returns {Promise<void>}
+         */
+        /**
+         * @overload
+         * @param {Error | null} err
+         * @returns {Promise<void>}
+         */
+        /**
+         * @overload
+         * @param {() => void} callback
+         * @returns {void}
+         */
+        /**
+         * @overload
+         * @param {Error | null} err
+         * @param {() => void} callback
+         * @returns {void}
+         */
+        /**
+         * @param {Error | null | (() => void)} [errOrCallback]
+         * @param {() => void} [callback]
+         * @returns {Promise<void> | void}
+         */
+        destroy(errOrCallback, callback) {
+            const err = typeof errOrCallback === 'function' ? null : (errOrCallback ?? null);
+            const cb = typeof errOrCallback === 'function' ? errOrCallback : callback;
+            const done = (async () => { await ncAgent.destroy(err); if (base.destroy) await base.destroy(err); })();
+            if (!cb) return done;
+            done.then(cb, cb);
+        }
     }
 
     setGlobalDispatcher(new NcRouter());
-    console.log(`[ncTls] scoped Nextcloud TLS posture: ${mode} for ${[...origins].join(', ')} — all other TLS stays verified`);
+    log.info(`[ncTls] scoped Nextcloud TLS posture: ${mode} for ${[...origins].join(', ')} — all other TLS stays verified`);
 }
 
 module.exports = { ncHttpsAgent, installNcDispatcher, ncTlsMode: mode, ncOrigins };

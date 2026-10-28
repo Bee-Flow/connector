@@ -21,7 +21,11 @@
 // On a DELETE, 404 additionally means "already gone".
 const OCS_OK = new Set([100, 200, 409]);
 
-/** Pull `ocs.meta.statuscode` out of a JSON *or* XML envelope; null if absent. */
+/**
+ * Pull `ocs.meta.statuscode` out of a JSON *or* XML envelope; null if absent.
+ * @param {string} text
+ * @returns {number | null}
+ */
 function readOcsStatus(text) {
     try {
         const code = JSON.parse(text)?.ocs?.meta?.statuscode;

@@ -50,7 +50,13 @@
  */
 
 const config = require('./config');
-const { withWarmupRetry } = require('./appApiClient');
+const { withWarmupRetry, appApiHeaders } = require('./appApiClient');
+const log = require('./log');
+
+// The top-menu entry heartbeat.js registers. AppAPI's embedded page needs a
+// registered entry name in the URL (/embedded/<appId>/<name>), so it is also
+// what a Files action redirects to.
+const TOP_MENU_NAME = 'main';
 
 const UI_API = '/ocs/v2.php/apps/app_api/api/v2/ui/files-actions-menu';
 const UI_API_V1 = '/ocs/v2.php/apps/app_api/api/v1/ui/files-actions-menu';
@@ -111,17 +117,6 @@ const ACTIONS = [
     },
 ];
 
-function appApiHeaders() {
-    return {
-        'Content-Type': 'application/json',
-        'OCS-APIRequest': 'true',
-        Accept: 'application/json',
-        'EX-APP-ID': config.appId,
-        'EX-APP-VERSION': config.appVersion,
-        'AUTHORIZATION-APP-API': Buffer.from(`:${config.appSecret}`).toString('base64'),
-    };
-}
-
 let _registered = false;
 
 /** Register every entry. Idempotent — AppAPI upserts by (appId, name). */
@@ -146,7 +141,7 @@ async function registerFilesActions() {
     if (registered > 0) _registered = true;
     await retireFilesActions();
     const failed = results.length - registered;
-    console.log(`[FilesActions] ${registered}/${ACTIONS.length} menu entries registered`
+    log.info(`[FilesActions] ${registered}/${ACTIONS.length} menu entries registered`
         + (failed ? ` (${failed} failed — Nextcloud may predate the v2 UI API)` : ''));
     return { ok: failed === 0, registered, failed };
 }
@@ -183,6 +178,23 @@ async function unregisterFilesActions() {
  * frontend (`buildNodeInfo`), so its exact keys are a moving target across
  * Nextcloud versions, and an entry that throws here would fail the user's click
  * with a console error they never see.
+ *
+ * @typedef {object} NcFileNode
+ * @property {string | number} [fileId]
+ * @property {string | number} [fileid]
+ * @property {string | number} [id]
+ * @property {string} [name]
+ * @property {string} [directory]
+ * @property {string} [path]
+ * @property {string} [mime]
+ * @property {string} [mimetype]
+ * @property {string} [fileType]
+ * @property {string} [type]
+ *
+ * @typedef {{ fileId: string | number | null, name: string | null, path: string | null, mime: string | null, fileType: string | null }} ParsedFile
+ *
+ * @param {{ files?: (NcFileNode | null)[] } | null | undefined} body
+ * @returns {ParsedFile[]}
  */
 function parseFiles(body) {
     const raw = Array.isArray(body?.files) ? body.files : [];
@@ -198,13 +210,19 @@ function parseFiles(body) {
         .filter(f => f.fileId != null);
 }
 
-/** `directory` + `name` as one absolute path, or null when either is missing. */
+/**
+ * `directory` + `name` as one absolute path, or null when either is missing.
+ * @param {unknown} directory
+ * @param {unknown} name
+ * @returns {string | null}
+ */
 function joinPath(directory, name) {
     if (typeof directory !== 'string' || typeof name !== 'string' || !name) return null;
     const dir = directory.startsWith('/') ? directory : `/${directory}`;
     return `${dir.replace(/\/+$/, '')}/${name}`;
 }
 
+/** @param {import('express').Express} app */
 function registerRoutes(app) {
     app.post(HANDLER_PATH, (req, res) => {
         const files = parseFiles(req.body);
@@ -215,8 +233,11 @@ function registerRoutes(app) {
             // to a Bee Flow that has nothing to work on.
             return res.json({});
         }
-        // '' is the SPA root; AppAPI appends ?fileIds=<comma-separated>.
-        return res.json({ redirect_handler: '' });
+        // The registered top-menu entry: AppAPI builds
+        // /apps/app_api/embedded/<appId>/<redirect_handler>?fileIds=<ids>, and
+        // its route needs a non-empty, registered name there. '' gave
+        // /embedded/bee_flow/, a Nextcloud 404 page for all three entries.
+        return res.json({ redirect_handler: TOP_MENU_NAME });
     });
 }
 
@@ -229,4 +250,5 @@ module.exports = {
     ACTIONS,
     RETIRED_ACTION_NAMES,
     HANDLER_PATH,
+    TOP_MENU_NAME,
 };

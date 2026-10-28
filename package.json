@@ -1,6 +1,6 @@
 {
   "name": "bee-flow-connector",
-  "version": "1.6.5",
+  "version": "1.6.6",
   "private": true,
   "description": "Nextcloud ExApp connector for Bee Flow — proxies authenticated requests from a customer's Nextcloud to the hosted Bee Flow SaaS.",
   "license": "AGPL-3.0-or-later",

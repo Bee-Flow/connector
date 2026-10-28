@@ -216,6 +216,16 @@
             Include the scheme. Example: <code>https://beeflow.example.com</code>
             or <code>http://bee-flow-server:3001</code> for a Docker-network sandbox.
         </div>
+        <label for="embedBaseUrl" style="margin-top: 16px;">Web app URL (optional)</label>
+        <input type="url" id="embedBaseUrl"
+               placeholder="https://app.beeflow.example.com"
+               autocomplete="off"
+               spellcheck="false" />
+        <div class="hint">
+            The address of your Bee Flow web app (the frontend, not the server). The app inside
+            Nextcloud is then loaded from there, so it is always the same version as your server.
+            Leave empty to use the copy built into this connector. Nothing is loaded from beeflow.nl.
+        </div>
     </div>
 
     <div class="actions">
@@ -318,6 +328,25 @@
                 white-space: pre-wrap; word-break: break-word;"></pre>
 </div>
 
+<div class="card" id="card-nc-cert" style="display:none;">
+    <h2 style="margin-top: 0;">Nextcloud certificate</h2>
+    <p>
+        Your Nextcloud uses a self-signed certificate. The connector trusted the first one it
+        saw and only connects to Nextcloud while it presents that same key, so nobody in
+        between can read the traffic. When the certificate is renewed with a new key, the
+        connector stops and waits for you here.
+    </p>
+    <pre id="nc-cert-output"
+         style="margin-top: 12px; padding: 12px;
+                background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 6px;
+                font-size: 0.85em; max-height: 200px; overflow: auto;
+                white-space: pre-wrap; word-break: break-word;"></pre>
+    <div class="actions" id="nc-cert-actions" style="display:none;">
+        <button class="btn-secondary" id="btn-accept-nc-cert">Accept the new certificate</button>
+        <span class="hint" id="status-nc-cert-inline" style="margin: 0;"></span>
+    </div>
+</div>
+
 <div class="card">
     <h2 style="margin-top: 0;">Clear organisation cache &amp; re-bootstrap</h2>
     <p>
@@ -365,6 +394,7 @@
     const cards = document.querySelectorAll('.card');
     const formSelf = $('form-self');
     const inputUrl = $('apiBaseUrl');
+    const inputWebUrl = $('embedBaseUrl');
     const btnTest = $('btn-test');
     const btnSave = $('btn-save');
     const statusBox = $('status');
@@ -475,7 +505,7 @@
     btnSave.addEventListener('click', async () => {
         const body = mode === 'cloud'
             ? { mode: 'cloud' }
-            : { mode: 'self-hosted', apiBaseUrl: inputUrl.value.trim() };
+            : { mode: 'self-hosted', apiBaseUrl: inputUrl.value.trim(), embedBaseUrl: inputWebUrl.value.trim() };
         btnSave.disabled = true;
         statusInline.textContent = 'saving…';
         try {
@@ -514,12 +544,16 @@
             metaEnv.style.display = '';
             cards.forEach(c => c.style.opacity = '0.5');
             inputUrl.disabled = true;
+            inputWebUrl.disabled = true;
             btnSave.disabled = true;
             btnTest.disabled = !s.active;
             badgeCurrent.textContent = `🔒 Env-locked`;
         } else if (s.chosen) {
             badgeCurrent.textContent = s.chosen.mode === 'cloud' ? '☁️ Cloud' : '🏠 Self-hosted';
-            if (s.chosen.mode === 'self-hosted') inputUrl.value = s.chosen.apiBaseUrl;
+            if (s.chosen.mode === 'self-hosted') {
+                inputUrl.value = s.chosen.apiBaseUrl;
+                inputWebUrl.value = s.chosen.embedBaseUrl || '';
+            }
             setMode(s.chosen.mode);
         } else {
             badgeCurrent.textContent = '⚠️ Not configured';
@@ -641,6 +675,52 @@
             }
         });
     }
+
+    // Nextcloud certificate pins (self-signed mode only).
+    const cardNcCert = $('card-nc-cert');
+    const ncCertOutput = $('nc-cert-output');
+    const ncCertActions = $('nc-cert-actions');
+    const btnAcceptNcCert = $('btn-accept-nc-cert');
+    const statusNcCertInline = $('status-nc-cert-inline');
+    let pendingSpki = null;
+    function loadNcCert() {
+        fetch(BASE + 'setup/nc-certificate').then(r => r.json()).then(d => {
+            if (d.mode !== 'insecure') { cardNcCert.style.display = 'none'; return; }
+            cardNcCert.style.display = '';
+            const lines = [];
+            for (const [host, p] of Object.entries(d.pins || {})) lines.push('Trusted   ' + host + '  ' + p.spki);
+            const pending = Object.entries(d.pending || {});
+            for (const [host, p] of pending) lines.push('CHANGED   ' + host + '  ' + p.spki + '  (seen ' + p.seenAt + ')');
+            ncCertOutput.textContent = lines.join('\n') || 'No certificate seen yet.';
+            pendingSpki = pending.length ? pending[0][1].spki : null;
+            ncCertActions.style.display = pendingSpki ? '' : 'none';
+        }).catch(() => { cardNcCert.style.display = 'none'; });
+    }
+    loadNcCert();
+    btnAcceptNcCert.addEventListener('click', async () => {
+        if (!pendingSpki) return;
+        if (!confirm(
+            'Accept this certificate key for Nextcloud?\n\n' + pendingSpki + '\n\n'
+          + 'Only do this if you renewed the certificate yourself. If you did not, '
+          + 'someone may be intercepting the connection: leave it refused.'
+        )) return;
+        btnAcceptNcCert.disabled = true;
+        statusNcCertInline.textContent = 'Accepting…';
+        try {
+            const r = await fetch(BASE + 'setup/accept-nc-certificate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ spki: pendingSpki }),
+            });
+            const d = await r.json();
+            statusNcCertInline.textContent = d.ok ? '✅ Accepted for ' + d.accepted.join(', ') : '❌ ' + (d.error || 'failed');
+            loadNcCert();
+        } catch (err) {
+            statusNcCertInline.textContent = 'Error: ' + err.message;
+        } finally {
+            btnAcceptNcCert.disabled = false;
+        }
+    });
 
     const btnClearCache = $('btn-clear-cache');
     const statusClearCacheInline = $('status-clear-cache-inline');

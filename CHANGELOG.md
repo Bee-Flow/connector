@@ -9,6 +9,20 @@ The Nextcloud App Store reads the entry whose heading matches `<version>` in `ap
 
 ## [Unreleased]
 
+## [1.6.6] - 2026-10-28
+
+### Security
+- **Self-signed Nextcloud certificates are now pinned.** When your Nextcloud uses a self-signed certificate, the connector used to accept any certificate, so someone who could intercept its traffic to Nextcloud could read the app secret. It now remembers the certificate it saw first and refuses a different one, before anything is sent. After a planned renewal, accept the new certificate on the connector's setup page (it shows the new key), or delete `nc-trust/pins.json` in the connector's data folder and restart it. If Nextcloud uses an internal CA, set "Nextcloud CA certificate" (`BEEFLOW_NC_CA_CERT`) instead.
+
+### Fixed
+- **After a switch to a self-hosted server, the app in Nextcloud no longer comes from beeflow.nl.** It is loaded from your own web app address (a new optional field in both server pickers), or from the copy built into the connector when you leave that empty. Bee Flow Cloud is not contacted on page loads.
+- **Everyone in a Talk room keeps their own conversation with the bot.** Follow-up questions kept their context only for the first person who asked; now each person has their own thread per room, and nobody sees another person's context.
+
+### Added
+- **Dutch translations.** The Files menu entries, the Bee Flow settings under Settings → Artificial Intelligence, the bot's replies in Talk and the Assistant's error messages follow each user's Nextcloud language (English and Dutch).
+- **Calendar triggers for colleagues.** Calendar events now include the calendar's owner and who it is shared with (no names), so an automation can also react to a colleague's change in a calendar its owner can see. Requires a Bee Flow server that supports this; older servers keep calendar triggers to the person who made the change.
+- **File events say whether they are about a file or a folder**, instead of Bee Flow guessing from the name.
+
 ## [1.6.5] - 2026-10-28
 
 ### Security

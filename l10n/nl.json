@@ -1,0 +1,22 @@
+{
+    "translations": {
+        "Ask Bee Flow about this": "Vraag Bee Flow hiernaar",
+        "Summarise with Bee Flow": "Samenvatten met Bee Flow",
+        "Run a Bee Flow automation…": "Bee Flow-automatisering uitvoeren…",
+        "Choose between the hosted Bee Flow service (Cloud) and your own self-hosted Bee Flow server. To self-host, run a Bee Flow server (see beeflow.nl/docs → Self-hosting; e.g. ./selfhost.sh) and enter its URL below. Changes apply within ~60s; the connector re-bootstraps the tenant key automatically. Licence keys that unlock paid features are entered inside Bee Flow (Admin → Licence), not here.": "Kies tussen de gehoste Bee Flow-dienst (Cloud) en je eigen Bee Flow-server. Om zelf te hosten, draai je een Bee Flow-server (zie beeflow.nl/docs → Self-hosting, bijvoorbeeld ./selfhost.sh) en vul je hieronder het adres in. Wijzigingen worden binnen ongeveer een minuut actief; de connector haalt de tenant-sleutel automatisch opnieuw op. Licentiesleutels voor betaalde functies vul je in Bee Flow zelf in (Admin → Licence), niet hier.",
+        "Deployment mode": "Waar Bee Flow draait",
+        "Where the connector sends Bee Flow API requests.": "Waar de connector de API-verzoeken voor Bee Flow naartoe stuurt.",
+        "Self-hosted server": "Eigen server",
+        "Self-hosted API URL": "API-adres van je eigen server",
+        "Only used when \"Self-hosted server\" is selected. The base URL of your Bee Flow server (the SERVER address, not the web UI). Must be reachable from this Nextcloud. Example: https://bee-flow.your-domain.com or http://bee-flow-server:3001": "Alleen gebruikt als \"Eigen server\" is gekozen. Het basisadres van je Bee Flow-server (het SERVER-adres, niet de webinterface). Moet bereikbaar zijn vanaf deze Nextcloud. Voorbeeld: https://bee-flow.your-domain.com of http://bee-flow-server:3001",
+        "Self-hosted web app URL (optional)": "Adres van je eigen webapp (optioneel)",
+        "The address of your Bee Flow web app (the frontend, not the server). The app inside Nextcloud is then loaded from there, so it is always the same version as your server. Leave empty to use the copy built into the connector. Nothing is loaded from beeflow.nl.": "Het adres van je Bee Flow-webapp (de frontend, niet de server). De app in Nextcloud wordt dan daarvandaan geladen, zodat die altijd dezelfde versie heeft als je server. Laat leeg om de kopie te gebruiken die in de connector is ingebouwd. Er wordt niets van beeflow.nl geladen.",
+        "Hi! Mention me with a question — e.g. \"@Bee Flow what changed in my calendar today?\"": "Hoi! Noem me met een vraag, bijvoorbeeld \"@Bee Flow wat is er vandaag veranderd in mijn agenda?\"",
+        "I could not find an answer to that.": "Daar kon ik geen antwoord op vinden.",
+        "Sorry — I could not answer that just now. Please try again in a moment.": "Sorry, ik kon dat nu niet beantwoorden. Probeer het zo nog eens.",
+        "Bee Flow took too long to answer this request. Please try again — if it keeps happening, ask your administrator to check the Bee Flow connection.": "Bee Flow deed te lang over deze aanvraag. Probeer het opnieuw. Blijft dit gebeuren, vraag dan je beheerder om de verbinding met Bee Flow te controleren.",
+        "Bee Flow could not complete this request. Please try again, or contact your administrator if it keeps happening.": "Bee Flow kon deze aanvraag niet afronden. Probeer het opnieuw, of neem contact op met je beheerder als dit blijft gebeuren.",
+        "Bee Flow is not finished setting up on this server yet. Please ask your administrator to check the Bee Flow app settings.": "Bee Flow is op deze server nog niet helemaal ingesteld. Vraag je beheerder om de instellingen van de Bee Flow-app te controleren."
+    },
+    "pluralForm": "nplurals=2; plural=(n != 1);"
+}

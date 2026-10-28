@@ -25,6 +25,9 @@ const FILE_NAME = 'setup-config.json';
 /** @type {readonly string[]} */
 const VALID_MODES = ['cloud', 'self-hosted', 'custom'];
 const CLOUD_URL = 'https://server.beeflow.nl';
+// Bee Flow Cloud's frontend: the host of the embedded app's shell while the
+// connector talks to Cloud (embedTarget.js).
+const CLOUD_EMBED_URL = 'https://beeflow.nl';
 
 /**
  * What setup-config.json holds. Every field is optional: a file written by an older version
@@ -32,6 +35,7 @@ const CLOUD_URL = 'https://server.beeflow.nl';
  * @typedef {object} SetupConfig
  * @property {string} [mode]
  * @property {string} [apiBaseUrl]
+ * @property {string} [embedBaseUrl]  the self-hosted web app (frontend) host that goes with apiBaseUrl (#401)
  * @property {string | null} [publicNcUrl]
  * @property {string} [savedAt]
  */
@@ -74,10 +78,12 @@ function get() {
 }
 
 /**
- * @param {{ mode: string | undefined, apiBaseUrl: string | null | undefined }} choice
+ * @param {{ mode: string | undefined, apiBaseUrl: string | null | undefined, embedBaseUrl?: string | null }} choice
+ *   embedBaseUrl: the web app (frontend) host of a self-hosted server, where the
+ *   embedded app's shell is loaded from. Optional; ignored for Cloud.
  * @returns {SetupConfig & { mode: string, apiBaseUrl: string }}
  */
-function save({ mode, apiBaseUrl }) {
+function save({ mode, apiBaseUrl, embedBaseUrl }) {
     if (!mode || !VALID_MODES.includes(mode)) {
         throw new Error(`invalid mode "${mode}" (allowed: ${VALID_MODES.join(', ')})`);
     }
@@ -89,12 +95,18 @@ function save({ mode, apiBaseUrl }) {
     // panel path, which reconciles without a request to answer to; the routes
     // in setup.js additionally resolve the name before getting here.
     parseAllowedUrl(url, { label: 'apiBaseUrl' });
+    // The shell host gets the same check: the connector fetches from it on
+    // every page load and serves what it answers under the Nextcloud origin.
+    const web = mode === 'cloud' ? '' : String(embedBaseUrl || '').trim().replace(/\/+$/, '');
+    if (web) parseAllowedUrl(web, { label: 'Web app URL' });
+    /** @type {SetupConfig & { mode: string, apiBaseUrl: string }} */
     const next = {
         ...(cached || {}),
         mode,
         apiBaseUrl: url,
         savedAt: new Date().toISOString(),
     };
+    if (web) next.embedBaseUrl = web; else delete next.embedBaseUrl;
     fs.writeFileSync(_filePath(), JSON.stringify(next, null, 2), { mode: 0o600 });
     cached = next;
     return next;
@@ -115,6 +127,8 @@ function restoreApiChoice(prev) {
         delete next.mode;
         delete next.apiBaseUrl;
     }
+    if (prev?.apiBaseUrl && prev.embedBaseUrl) next.embedBaseUrl = prev.embedBaseUrl;
+    else delete next.embedBaseUrl;
     next.savedAt = new Date().toISOString();
     fs.writeFileSync(_filePath(), JSON.stringify(next, null, 2), { mode: 0o600 });
     cached = next;
@@ -163,4 +177,4 @@ function chosenApiBaseUrl() {
     return null;
 }
 
-module.exports = { init, get, save, restoreApiChoice, savePublicNcUrl, clear, chosenApiBaseUrl, chosenPublicNcUrl, CLOUD_URL, VALID_MODES };
+module.exports = { init, get, save, restoreApiChoice, savePublicNcUrl, clear, chosenApiBaseUrl, chosenPublicNcUrl, CLOUD_URL, CLOUD_EMBED_URL, VALID_MODES };

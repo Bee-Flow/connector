@@ -25,6 +25,7 @@ const { errMessage } = require('./errors');
 const FORM_ID = 'beeflow_admin';
 const FIELD_MODE = 'deployment_mode';
 const FIELD_URL = 'api_base_url';
+const FIELD_WEB_URL = 'web_app_url';
 const POLL_INTERVAL_MS = 60_000;
 
 const CLOUD_URL = setupConfig.CLOUD_URL;
@@ -63,6 +64,16 @@ const FORM_SCHEME = {
             default: '',
             placeholder: 'https://bee-flow.your-domain.com',
         },
+        {
+            id: FIELD_WEB_URL,
+            title: 'Self-hosted web app URL (optional)',
+            description: 'The address of your Bee Flow web app (the frontend, not the server). The app inside '
+                + 'Nextcloud is then loaded from there, so it is always the same version as your server. '
+                + 'Leave empty to use the copy built into the connector. Nothing is loaded from beeflow.nl.',
+            type: 'url',
+            default: '',
+            placeholder: 'https://app.your-domain.com',
+        },
     ],
 };
 
@@ -95,7 +106,7 @@ async function _readStoredValues() {
     const res = await fetch(url, {
         method: 'POST',
         headers: appApiHeaders(),
-        body: JSON.stringify({ configKeys: [FIELD_MODE, FIELD_URL] }),
+        body: JSON.stringify({ configKeys: [FIELD_MODE, FIELD_URL, FIELD_WEB_URL] }),
         signal: AbortSignal.timeout(5_000),
     });
     if (!res.ok) {
@@ -140,6 +151,24 @@ function _resolveTargetUrl(values) {
     return url;
 }
 
+/**
+ * The self-hosted web app URL from the form, or '' (none, invalid, or Cloud).
+ * @param {StoredValues} values
+ * @returns {string}
+ */
+function _resolveWebUrl(values) {
+    if (values[FIELD_MODE] !== 'self-hosted') return '';
+    const url = (values[FIELD_WEB_URL] || '').trim().replace(/\/+$/, '');
+    if (!url) return '';
+    try {
+        parseAllowedUrl(url, { label: 'Self-hosted web app URL' });
+    } catch (err) {
+        log.warn(`[Settings] ignoring the configured web app URL: ${errMessage(err)}`);
+        return '';
+    }
+    return url;
+}
+
 /** @type {string | null} */
 let _lastApplied = null;
 
@@ -174,11 +203,24 @@ async function applyStoredValuesIfChanged() {
     const target = _resolveTargetUrl(values);
     if (!target) return; // self-hosted with empty URL — no-op
 
-    const fingerprint = `${values[FIELD_MODE] || 'cloud'}|${target}`;
+    const webUrl = _resolveWebUrl(values);
+    const mode = values[FIELD_MODE] === 'self-hosted' ? 'self-hosted' : 'cloud';
+    const fingerprint = `${mode}|${target}|${webUrl}`;
     if (fingerprint === _lastApplied) return;
     if (target === config.apiBaseUrl) {
-        // First poll after restart — values match runtime, just record so we
-        // don't re-bootstrap unnecessarily on the next change-detection pass.
+        // Same server: nothing to re-bootstrap. Only the web app URL may have
+        // changed (or this is the first poll after a restart); keep the saved
+        // choice in step with the form so the shell follows it (#401).
+        const stored = setupConfig.get();
+        if ((stored?.embedBaseUrl || '') !== webUrl) {
+            try {
+                setupConfig.save({ mode, apiBaseUrl: target, embedBaseUrl: webUrl || null });
+                log.info(`[Settings] web app URL for the embedded app: ${webUrl || '(the copy built into the connector)'}`);
+            } catch (err) {
+                log.warn(`[Settings] web app URL not saved: ${errMessage(err)}`);
+                return;
+            }
+        }
         _lastApplied = fingerprint;
         return;
     }
@@ -202,10 +244,7 @@ async function applyStoredValuesIfChanged() {
 
     if (rebootstrapOk) {
         try {
-            setupConfig.save({
-                mode: values[FIELD_MODE] === 'self-hosted' ? 'self-hosted' : 'cloud',
-                apiBaseUrl: target,
-            });
+            setupConfig.save({ mode, apiBaseUrl: target, embedBaseUrl: webUrl || null });
         } catch (err) {
             log.warn(`[Settings] persistence skipped: ${errMessage(err)}`);
         }

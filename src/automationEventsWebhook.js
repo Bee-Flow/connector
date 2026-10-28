@@ -62,6 +62,12 @@ const { errMessage } = require('./errors');
  * @property {({ title?: string } | null)[]} [labels]
  * @property {({ participant?: { uid?: string, primaryKey?: string } } | null)[]} [assignedUsers]
  *
+ * @typedef {{ id?: string | number, uri?: string, principaluri?: string }} HookCalendar
+ *
+ * One calendar share as Nextcloud's DAV sharing backend serialises it. Only the
+ * principal and the access are read; `commonName` (a display name) never is.
+ * @typedef {{ '{http://owncloud.org/ns}principal'?: string, href?: string, readOnly?: boolean, commonName?: string }} HookShare
+ *
  * @typedef {object} HookEventBody
  * @property {string} [class]
  * @property {HookNode} [node]
@@ -71,9 +77,12 @@ const { errMessage } = require('./errors');
  * @property {(string | number)[]} [objectIds]
  * @property {(string | number)[]} [tagIds]
  * @property {{ uri?: string, component?: string }} [objectData]
- * @property {{ id?: string | number, uri?: string }} [calendarData]
- * @property {{ id?: string | number, uri?: string }} [targetCalendarData]
- * @property {{ id?: string | number, uri?: string }} [sourceCalendarData]
+ * @property {HookCalendar} [calendarData]
+ * @property {HookCalendar} [targetCalendarData]
+ * @property {HookCalendar} [sourceCalendarData]
+ * @property {HookShare[]} [shares]
+ * @property {HookShare[]} [targetShares]
+ * @property {HookShare[]} [sourceShares]
  * @property {string | number} [calendarId]
  * @property {string | number} [targetCalendarId]
  * @property {string | number} [sourceCalendarId]
@@ -102,6 +111,47 @@ const { errMessage } = require('./errors');
  */
 
 const secretLimiter = rateLimit.penalise('nc-hook-secret', { limit: 60, windowMs: 60_000 });
+
+// File events whose node still exists when the webhook fires, so Nextcloud
+// can say whether it is a file or a folder.
+const NODE_TYPE_EVENTS = new Set(['file.new', 'file.changed', 'file.renamed', 'file.copied', 'file.restored']);
+const NODE_TYPE_TIMEOUT_MS = 3_000;
+const PROPFIND_RESOURCETYPE = '<?xml version="1.0" encoding="UTF-8"?>'
+    + '<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>';
+
+/**
+ * File or folder, asked of Nextcloud as the node's owner (one WebDAV PROPFIND
+ * for its resourcetype). The webhook envelope carries only id and path, so
+ * the server had to guess from the name (#407). Null when Nextcloud does not
+ * say: the server then keeps its guess. Best effort, short timeout.
+ * @param {string | null} owner
+ * @param {string | null} relPath  user-relative path ("/Documents/x.pdf")
+ * @returns {Promise<'file' | 'folder' | null>}
+ */
+async function nodeTypeOf(owner, relPath) {
+    if (!owner || !relPath || !relPath.startsWith('/')) return null;
+    const encoded = relPath.split('/').map(encodeURIComponent).join('/');
+    try {
+        const res = await fetch(`${config.nextcloudUrl}/remote.php/dav/files/${encodeURIComponent(owner)}${encoded}`, {
+            method: 'PROPFIND',
+            headers: {
+                'Depth': '0',
+                'Content-Type': 'application/xml; charset=utf-8',
+                'EX-APP-ID': config.appId,
+                'EX-APP-VERSION': config.appVersion,
+                'AUTHORIZATION-APP-API': Buffer.from(`${owner}:${config.appSecret}`).toString('base64'),
+            },
+            body: PROPFIND_RESOURCETYPE,
+            signal: AbortSignal.timeout(NODE_TYPE_TIMEOUT_MS),
+        });
+        if (res.status !== 207) return null;
+        const xml = await res.text();
+        if (!/<(?:[A-Za-z0-9_-]+:)?resourcetype\b/.test(xml)) return null;
+        return /<(?:[A-Za-z0-9_-]+:)?collection\s*\/>/.test(xml) ? 'folder' : 'file';
+    } catch {
+        return null;
+    }
+}
 
 /**
  * Bee Flow trigger id for a Nextcloud event class, or null if unregistered.
@@ -139,6 +189,40 @@ function toUserRelativePath(rawPath) {
     const m = /^\/?([^/]+)\/files(\/.*)?$/.exec(rawPath);
     if (!m) return { path: rawPath, owner: null, relative: false };
     return { path: m[2] || '/', owner: m[1], relative: true };
+}
+
+/**
+ * The Nextcloud user who owns a calendar, from its principal URI
+ * (`principals/users/<uid>`). Null for any other principal (a room, a
+ * resource, the system): such a calendar has no user to check against.
+ * @param {unknown} principalUri
+ * @returns {string | null}
+ */
+function calendarOwnerOf(principalUri) {
+    const m = /^principals\/users\/([^/]+)$/.exec(String(principalUri || ''));
+    return m ? m[1] : null;
+}
+
+/**
+ * Who a calendar is shared with, built from an allow-list: the principal URI
+ * and read-only flag of each share, nothing else (#407). The server checks a
+ * colleague's access to the calendar with it; display names stay behind.
+ * @param {unknown} shares
+ * @returns {{ principal: string, readOnly: boolean }[]}
+ */
+function calendarSharesOf(shares) {
+    if (!Array.isArray(shares)) return [];
+    /** @type {{ principal: string, readOnly: boolean }[]} */
+    const out = [];
+    for (const share of shares) {
+        if (!share || typeof share !== 'object') continue;
+        const raw = share['{http://owncloud.org/ns}principal']
+            || (typeof share.href === 'string' ? share.href.replace(/^principal:/, '') : '');
+        const principal = typeof raw === 'string' ? raw : '';
+        if (!/^principals\/(users|groups|circles)\/[^/]+$/.test(principal)) continue;
+        out.push({ principal, readOnly: share.readOnly === true });
+    }
+    return out;
 }
 
 /** @param {HookNode | null | undefined} node */
@@ -206,12 +290,18 @@ function normalisePayload(event, envelope) {
         // them in. `uri` minus the .ics suffix is the CalDAV object UID.
         const obj = e.objectData || {};
         const cal = e.calendarData || e.targetCalendarData || e.sourceCalendarData || {};
+        // The calendar the event lives in now (the target of a move), with its
+        // owner and shares: the server decides per colleague whether they can
+        // see that calendar (#407).
+        const shares = e.calendarData ? e.shares : e.targetCalendarData ? e.targetShares : e.sourceShares;
         const uri = obj.uri || null;
         return {
             uid: uri ? uri.replace(/\.ics$/i, '') : null,
             objectUri: uri,
             calendarId: e.calendarId ?? e.targetCalendarId ?? e.sourceCalendarId ?? cal.id ?? null,
             calendarUri: cal.uri || null,
+            calendarOwner: calendarOwnerOf(cal.principaluri),
+            calendarShares: calendarSharesOf(shares),
             sourceCalendarId: e.sourceCalendarId ?? null,
             targetCalendarId: e.targetCalendarId ?? null,
             component: obj.component || null,
@@ -396,6 +486,11 @@ router.post(HOOK_PATH, express.json({ limit: '512kb' }), async (req, res) => {
 
     const ncUid = envelope.user?.uid || null;
     const payload = normalisePayload(event, envelope);
+    if (NODE_TYPE_EVENTS.has(event)) {
+        const owner = typeof payload.owner === 'string' ? payload.owner : null;
+        const nodePath = typeof payload.path === 'string' ? payload.path : null;
+        payload.nodeType = await nodeTypeOf(owner, nodePath);
+    }
 
     // One Nextcloud delivery can be more than one Bee Flow event: a Deck card
     // update that also completed the card is both `changed` and `completed`.
@@ -445,6 +540,9 @@ module.exports = Object.assign(router, {
     mapEvent,
     normalisePayload,
     toUserRelativePath,
+    calendarOwnerOf,
+    calendarSharesOf,
+    nodeTypeOf,
     deckTransitions,
     _resetCardState: () => CARD_STATE.clear(),
 });

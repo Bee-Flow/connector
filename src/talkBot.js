@@ -47,6 +47,7 @@ const { secretMatches, decodeAuthHeader } = require('./auth');
 const rateLimit = require('./rateLimit');
 const log = require('./log');
 const { errMessage } = require('./errors');
+const { t, userLanguage } = require('./l10n');
 
 // Brute-force gate on the inbound AppAPI shared-secret check. AppAPI itself
 // never presents a bad one, so only failures are billed and real deliveries are
@@ -363,6 +364,18 @@ function extractQuestion(payload) {
         .trim();
 }
 
+/**
+ * The agent thread of one user in one Talk room: `talk:<room>:<uid>`. A room
+ * thread from before #404 (`talk:<room>`) stays its first owner's; nothing
+ * moves between users.
+ * @param {string | number} roomToken
+ * @param {string | null} ncUid
+ * @returns {string}
+ */
+function talkConversationToken(roomToken, ncUid) {
+    return `talk:${roomToken}:${ncUid || ''}`;
+}
+
 // Ask the SaaS agent, reusing the same signed execute endpoint the Task
 // Processing providers use. Returns the answer text (possibly empty).
 /**
@@ -374,9 +387,12 @@ async function askSaaSAgent({ question, ncUid, roomToken }) {
     const apiPath = '/api/nextcloud/task-processing/execute';
     const body = JSON.stringify({
         taskType: AGENT_TASK_TYPE,
-        // conversation_token keys the agent's per-thread memory; one thread per
-        // room so a follow-up mention continues the same conversation.
-        input: { input: question, conversation_token: `talk:${roomToken}` },
+        // conversation_token keys the agent's thread memory: one thread per
+        // user per room (#404), so a follow-up mention continues that user's
+        // conversation and nobody ever continues another user's. One thread
+        // per room was owned by whoever asked first; the Bee Flow server
+        // refuses anyone else's token, so every other user started cold.
+        input: { input: question, conversation_token: talkConversationToken(roomToken, ncUid) },
         ncUid: ncUid || null,
     });
     const ts = Math.floor(Date.now() / 1000);
@@ -460,21 +476,24 @@ async function postBotMessage(token, message, replyTo) {
 async function handleMention(payload) {
     const roomToken = payload?.roomToken;
     if (!roomToken) return;
+    // The bot's own sentences follow the asking user's Nextcloud language
+    // (#402); the agent's answer is the model's, in the language it was asked.
+    const lang = await userLanguage(payload.actor);
     const question = extractQuestion(payload);
     if (!question) {
         await postBotMessage(roomToken,
-            'Hi! Mention me with a question — e.g. "@Bee Flow what changed in my calendar today?"',
+            t(lang, 'Hi! Mention me with a question — e.g. "@Bee Flow what changed in my calendar today?"'),
             payload.messageId).catch(e => log.warn(`[TalkBot] reply failed: ${errMessage(e)}`));
         return;
     }
     try {
         const answer = await askSaaSAgent({ question, ncUid: payload.actor, roomToken });
-        await postBotMessage(roomToken, answer || 'I could not find an answer to that.', payload.messageId);
+        await postBotMessage(roomToken, answer || t(lang, 'I could not find an answer to that.'), payload.messageId);
         log.info(`[TalkBot] answered @mention in room ${roomToken} (uid=${log.ref(payload.actor)})`);
     } catch (err) {
         log.warn(`[TalkBot] @mention answer failed for room ${roomToken}: ${errMessage(err)}`);
         await postBotMessage(roomToken,
-            'Sorry — I could not answer that just now. Please try again in a moment.',
+            t(lang, 'Sorry — I could not answer that just now. Please try again in a moment.'),
             payload.messageId).catch(() => {});
     }
 }
@@ -574,6 +593,8 @@ module.exports = Object.assign(router, {
     saveSecret,
     mentionsBot,
     extractQuestion,
+    handleMention,
+    talkConversationToken,
     BOT_ROUTE,
     BOT_NAME,
 });

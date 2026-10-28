@@ -45,6 +45,7 @@ const config = require('./config');
 const { withWarmupRetry, appApiHeaders } = require('./appApiClient');
 const log = require('./log');
 const { errMessage } = require('./errors');
+const { t, userLanguage } = require('./l10n');
 
 const REGISTER_API = '/ocs/v2.php/apps/app_api/api/v1/ai_provider/task_processing';
 const TP_API = '/ocs/v2.php/taskprocessing';
@@ -291,18 +292,13 @@ function watchdogMsFor(taskTypeId) {
 }
 
 /**
- * What the END USER sees when a task fails, by cause.
+ * What the END USER sees when a task fails, by cause, in English: the source
+ * text that `l10n/<lang>.json` translates. runTask answers in the language of
+ * the task's user (their Nextcloud language preference, #402); a task without
+ * a user, or a user whose language has no translation, gets English.
  *
  * One hard-coded sentence used to cover every failure, which told a user
  * nothing about whether to retry, wait, or fetch an administrator.
- *
- * NOT LOCALISED, and that is a known gap rather than an oversight: the task
- * record Nextcloud hands us carries no locale, and guessing from the instance
- * default would be wrong for exactly the multilingual organisations this
- * integration is aimed at. Wiring a real locale — from the task, or from a
- * per-user lookup on failure — is the fix; until then these stay English and
- * stay short, because a long English sentence is worse than a short one for
- * someone who does not read it.
  */
 const USER_ERRORS = {
     timeout: 'Bee Flow took too long to answer this request. Please try again — if it keeps happening, ask your administrator to check the Bee Flow connection.',
@@ -381,9 +377,10 @@ async function runTask(task) {
         // text to an end user.
         log.warn(`[TaskProcessing] task ${task.id} (${task.type}) failed after `
             + `${timedOut ? `${timeoutMs}ms watchdog` : 'upstream error'}: ${message}`);
+        const lang = await userLanguage(task.userId);
         await reportResult(task.id, {
             errorMessage: timedOut ? `Bee Flow watchdog fired after ${timeoutMs}ms: ${message}` : message,
-            userFacingErrorMessage: timedOut ? USER_ERRORS.timeout : USER_ERRORS.upstream,
+            userFacingErrorMessage: t(lang, timedOut ? USER_ERRORS.timeout : USER_ERRORS.upstream),
         });
     }
 }

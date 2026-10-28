@@ -54,7 +54,7 @@ Full privacy policy: <https://beeflow.nl/privacy>.
 
 Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We support Bee Flow Cloud and can also help you get Bee Flow running on a self-managed or self-hosted Nextcloud.
         ]]></description>
-    <version>1.6.5</version>
+    <version>1.6.6</version>
     <licence>AGPL-3.0-or-later</licence>
     <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.nl/">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>
@@ -138,7 +138,7 @@ Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We su
             <variable>
                 <name>BEEFLOW_EMBED_BASE_URL</name>
                 <display-name>Bee Flow frontend — Cloud (default) or self-hosted</display-name>
-                <description>Where the connector loads the embedded Bee Flow app (the SPA shell — index.html + assets) from. This is SEPARATE from "Bee Flow server" above, which is the API. The default, https://beeflow.nl, is Bee Flow Cloud's frontend. If you point "Bee Flow server" at your own / a non-Cloud environment, also set this to the matching frontend host (e.g. https://dev.beeflow.nl) so the embedded app is the same build as your server — otherwise the embed runs the Cloud frontend against your API and can look out of date. Leave at the default to use the Cloud frontend.</description>
+                <description>Where the connector loads the embedded Bee Flow app (the SPA shell: index.html and assets) from. Leave at the default in almost all cases: on Bee Flow Cloud the app comes from Cloud's frontend, and when you switch to a self-hosted server (in /setup or in Settings → Artificial Intelligence) it comes from the web app URL you enter there, or from the copy built into the connector when you leave that empty. Set this only to force one frontend host whatever server is chosen.</description>
                 <default>https://beeflow.nl</default>
             </variable>
             <variable>
@@ -164,7 +164,7 @@ Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We su
             <variable>
                 <name>BEEFLOW_NC_TLS_PIN</name>
                 <display-name>Auto-trust self-signed Nextcloud cert (optional, advanced)</display-name>
-                <description>"auto" (default) lets the connector trust your Nextcloud's certificate on first start when it is self-signed or signed by an internal CA, so the app can complete setup on local/on-prem installs. This never weakens a valid public certificate. Set to "off" in security-strict environments to disable automatic trust — then only a publicly-trusted certificate or an explicit "Nextcloud CA certificate" above will be accepted.</description>
+                <description>"auto" (default) lets the connector trust your Nextcloud's certificate when it is self-signed or signed by an internal CA, so the app can complete setup on local/on-prem installs. The certificate is pinned on first use: the connector remembers its key and refuses a different one, and an administrator accepts a renewed certificate on the connector's setup page. This never weakens a valid public certificate. Set to "off" in security-strict environments to disable automatic trust — then only a publicly-trusted certificate or an explicit "Nextcloud CA certificate" above will be accepted.</description>
                 <default>auto</default>
             </variable>
         </environment-variables>
@@ -219,7 +219,7 @@ Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We su
                  repoint the server, redeem a pairing code). The email-verification
                  endpoints stay USER (they run before a tenant key exists and are
                  gated by the one-time emailed code). -->
-            <route><url>^/?setup\/(status|test|diagnostics|rotate-tenant-key|apply-pairing-code|public-nc-url|diagnose|clear-cache)$</url><verb>GET,POST</verb><access_level>ADMIN</access_level></route>
+            <route><url>^/?setup\/(status|test|diagnostics|rotate-tenant-key|apply-pairing-code|public-nc-url|diagnose|clear-cache|nc-certificate|accept-nc-certificate)$</url><verb>GET,POST</verb><access_level>ADMIN</access_level></route>
 
             <!-- Nextcloud `webhook_listeners` deliveries -> connector.
                  PUBLIC because the delivery is made by a Nextcloud background

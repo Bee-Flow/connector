@@ -202,7 +202,7 @@ jobs:
       - name: Build app tarball
         run: |
           mkdir -p dist staging/${{ env.APP_ID }}
-          cp -r appinfo img CHANGELOG.md README.md LICENSE staging/${{ env.APP_ID }}/
+          cp -r appinfo img l10n CHANGELOG.md README.md LICENSE staging/${{ env.APP_ID }}/
           tar -czf dist/${{ env.APP_ID }}.tar.gz -C staging ${{ env.APP_ID }}
 
       - name: Sign tarball

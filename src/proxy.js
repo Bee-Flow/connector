@@ -14,6 +14,7 @@ const config = require('./config');
 const log = require('./log');
 const { errMessage } = require('./errors');
 const { isExpressResponse } = require('./httpGuards');
+const { shellBaseUrl } = require('./embedTarget');
 
 // How long the SaaS may take to send RESPONSE HEADERS before we give up.
 // Deliberately not a whole-request timeout: an SSE chat turn legitimately
@@ -524,6 +525,12 @@ function buildEmbedProxy() {
     const proxyFor = perTarget(buildEmbedProxyFor);
     /** @type {(req: import('express').Request, res: import('express').Response, next: import('express').NextFunction) => unknown} */
     return (req, res, next) => {
+        if (hasTraversal(req.url)) return next(); // the baked bundle; express.static refuses traversal itself
+        // Per request: the shell host follows the live server choice (#401).
+        // null = a self-hosted server without a web app URL, which gets the
+        // baked shell rather than Cloud's frontend.
+        const target = shellBaseUrl();
+        if (!target) return next();
         // Never let the shell hop be compressed either. Nextcloud's AppAPI
         // proxy copies the browser's `Accept-Encoding: gzip` onto its request
         // to us, the frontend host gzips text/html, and we pipe the bytes
@@ -534,14 +541,13 @@ function buildEmbedProxy() {
         // gzip accepted, the full shell with identity. Assets are streamed and
         // would survive, but one rule for the whole hop is the one that cannot
         // regress.
-        if (hasTraversal(req.url)) return next(); // the baked bundle; express.static refuses traversal itself
         rewriteRequestHeaders(req, SHELL_REQUEST_HEADERS, { 'accept-encoding': 'identity' });
         // http-proxy-middleware rewrites req.url in place. Keep the local
         // path: the fallback hands the request to express.static, which must
         // see `/assets/x.js`, and the one-shot retry must not rewrite twice
         // (`/embed/embed/...`).
         req.__shellUrl = req.url;
-        return proxyFor(config.embedBaseUrl)(req, res, next);
+        return proxyFor(target)(req, res, next);
     };
 }
 

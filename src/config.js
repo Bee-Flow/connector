@@ -28,6 +28,11 @@ const rawTenantKey = process.env.BEEFLOW_TENANT_KEY || 'auto';
 // needs config, so it cannot be the source here).
 const CLOUD_API_BASE_URL = 'https://server.beeflow.nl';
 const envApiBaseUrl = (process.env.BEEFLOW_API_BASE_URL || '').trim().replace(/\/+$/, '');
+// Bee Flow Cloud's frontend, where the embedded SPA shell comes from while the
+// connector talks to Cloud. Same value as setupConfig.CLOUD_EMBED_URL. AppAPI injects this info.xml <default> like the one
+// above, so the same value is no lock either.
+const CLOUD_EMBED_BASE_URL = 'https://beeflow.nl';
+const envEmbedBaseUrl = (process.env.BEEFLOW_EMBED_BASE_URL || '').trim().replace(/\/+$/, '');
 const isAutoTenantKey = (rawTenantKey === 'auto' || rawTenantKey === '');
 
 /**
@@ -48,6 +53,7 @@ const isAutoTenantKey = (rawTenantKey === 'auto' || rawTenantKey === '');
  * @property {string} apiBaseUrl
  * @property {boolean} apiBaseUrlLocked     BEEFLOW_API_BASE_URL names a server other than Cloud: the admin's lock
  * @property {string} embedBaseUrl
+ * @property {boolean} embedBaseUrlLocked   BEEFLOW_EMBED_BASE_URL names a host other than Cloud's frontend: the admin's lock
  * @property {string | null} pairingCode
  * @property {number} jwtTtlSeconds
  * @property {number} sigSkewSeconds
@@ -102,14 +108,16 @@ const config = {
     apiBaseUrlLocked: !!envApiBaseUrl && envApiBaseUrl !== CLOUD_API_BASE_URL,
 
     // Upstream for the embedded SPA SHELL (index.html + hashed assets). The
-    // connector proxies the shell from the cloud frontend host's `/embed/`
-    // build instead of baking it into the image, so a frontend deploy reaches
-    // the embedded view without a connector release. Distinct from apiBaseUrl:
-    // the API lives on the server pod (server.beeflow.nl) while the static
-    // shell is served by the frontend front-door (beeflow.nl). Self-hosters
-    // who point apiBaseUrl at their own server should also set this to their
-    // frontend host. The baked /public bundle remains the offline fallback.
-    embedBaseUrl: (process.env.BEEFLOW_EMBED_BASE_URL || 'https://beeflow.nl').replace(/\/+$/, ''),
+    // connector proxies the shell from a frontend host's `/embed/` build
+    // instead of baking it into the image, so a frontend deploy reaches the
+    // embedded view without a connector release. Distinct from apiBaseUrl:
+    // the API lives on the server (server.beeflow.nl) while the static shell
+    // is served by the frontend (beeflow.nl). This is only the Cloud default
+    // or the admin's env lock: which host a request really goes to follows
+    // the live server choice, see embedTarget.js (#401). The baked /public
+    // bundle remains the fallback.
+    embedBaseUrl: envEmbedBaseUrl || CLOUD_EMBED_BASE_URL,
+    embedBaseUrlLocked: !!envEmbedBaseUrl && envEmbedBaseUrl !== CLOUD_EMBED_BASE_URL,
 
     // One-shot pairing code for binding this NC to an existing Bee Flow org
     // (instead of creating a new one). Admin sets this via

@@ -124,6 +124,10 @@ RUN npm ci --omit=dev --no-audit --no-fund \
 
 COPY src ./src
 COPY appinfo ./appinfo
+# Translations: the connector reads l10n/<lang>.json for its own messages (Talk
+# replies, Assistant task errors). Nextcloud gets the same folder from the App
+# Store tarball for the menu labels and the settings form.
+COPY l10n ./l10n
 COPY --from=spa-build /spa/dist ./public
 
 # HaRP integration: install the runtime deps. ca-certificates is needed for

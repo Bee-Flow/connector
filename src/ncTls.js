@@ -25,13 +25,21 @@
  *
  * A trusted public / Let's Encrypt Nextcloud (the production and real-AIO
  * case) sets neither env var → this module is a no-op and verification is full.
+ *
+ * The self-signed mode is trust on first use, not "trust anything" (#403):
+ * both agents check the certificate's key against the pin recorded for that
+ * host (ncTlsPin.js) after the handshake and BEFORE the request is written,
+ * and refuse a changed key. TLS session resumption is off on those agents so
+ * every connection shows its full certificate chain.
  */
 
 'use strict';
 
 const fs = require('fs');
 const https = require('https');
+const path = require('path');
 const config = require('./config');
+const { createPinStore } = require('./ncTlsPin');
 const log = require('./log');
 const { errMessage } = require('./errors');
 
@@ -70,11 +78,90 @@ function ncOrigins() {
     return set;
 }
 
+/** @typedef {ReturnType<typeof createPinStore>} PinStore */
+
+/** @type {PinStore | null} */
+let _pinStore = null;
+
+/**
+ * The certificate pins of the self-signed mode, loaded on first use.
+ * @returns {PinStore}
+ */
+function pinStore() {
+    if (!_pinStore) {
+        _pinStore = createPinStore({ file: path.join(config.persistentStorage, 'nc-trust', 'pins.json'), log });
+    }
+    return _pinStore;
+}
+
+/**
+ * `host:port` of a connection, the key a pin is stored under.
+ * @param {{ host?: string | null, hostname?: string | null, port?: string | number | null }} opts
+ */
+function hostKeyOf(opts) {
+    const host = String(opts.hostname || opts.host || '').replace(/^\[|\]$/g, '').toLowerCase();
+    return `${host}:${opts.port || 443}`;
+}
+
+/**
+ * An https.Agent that checks the pin before the request is written. Node's
+ * http client attaches a request to the socket only once createConnection's
+ * callback runs, so a refused connection never sees a header.
+ * @param {https.AgentOptions} options
+ * @param {() => PinStore} store
+ * @returns {https.Agent}
+ */
+function pinnedHttpsAgent(options, store) {
+    class PinnedAgent extends https.Agent {
+        /**
+         * The callback form of createConnection, which Node's Agent waits for.
+         * @param {import('http').RequestOptions} opts
+         * @param {(err: Error | null, stream: import('stream').Duplex) => void} [cb]
+         * @returns {undefined}
+         */
+        createConnection(opts, cb) {
+            const socket = /** @type {import('tls').TLSSocket} */ (super.createConnection(opts));
+            let done = false;
+            /** @param {Error | null} err */
+            const finish = (err) => {
+                if (done) return;
+                done = true;
+                if (err) socket.destroy();
+                cb?.(err, socket);
+            };
+            socket.once('secureConnect', () => finish(store().check(hostKeyOf(opts), socket)));
+            socket.once('error', (err) => finish(err));
+            return undefined;
+        }
+    }
+    return new PinnedAgent({ ...options, maxCachedSessions: 0 });
+}
+
+/**
+ * An undici connector that checks the pin before undici writes the request.
+ * @param {typeof import('undici')} undici
+ * @param {import('undici').buildConnector.BuildOptions} connectOptions
+ * @param {() => PinStore} store
+ * @returns {import('undici').buildConnector.connector}
+ */
+function pinnedConnector(undici, connectOptions, store) {
+    const base = undici.buildConnector({ ...connectOptions, maxCachedSessions: 0 });
+    return (opts, callback) => base(opts, (err, socket) => {
+        if (err || !socket) return callback(err || new Error('no socket'), null);
+        if (opts.protocol !== 'https:') return callback(null, socket);
+        const refused = store().check(hostKeyOf(opts), /** @type {import('tls').TLSSocket} */ (socket));
+        if (refused) { socket.destroy(); return callback(refused, null); }
+        return callback(null, socket);
+    });
+}
+
 // https.Agent for the /nc/* reverse proxy (http-proxy-middleware). When the
 // posture is default this is a plain keep-alive-off agent (same as before).
-const ncHttpsAgent = connectOpts
-    ? new https.Agent({ keepAlive: false, ...connectOpts })
-    : new https.Agent({ keepAlive: false });
+const ncHttpsAgent = mode === 'insecure'
+    ? pinnedHttpsAgent({ keepAlive: false, ...connectOpts }, pinStore)
+    : connectOpts
+        ? new https.Agent({ keepAlive: false, ...connectOpts })
+        : new https.Agent({ keepAlive: false });
 
 let installed = false;
 
@@ -107,7 +194,9 @@ function installNcDispatcher() {
 
     const { Agent, Dispatcher, setGlobalDispatcher, getGlobalDispatcher } = undici;
     const origins = ncOrigins();
-    const ncAgent = new Agent({ connect: connectOpts });
+    const ncAgent = new Agent({
+        connect: mode === 'insecure' ? pinnedConnector(undici, connectOpts, pinStore) : connectOpts,
+    });
     const base = getGlobalDispatcher();
 
     class NcRouter extends Dispatcher {
@@ -176,7 +265,7 @@ function installNcDispatcher() {
     }
 
     setGlobalDispatcher(new NcRouter());
-    log.info(`[ncTls] scoped Nextcloud TLS posture: ${mode} for ${[...origins].join(', ')} — all other TLS stays verified`);
+    log.info(`[ncTls] scoped Nextcloud TLS posture: ${mode}${mode === 'insecure' ? ' (certificate pinned on first use)' : ''} for ${[...origins].join(', ')} — all other TLS stays verified`);
 }
 
-module.exports = { ncHttpsAgent, installNcDispatcher, ncTlsMode: mode, ncOrigins };
+module.exports = { ncHttpsAgent, installNcDispatcher, ncTlsMode: mode, ncOrigins, pinStore, pinnedHttpsAgent, pinnedConnector, hostKeyOf };

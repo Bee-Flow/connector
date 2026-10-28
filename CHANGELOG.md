@@ -9,6 +9,12 @@ The Nextcloud App Store reads the entry whose heading matches `<version>` in `ap
 
 ## [Unreleased]
 
+## [1.6.7] - 2026-10-28
+
+### Fixed
+- **A short hiccup between the connector and Nextcloud no longer logs you out of the embedded app.** When the connector could not look up your Nextcloud account for a moment, every request of the next minute was refused and the app showed its sign-in screen. The lookup is now retried once, and if Nextcloud still does not answer, the account the connector saw last (up to a day ago) is used.
+- **Signing in through a popup (Google, Microsoft) inside Nextcloud works again.** Since 1.6.5 the connector dropped the header that carries such a session, so every request after the popup was anonymous.
+
 ## [1.6.6] - 2026-10-28
 
 ### Security

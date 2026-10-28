@@ -49,6 +49,10 @@ const API_REQUEST_HEADERS = new Set([
     'content-disposition', 'content-range', 'transfer-encoding',
     'range', 'if-range', 'if-match', 'if-none-match', 'if-modified-since', 'if-unmodified-since',
     'last-event-id', 'x-http-method-override', 'x-requested-with',
+    // The embedded app's own headers. x-session-token carries the session a
+    // sign-in popup handed to the iframe (server/boot/session.js); without it
+    // every request after such a sign-in is anonymous.
+    'x-session-token', 'x-beeflow-client', 'x-request-id',
 ]);
 
 // The SPA shell is static: index.html, hashed assets, fonts. It needs the

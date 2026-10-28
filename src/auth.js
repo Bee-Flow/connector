@@ -132,20 +132,24 @@ function decodeAuthHeader(header) {
  * and derive the user's email. Without the cache, each request adds an
  * extra HTTP round-trip to NC just to get data that rarely changes —
  * doubling perceived latency on every SPA action.
- * @type {Map<string, { user: NextcloudUser, expiresAt: number }>}
+ * @type {Map<string, { user: NextcloudUser, expiresAt: number, staleUntil: number }>}
  */
-const _userCache = new Map(); // uid → { user, expiresAt }
+const _userCache = new Map(); // uid → { user, expiresAt, staleUntil }
 const USER_CACHE_TTL_MS = 60_000;
+// How long a user a lookup once returned may still stand in for a lookup
+// that fails now. One failed OCS call used to answer every request of that
+// user with 502 for the next 60 s, and the embedded app shows its login
+// screen on a failed /auth/user: a blip between the connector and Nextcloud
+// logged the person out in the middle of their work.
+const USER_STALE_TTL_MS = 24 * 60 * 60 * 1000;
+const USER_LOOKUP_RETRY_DELAY_MS = 250;
 
 /**
+ * One OCS call for the user, no caching.
  * @param {string} uid
  * @returns {Promise<NextcloudUser>}
  */
-async function fetchNextcloudUser(uid) {
-    const now = Date.now();
-    const cached = _userCache.get(uid);
-    if (cached && cached.expiresAt > now) return cached.user;
-
+async function lookupNextcloudUser(uid) {
     const url = `${config.nextcloudUrl}/ocs/v2.php/cloud/users/${encodeURIComponent(uid)}?format=json`;
     const res = await fetch(url, {
         headers: {
@@ -176,7 +180,39 @@ async function fetchNextcloudUser(uid) {
         // connector's own messages (l10n.js); never sent to Bee Flow.
         language: typeof data.language === 'string' && data.language ? data.language : null,
     };
-    _userCache.set(uid, { user, expiresAt: now + USER_CACHE_TTL_MS });
+    return user;
+}
+
+/**
+ * @param {string} uid
+ * @returns {Promise<NextcloudUser>}
+ */
+async function fetchNextcloudUser(uid) {
+    const now = Date.now();
+    const cached = _userCache.get(uid);
+    if (cached && cached.expiresAt > now) return cached.user;
+
+    /** @type {NextcloudUser} */
+    let user;
+    try {
+        user = await lookupNextcloudUser(uid);
+    } catch (first) {
+        // A 4xx is Nextcloud's verdict (unknown user, refused secret) and
+        // stands; a timeout, a reset or a 5xx gets one more try, and if that
+        // fails too the user the last lookup returned stands in.
+        if (/HTTP 4\d\d/.test(errMessage(first))) throw first;
+        await new Promise((resolve) => setTimeout(resolve, USER_LOOKUP_RETRY_DELAY_MS));
+        try {
+            user = await lookupNextcloudUser(uid);
+        } catch (second) {
+            if (cached && cached.staleUntil > now) {
+                log.warn(`[Auth] User lookup for ${log.ref(uid)} failed twice (${errMessage(second)}); using the user from ${Math.round((now - (cached.expiresAt - USER_CACHE_TTL_MS)) / 1000)} s ago`);
+                return cached.user;
+            }
+            throw second;
+        }
+    }
+    _userCache.set(uid, { user, expiresAt: now + USER_CACHE_TTL_MS, staleUntil: now + USER_STALE_TTL_MS });
     // Bound the cache so churn on a busy NC instance can't leak memory.
     if (_userCache.size > 1000) {
         const oldest = _userCache.keys().next().value;
@@ -357,6 +393,7 @@ function appApiAuthMiddleware(req, res, next) {
 
 module.exports = {
     appApiAuthMiddleware,
+    _resetUserCacheForTests: () => _userCache.clear(),
     isDocumentNavigation,
     decodeAuthHeader,
     secretMatches,

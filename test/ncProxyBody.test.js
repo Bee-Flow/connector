@@ -11,6 +11,7 @@ const http = require('node:http');
 
 process.env.APP_SECRET = 'test-secret';
 process.env.NEXTCLOUD_URL = 'http://127.0.0.1:1'; // replaced by the echo upstream below
+process.env.BEEFLOW_API_BASE_URL = 'http://beeflow.test';
 process.env.BEEFLOW_TENANT_KEY = 'tenant-key';
 process.env.BEEFLOW_NC_PROXY_MAX_BODY_MB = '2';
 process.env.BEEFLOW_NC_PROXY_MAX_INFLIGHT_MB = '1';

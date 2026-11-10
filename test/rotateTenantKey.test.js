@@ -1,7 +1,7 @@
-// "Rotate tenant key" (/setup) must really replace the key. It used to
-// re-bootstrap, which got the SAME key back from the server, and the page then
-// showed that unchanged fingerprint as the "new" one: a suspected-leaked key
-// stayed valid while the admin believed it was revoked.
+// "Rotate tenant key" (/setup) really replaces the key: the Bee Flow server
+// issues a new one, the old one stops working, and the page shows the new
+// fingerprint only when the key did change. Without a chosen server there is
+// nothing to rotate (409), and an install-time key is rotated in Bee Flow.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -20,37 +20,16 @@ process.env.BEEFLOW_API_BASE_URL = SAAS;
 process.env.APP_PERSISTENT_STORAGE = storage;
 process.env.BEEFLOW_BOOTSTRAP_RETRY_MS = '0';
 
-const express = require('express');
+const { postAsAdmin, until } = require('./support/setupRequests');
 const { installFakeWorld, json } = require('./support/fakeWorld');
 const config = require('../src/config');
 require('../src/heartbeat'); // key-dependent registrations follow a new key
 const setupRouter = require('../src/setup');
 
-const realFetch = globalThis.fetch;
 const fp = (k) => crypto.createHash('sha256').update(k).digest('hex').slice(0, 16);
 const secretFor = (key) => crypto.createHmac('sha256', key).update('beeflow:webhook-listener:v1').digest('hex');
 
-async function pressRotate() {
-    const app = express();
-    app.use((req, _res, next) => { req.beeflow = { user: { uid: 'admin', isNcAdmin: true } }; next(); });
-    app.use('/setup', setupRouter);
-    const server = app.listen(0);
-    try {
-        const { port } = server.address();
-        const res = await realFetch(`http://127.0.0.1:${port}/setup/rotate-tenant-key`, { method: 'POST' });
-        return { status: res.status, body: await res.json() };
-    } finally {
-        server.close();
-    }
-}
-
-async function until(cond, ms = 3000) {
-    const t0 = Date.now();
-    while (!cond()) {
-        if (Date.now() - t0 > ms) throw new Error('condition not reached in time');
-        await new Promise((r) => setTimeout(r, 10));
-    }
-}
+const pressRotate = () => postAsAdmin(setupRouter, '/setup/rotate-tenant-key');
 
 function bound(key = 'old-key') {
     fs.writeFileSync(path.join(storage, 'tenant-key.json'), JSON.stringify({
@@ -148,6 +127,45 @@ test('a lost answer re-fetches the binding, so the connector never keeps a key t
         assert.equal(config.tenantKey, 'rotated-key');
         assert.equal(body.tenantKeyFingerprint, fp('rotated-key'));
     } finally {
+        world.restore();
+    }
+});
+
+test('no Bee Flow server chosen: 409, and nothing is asked anywhere', async () => {
+    bound();
+    const server = config.apiBaseUrl;
+    config.apiBaseUrl = null;
+    config.tenantKey = null; // no server means no key in memory
+    const world = installFakeWorld({ servers: { [SAAS]: { 'POST /auth/connector/rotate-key': () => ({ tenantKey: 'new-key' }) } } });
+    try {
+        const { status, body } = await pressRotate();
+        assert.equal(status, 409);
+        assert.equal(body.ok, false);
+        assert.equal(body.code, 'server_not_chosen');
+        assert.equal(world.calls.length, 0);
+        assert.equal(JSON.parse(fs.readFileSync(path.join(storage, 'tenant-key.json'), 'utf8')).tenantKey, 'old-key', 'the cache is left alone');
+    } finally {
+        config.apiBaseUrl = server;
+        world.restore();
+    }
+});
+
+test('an install-time tenant key is not rotated from here: the page says where to do it', async () => {
+    bound('pasted-key');
+    config.isAutoTenantKey = false;
+    config.envTenantKey = 'pasted-key';
+    const world = installFakeWorld({ servers: { [SAAS]: { 'POST /auth/connector/rotate-key': () => ({ tenantKey: 'new-key' }) } } });
+    try {
+        const { status, body } = await pressRotate();
+        assert.notEqual(status, 200);
+        assert.equal(body.ok, false);
+        assert.match(body.error, /BEEFLOW_TENANT_KEY/);
+        assert.doesNotMatch(body.error, /setenv/);
+        assert.equal(world.calls.length, 0, 'the server is not asked to rotate a key the install would not follow');
+        assert.equal(config.tenantKey, 'pasted-key');
+    } finally {
+        config.isAutoTenantKey = true;
+        config.envTenantKey = null;
         world.restore();
     }
 });

@@ -66,9 +66,12 @@ const { singleFlight } = require('./singleFlight');
 
 const WEBHOOKS_API = '/ocs/v2.php/apps/webhook_listeners/api/v1/webhooks';
 
-// Path the connector exposes for deliveries. Declared PUBLIC in appinfo/info.xml
-// (`^/?hooks/.*`) because Nextcloud's background job calls it with no user
-// session; the shared secret in `authData` is what authenticates it.
+// Path the connector exposes for deliveries, and the uri of every row (see
+// hookUri). The shared secret in `authData` is what authenticates a delivery.
+// The path stays declared PUBLIC in appinfo/info.xml (`^/?hooks/.*`): a row
+// with an absolute address is called by Nextcloud's background job over the
+// proxy route with no user session, until the next registration pass has
+// rewritten it.
 const HOOK_PATH = '/hooks/nextcloud';
 
 /** @typedef {{ class: string, event: string, optional?: boolean }} HookEvent */
@@ -138,11 +141,29 @@ function hookSecret() {
         .digest('hex');
 }
 
-/** @returns {string} */
+/**
+ * The URI every row is registered with: relative. For a row that belongs to an
+ * ExApp and whose uri starts with "/", Nextcloud's delivery job hands the call
+ * to AppAPI (`PublicFunctions::exAppRequest`), which reaches this container
+ * the way it does for /init and /heartbeat: straight to the ExApp, or through
+ * HaRP. Nextcloud never calls its own public address for it. Read in
+ * `apps/webhook_listeners/lib/BackgroundJobs/WebhookCall.php` on Nextcloud 33,
+ * 34 and 35. The row's `headers` and `authData` travel along, next to
+ * AppAPI's own headers; AppAPI waits 3 seconds for the answer (see
+ * automationEventsWebhook.js).
+ * @returns {string}
+ */
 function hookUri() {
-    // Nextcloud calls itself; AppAPI's ExApp proxy forwards to us. This is the
-    // same reachability path bootstrap.js uses for connector_callback_url, so
-    // it needs no extra network configuration.
+    return HOOK_PATH;
+}
+
+/**
+ * The absolute form: Nextcloud calls its own address and AppAPI's proxy route
+ * forwards to us. Only for a row Nextcloud did not record our app id on, which
+ * it would deliver with its plain HTTP client (see upsertOne).
+ * @returns {string}
+ */
+function absoluteHookUri() {
     const ncBase = config.nextcloudPublicUrl || config.nextcloudUrl;
     return `${ncBase}/index.php/apps/app_api/proxy/${config.appId}${HOOK_PATH}`;
 }
@@ -163,11 +184,12 @@ function ocsData(body) {
  * Body for one webhook row. See the header for why `tokenNeeded` is absent.
  * @param {HookEvent} entry
  * @param {string} secret
+ * @param {string} [uri]
  */
-function webhookBody(entry, secret) {
+function webhookBody(entry, secret, uri = hookUri()) {
     return {
         httpMethod: 'POST',
-        uri: hookUri(),
+        uri,
         event: entry.class,
         eventFilter: {},
         userIdFilter: null,
@@ -181,30 +203,34 @@ function webhookBody(entry, secret) {
 }
 
 /**
- * Whether a webhook_listeners row is one of ours, whatever Nextcloud URL it
- * was registered with. Rows are matched on the delivery path (the AppAPI proxy
- * path of this app plus HOOK_PATH) and on something only we put there: our
- * appId or our X-Beeflow-Hook-Event header.
+ * Whether a webhook_listeners row is one of ours, in either form it can have:
+ * the relative HOOK_PATH, or an absolute address (whatever Nextcloud URL it
+ * was registered with) whose path is the AppAPI proxy path of this app plus
+ * HOOK_PATH. Both forms also need something only we put there: our appId or
+ * our X-Beeflow-Hook-Event header. A relative row with another app's id
+ * belongs to that app.
  * @param {WebhookRow} row
  */
 function isOurRow(row) {
     if (!row || !row.event || typeof row.uri !== 'string') return false;
+    const marked = row.appId === config.appId || !!row.headers?.['X-Beeflow-Hook-Event'];
+    if (row.uri === HOOK_PATH) return marked && (row.appId == null || row.appId === config.appId);
     let pathname;
     try { pathname = new URL(row.uri).pathname; } catch (_) { return false; }
     if (!pathname.endsWith(`/${config.appId}${HOOK_PATH}`)) return false;
-    return row.appId === config.appId || !!row.headers?.['X-Beeflow-Hook-Event'];
+    return marked;
 }
 
 /**
  * Our existing rows: one per event class to update in place, and every other
  * row of ours to delete.
  *
- * Listed WITHOUT `?uri=`: Nextcloud filters that by exact match, so after the
- * admin set or changed the public Nextcloud URL, the rows registered under the
- * old address were invisible. Each restart then created a second set while the
- * first kept firing: double automation runs while the old address still
- * answered, a failing background job per event once it did not. The same
- * pass removes duplicates of one class, which would double-fire too.
+ * Listed WITHOUT `?uri=`: Nextcloud filters that by exact match, and our rows
+ * can carry more than one uri (the relative form, and an absolute address
+ * from a connector before 2.0 or from before the public Nextcloud URL
+ * changed). Every one of them is found here, so a class with a row is updated
+ * in place and never gets a second row, which would fire every automation
+ * twice. The same pass removes duplicates of one class.
  * @param {{ warmupRetry?: boolean }} [opts] false where waiting out a warm-up is pointless
  * @returns {Promise<{ byClass: Map<string, WebhookRow>, extras: WebhookRow[] }>}
  */
@@ -259,22 +285,53 @@ function deleteRow(row) {
  * @returns {Promise<{ ok: true, updated: boolean } | { ok: false, status: number, body: string }>}
  */
 async function upsertOne(entry, existing, secret) {
-    const body = webhookBody(entry, secret);
     const row = existing.get(entry.class);
     // Update in place when a row already exists so repeated /init calls don't
     // accumulate duplicates (Nextcloud does not deduplicate by (uri, event)).
-    const url = row?.id
-        ? `${config.nextcloudUrl}${WEBHOOKS_API}/${row.id}`
-        : `${config.nextcloudUrl}${WEBHOOKS_API}`;
-    const res = await fetch(url, {
-        method: 'POST',
-        headers: appApiHeaders(),
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(5_000),
-    });
+    /** @param {number | string | undefined} id @param {string} [uri] */
+    const post = (id, uri) => fetch(
+        id ? `${config.nextcloudUrl}${WEBHOOKS_API}/${id}` : `${config.nextcloudUrl}${WEBHOOKS_API}`,
+        {
+            method: 'POST',
+            headers: appApiHeaders(),
+            body: JSON.stringify(webhookBody(entry, secret, uri)),
+            signal: AbortSignal.timeout(5_000),
+        });
+    let res = await post(row?.id);
+    if (res.ok) {
+        // Nextcloud answers with the row. It records our app id on a row
+        // registered over AppAPI, and delivers a relative uri through AppAPI
+        // only for such a row. When the answer names no app id of ours, the row
+        // gets the absolute address instead, which needs none.
+        const saved = savedRow(await res.text().catch(() => ''));
+        if (saved && saved.id && saved.appId !== config.appId) {
+            if (!_warnedNoAppId) {
+                _warnedNoAppId = true;
+                log.warn('[Webhooks] Nextcloud did not record this app on the webhook row; '
+                    + 'registering with the absolute Nextcloud address instead.');
+            }
+            res = await post(saved.id, absoluteHookUri());
+        }
+    }
     if (res.ok) return { ok: true, updated: !!row?.id };
     const text = await res.text().catch(() => '');
     return { ok: false, status: res.status, body: text.slice(0, 160) };
+}
+
+let _warnedNoAppId = false;
+
+/**
+ * The row in the answer to a create or update, when the answer carries one.
+ * @param {string} body
+ * @returns {WebhookRow | null}
+ */
+function savedRow(body) {
+    try {
+        const data = JSON.parse(body)?.ocs?.data;
+        return data && typeof data === 'object' && !Array.isArray(data) && 'uri' in data ? data : null;
+    } catch (_) {
+        return null;
+    }
 }
 
 let _registered = false;
@@ -404,6 +461,8 @@ module.exports = {
     stopRetry,
     hookSecret,
     hookUri,
+    absoluteHookUri,
+    isRegistered: () => _registered,
     EVENTS,
     EVENT_BY_CLASS,
     HOOK_PATH,

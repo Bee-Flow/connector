@@ -29,6 +29,7 @@ const log = require('./log');
 const { errMessage } = require('./errors');
 const { singleFlight } = require('./singleFlight');
 const { TOP_MENU_NAME } = require('./filesActions');
+const { NOT_CHOSEN_CODE } = require('./serverChoice');
 
 /**
  * Is this caller presenting the AppAPI shared secret?
@@ -112,6 +113,12 @@ function registerLifecycle(app) {
             lastError = bs.getLastErrorState?.() || null;
         } catch (_) { /* tolerate during module init */ }
 
+        // No server chosen yet: the connector is healthy and waits for an
+        // administrator. The state name only, for everyone.
+        if (!config.apiBaseUrl) {
+            return res.json({ status: 'ok', bootstrap: NOT_CHOSEN_CODE });
+        }
+
         if (pending && pending.status === 'awaiting_email_verification') {
             return res.json({
                 status: 'ok',
@@ -139,7 +146,7 @@ function registerLifecycle(app) {
                 ...(trusted ? {
                     category: lastError.category,
                     error: lastError.error,
-                    remediation: bs?.remediationFor?.(lastError.category)
+                    remediation: bs?.remediationShown?.(lastError)
                         || 'Bootstrap failed. Check `docker logs nc_app_bee_flow --tail 200` for details.',
                     lastAttemptAt: lastError.lastAttemptAt,
                     nextRetryAt: lastError.nextRetryAt,
@@ -202,13 +209,17 @@ function runInitInBackground() {
 async function runInitOnce() {
     const t0 = Date.now();
 
-    // 1. Auto-bootstrap (only if BEEFLOW_TENANT_KEY=auto and not yet cached)
-    if (!config.tenantKey && config.isAutoTenantKey) {
+    // 1. Auto-bootstrap (only if BEEFLOW_TENANT_KEY=auto and not yet cached).
+    //    Without a chosen server there is nothing to bootstrap against; the
+    //    Nextcloud-side registrations below still run and init reaches 100.
+    if (config.apiBaseUrl && !config.tenantKey && config.isAutoTenantKey) {
         try {
             const { bootstrapIfNeeded } = require('./bootstrap');
             await bootstrapIfNeeded();
         } catch (err) {
-            log.warn(`[Init] Bootstrap retry failed (non-fatal): ${errMessage(err)}`);
+            // The attempt itself is logged by bootstrap.js; at a start this
+            // is the same attempt server.js made, not a second one.
+            log.info(`[Init] continuing without a connection to the Bee Flow server (${errMessage(err)})`);
         }
     }
     await reportInitProgress(25).catch(() => {});
@@ -295,14 +306,25 @@ async function registerEmbedScript() {
 // "Sync now", Deck stays on the activity poller, and Talk is handled by the
 // Talk-bot webhook rather than an event subscription.
 async function registerEventListeners() {
-    const { registerTalkBot } = require('./talkBot');
     // Independent of the webhook registration: Talk bots are a different
     // mechanism with a different failure mode (Talk simply not installed).
-    await registerTalkBot().catch(err => log.warn(`[Init] Talk bot registration failed: ${errMessage(err)}`));
+    await registerTalkBotOnceServerChosen();
     await registerTenantKeyDependents();
     log.info('[Init] Real-time user/group sync is not available via webhooks '
         + '(Nextcloud\'s User/Group events are not webhook-compatible); the periodic '
         + 'sync backstop and manual "Sync now" remain in use.');
+}
+
+// The Talk bot is offered to conversations only once it has a Bee Flow server
+// to answer from: while no server is chosen it is not registered, and it is
+// registered the moment one becomes known (bootstrap.onServerChosen).
+async function registerTalkBotOnceServerChosen() {
+    if (!config.apiBaseUrl) {
+        log.info('[Init] Talk bot not registered: no Bee Flow server chosen yet');
+        return;
+    }
+    const { registerTalkBot } = require('./talkBot');
+    await registerTalkBot().catch(err => log.warn(`[Init] Talk bot registration failed: ${errMessage(err)}`));
 }
 
 // The registrations that need a tenant key: the Assistant (Task Processing)
@@ -334,6 +356,7 @@ const registerTenantKeyDependents = singleFlight(async () => {
 }, () => config.tenantKey);
 
 require('./bootstrap').onTenantKeyReady(registerTenantKeyDependents);
+require('./bootstrap').onServerChosen(registerTalkBotOnceServerChosen);
 
 // Reports init progress to AppAPI. Spec: PUT /ocs/v2.php/apps/app_api/ex-app/status
 // with `{progress: 0-100, error?: string}`. AppAPI's `waitInitStepFinish`

@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 // config.js requires these at load time.
 process.env.APP_SECRET = 'test-secret';
 process.env.NEXTCLOUD_URL = 'http://nc.test';
+process.env.BEEFLOW_API_BASE_URL = 'http://beeflow.test';
 process.env.BEEFLOW_TENANT_KEY = 'tenant-key';
 
 const { stableInstanceIdFallback, ncHostFromUrl } = require('../src/bootstrap');

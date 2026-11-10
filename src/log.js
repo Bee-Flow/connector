@@ -3,19 +3,20 @@
  * The connector's one logger, same call shape as server/telemetry/log.js:
  * `log.warn('[Tag] what happened', detail, err)`.
  *
- * Production (NODE_ENV=production, or LOG_FORMAT=json) writes ONE JSON object
- * per line to stdout, `{ ts, level, msg, err? }`, which is what the Nextcloud
- * ExApp log viewer reads. Tests and development keep the console: the method is
- * looked up at call time, so a spy on console.warn still sees the call.
+ * NODE_ENV=production or LOG_FORMAT=json writes ONE JSON object per line to
+ * stdout, `{ ts, level, msg, err? }`. Otherwise (the image as shipped, tests,
+ * development) the lines are plain text on the console: the method is looked up
+ * at call time, so a spy on console.warn still sees the call.
  *
  * `log.ref(id)` turns a user id into a short digest for the message.
  *
- * Level (JSON mode only): LOG_LEVEL = debug | info | warn | error, default info.
- * No dependency: the connector image stays small.
+ * Level, in both formats: LOG_LEVEL = debug | info | warn | error, default info.
+ * No package dependency: the connector image stays small.
  */
 
 const crypto = require('node:crypto');
 const util = require('node:util');
+const { wordFromEnv } = require('./envValues');
 
 /** @typedef {'debug' | 'info' | 'warn' | 'error'} LogLevel */
 /** @typedef {(...args: unknown[]) => void} LogFn */
@@ -59,12 +60,13 @@ function createLogger({ json = false, level = 'info', stream = process.stdout, n
     const min = Math.max(0, LEVELS.findIndex((l) => l === level));
     /** @param {LogLevel} lvl @returns {LogFn} */
     const sink = (lvl) => {
+        const silent = LEVELS.indexOf(lvl) < min;
         if (!json) {
-            // eslint-disable-next-line no-console -- the development sink; looked up per call
-            return (...args) => console[CONSOLE_METHOD[lvl]](...args);
+            // eslint-disable-next-line no-console -- the plain-text sink; looked up per call
+            return (...args) => { if (!silent) console[CONSOLE_METHOD[lvl]](...args); };
         }
         return (...args) => {
-            if (LEVELS.indexOf(lvl) < min) return;
+            if (silent) return;
             const { msg, err } = splitArgs(args);
             /** @type {{ ts: string, level: LogLevel, msg: string, err?: { name: string, message: string, code?: string } }} */
             const line = { ts: now().toISOString(), level: lvl, msg };
@@ -88,6 +90,7 @@ function ref(id) {
     return `u_${crypto.createHash('sha256').update(String(id)).digest('hex').slice(0, 8)}`;
 }
 
-const log = createLogger({ json: isJsonMode(), level: process.env.LOG_LEVEL || 'info' });
+// LOG_LEVEL is an install-time option (info.xml): blank or any other word means info.
+const log = createLogger({ json: isJsonMode(), level: wordFromEnv('LOG_LEVEL', LEVELS, 'info') });
 
 module.exports = Object.assign(log, { createLogger, isJsonMode, ref });

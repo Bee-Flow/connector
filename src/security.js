@@ -118,16 +118,51 @@ function shouldWarnAboutOrigin(key) {
         { limit: ORIGIN_LOG_MAX_LINES, windowMs: ORIGIN_LOG_WINDOW_MS }).allowed;
 }
 
+/**
+ * @param {string} origin
+ * @returns {string}
+ */
+function hostOf(origin) {
+    try { return new URL(origin).host.toLowerCase(); } catch { return ''; }
+}
+
+/**
+ * The host names this request arrived on: `Host`, and `X-Forwarded-Host` when
+ * a proxy in front passed the name it was reached on.
+ * @param {import('express').Request} req
+ * @returns {Set<string>}
+ */
+function arrivedOnHosts(req) {
+    /** @type {Set<string>} */
+    const hosts = new Set();
+    for (const name of ['host', 'x-forwarded-host']) {
+        const first = String(req.headers?.[name] || '').split(',')[0].trim().toLowerCase();
+        if (first) hosts.add(first);
+    }
+    return hosts;
+}
+
 /** @param {import('express').Request} req */
 function frameAncestorsFor(req) {
     const trusted = trustedEmbedOrigins();
     const ancestors = new Set(["'self'", ...trusted]);
+    // The browser says the request comes from this app's own origin (the
+    // address users reach Nextcloud on, which can differ from NEXTCLOUD_URL):
+    // `'self'` already allows that frame, so there is nothing to report.
+    // Page script cannot set this header.
+    if (req.headers?.['sec-fetch-site'] === 'same-origin') return [...ancestors].join(' ');
+    // A browser sends no Sec-Fetch-Site from a page on plain http. The host
+    // the request arrived on then tells the same thing: an origin on that host
+    // is this app's own address. This decides only whether a line is logged;
+    // the header that is sent stays the same.
+    const ownHosts = req.headers?.['sec-fetch-site'] === undefined ? arrivedOnHosts(req) : new Set();
     for (const hdr of ['origin', 'referer']) {
         const value = req.headers?.[hdr];
         if (!value || typeof value !== 'string') continue;
         const origin = originOf(value);
         if (!origin) continue;
         if (trusted.has(origin)) continue; // already listed
+        if (ownHosts.has(hostOf(origin))) continue; // the app's own address
         const oversized = origin.length > MAX_ORIGIN_KEY_LEN;
         if (!shouldWarnAboutOrigin(oversized ? OVERSIZED_ORIGIN_KEY : origin)) continue;
         if (oversized) {
@@ -138,8 +173,11 @@ function frameAncestorsFor(req) {
         }
         log.warn(`[Security] refusing to allow ${origin} to frame this app — it is not this `
             + `Nextcloud's origin. If the app is embedded there legitimately, add it to `
-            + `BEEFLOW_TRUSTED_EMBED_ORIGINS (occ app_api:app:setenv ${config.appId} `
-            + `BEEFLOW_TRUSTED_EMBED_ORIGINS ${origin}).`);
+            + 'BEEFLOW_TRUSTED_EMBED_ORIGINS. That is an install-time value: enter it in the '
+            + 'deploy options when installing, or register the app again with '
+            + `--env BEEFLOW_TRUSTED_EMBED_ORIGINS=${origin} `
+            + `(occ app_api:app:unregister ${config.appId}, without --rm-data so the data is `
+            + `kept, then occ app_api:app:register ${config.appId} <daemon> --env ...).`);
     }
     return [...ancestors].join(' ');
 }

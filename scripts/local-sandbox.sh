@@ -12,8 +12,9 @@
 #
 # All containers share the bee-flow-net Docker network and can resolve each
 # other by container name. Set WITH_SERVER=0 to skip the Postgres + RustFS +
-# server containers and point the connector at a remote server / SaaS instead
-# (override API_BASE_URL).
+# server containers. The connector then starts without a Bee Flow server and
+# shows the picker when an administrator opens Bee Flow; set API_BASE_URL (a
+# server URL, or the word `cloud`) to fix the server at install time instead.
 #
 # Subcommands: up | down | clean | logs | status | front
 #   front — relaunch ONLY the nginx front door on :$NC_PORT (HaRP mode).
@@ -21,8 +22,9 @@
 #           up: the front is stateless and resolves its upstreams once, at
 #           start, so a recreated HaRP/Nextcloud (new IP) — or a front left
 #           over from the bind-mounted-config era — strands it.
-#   `up` accepts `--cloud` to point the connector at https://server.beeflow.nl
-#   instead of the local SaaS, and auto-spawn a public tunnel (cloudflared by
+#   `up` accepts `--cloud` to fix the connector on Bee Flow Cloud (it passes
+#   BEEFLOW_API_BASE_URL=cloud) instead of the local server, and auto-spawn a
+#   public tunnel (cloudflared by
 #   default, ngrok if NGROK_AUTHTOKEN is set) so the cloud can callback-verify
 #   your NC. One-command sandbox-against-cloud:
 #     ./local-sandbox.sh --cloud
@@ -87,12 +89,14 @@
 #                                          # matching `connector_tenant_key_*`
 #                                          # row and every JWT will 401.
 #   API_BASE_URL=                         # default: http://bee-flow-server:3001
+#                                          # with WITH_SERVER=1, empty (no server
+#                                          # chosen, the picker decides) with
+#                                          # WITH_SERVER=0. A URL or the word
+#                                          # `cloud` fixes the server.
 #   EMBED_BASE_URL=                       # where the connector fetches the SPA
-#                                          # shell (/embed/); unset = the connector
-#                                          # default (https://beeflow.nl). Against a
-#                                          # local stack: http://beeflow-agent-hub
-#                                          override to e.g. https://server.beeflow.nl
-#                                          to skip running the server locally
+#                                          # shell (/embed/); unset = it follows the
+#                                          # chosen server. Against a local
+#                                          # stack: http://beeflow-agent-hub
 #   WITH_SERVER=1                          # 0 to skip Postgres + RustFS + server
 #   SERVER_IMAGE=ghcr.io/bee-flow/beeflow:dev
 #   SERVER_PORT=3001                       # host-published port for the server
@@ -187,7 +191,7 @@ CFD_NAME="bee-flow-cloudflared"
 
 # --cloud flag — set later by cmd_up arg parsing. When true, the script:
 #   1. skips the local Postgres+RustFS+server stack (WITH_SERVER=0)
-#   2. points the connector at https://server.beeflow.nl
+#   2. fixes the connector on Bee Flow Cloud (BEEFLOW_API_BASE_URL=cloud)
 #   3. spawns a public tunnel for the bootstrap callback
 CLOUD_MODE=0
 
@@ -211,12 +215,13 @@ DAEMON="$MANUAL_DAEMON"               # cmd_up switches to $HARP_DAEMON in HaRP 
 NETWORK="bee-flow-net"     # shared bridge network — NC ↔ connector ↔ server
                            # all resolve each other by container name.
 
-# Default the connector's SaaS target to the server we're starting locally.
-# If WITH_SERVER=0, fall back to the public hosted SaaS (override per env).
+# Default the connector's server to the one we're starting locally. With
+# WITH_SERVER=0 there is no default: the connector starts without a server and
+# an administrator chooses one in the picker (or set API_BASE_URL per env).
 if [ "$WITH_SERVER" = "1" ]; then
     API_BASE_URL="${API_BASE_URL:-http://$SRV_NAME:$SERVER_PORT}"
 else
-    API_BASE_URL="${API_BASE_URL:-https://server.beeflow.nl}"
+    API_BASE_URL="${API_BASE_URL:-}"
 fi
 
 # Connector dir = parent of this script. Works in both layouts:
@@ -889,16 +894,16 @@ cmd_up() {
         b "[HaRP] HaRP mode: browser → $FRONT_NAME:$NC_PORT → /exapps/ → $HARP_NAME → FRP tunnel → connector (no PHP proxy); daemon $DAEMON"
     fi
 
-    # --cloud — point connector at https://server.beeflow.nl instead of the
-    # local SaaS, skip the Postgres+RustFS+server stack, and start a public
+    # --cloud — fix the connector on Bee Flow Cloud (the word `cloud` in
+    # BEEFLOW_API_BASE_URL) instead of the local server, skip the Postgres+RustFS+server stack, and start a public
     # tunnel so the cloud can callback-verify the NC instance.
     if [ "$CLOUD_MODE" = "1" ]; then
         WITH_SERVER=0
-        API_BASE_URL="https://server.beeflow.nl"
+        API_BASE_URL="cloud"
         # The cached tenant key is one file, not keyed by server — a key the
         # cloud minted must never be replayed against the local stack.
         CONN_DATA_VOL="${CONN_DATA_VOL}-cloud"
-        b "[cloud] Connector will target $API_BASE_URL; local SaaS stack disabled"
+        b "[cloud] Connector is fixed on Bee Flow Cloud; local server stack disabled"
     fi
 
     # Image source priority:
@@ -933,7 +938,7 @@ cmd_up() {
         run_server_migrations
         start_server
     else
-        b "[Server] WITH_SERVER=0 — skipping server stack; connector will hit $API_BASE_URL"
+        b "[Server] WITH_SERVER=0 — skipping server stack; Bee Flow server: ${API_BASE_URL:-(not chosen, the picker decides)}"
     fi
 
     # ─── Nextcloud (+ HaRP, front door) ──────────────────────────────────
@@ -1094,10 +1099,15 @@ cmd_up() {
         # So we let register hang while we read the row, start the container,
         # and then block on register to finish.
         REGISTER_LOG=$(mktemp)
+        # No server address: leave the variable out, so nothing is stored for
+        # it and the connector waits for the picker.
+        register_env=(--env "BEEFLOW_TENANT_KEY=$TENANT_KEY")
+        if [ -n "$API_BASE_URL" ]; then
+            register_env+=(--env "BEEFLOW_API_BASE_URL=$API_BASE_URL")
+        fi
         nc_occ app_api:app:register "$APP_ID" "$DAEMON" \
             --info-xml /tmp/info.xml \
-            --env "BEEFLOW_TENANT_KEY=$TENANT_KEY" \
-            --env "BEEFLOW_API_BASE_URL=$API_BASE_URL" >"$REGISTER_LOG" 2>&1 &
+            "${register_env[@]}" >"$REGISTER_LOG" 2>&1 &
         REGISTER_PID=$!
 
         b "[6/7] Waiting for AppAPI to provision port + secret"
@@ -1130,8 +1140,10 @@ cmd_up() {
         -e NEXTCLOUD_URL="http://$NC_NAME"
         -e BEEFLOW_NC_PUBLIC_URL="$NC_PUBLIC_URL"
         -e BEEFLOW_TENANT_KEY="$TENANT_KEY"
-        -e BEEFLOW_API_BASE_URL="$API_BASE_URL"
     )
+    if [ -n "$API_BASE_URL" ]; then
+        conn_args+=(-e BEEFLOW_API_BASE_URL="$API_BASE_URL")
+    fi
     if [ -n "$EMBED_BASE_URL" ]; then
         conn_args+=(-e BEEFLOW_EMBED_BASE_URL="$EMBED_BASE_URL")
     fi

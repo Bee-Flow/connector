@@ -12,9 +12,17 @@ const http = require('http');
 const https = require('https');
 const config = require('./config');
 const log = require('./log');
+const { intFromEnv } = require('./envValues');
 const { errMessage } = require('./errors');
 const { isExpressResponse } = require('./httpGuards');
 const { shellBaseUrl } = require('./embedTarget');
+const { NOT_CHOSEN_CODE, NOT_CHOSEN_MESSAGE } = require('./serverChoice');
+const serverTls = require('./serverTls');
+const serverProxy = require('./serverProxy');
+const { ncOrigins } = require('./ncTls');
+const { isCertificateError } = require('./serverProbe');
+const { isNoncePath, nonceRoom, MAX_PADDED_BYTES } = require('./htmlPadding');
+const { isHtmlContentType, isJavascriptContentType } = require('./requestText');
 
 // How long the SaaS may take to send RESPONSE HEADERS before we give up.
 // Deliberately not a whole-request timeout: an SSE chat turn legitimately
@@ -25,9 +33,11 @@ const { shellBaseUrl } = require('./embedTarget');
 //
 // The clock starts when the request reaches the proxy, not when a socket is
 // assigned: a request waiting in the agent queue for a free socket counts too.
-// 0 switches the timeout off.
-const RESPONSE_HEADERS_TIMEOUT_MS = parseInt(
-    process.env.BEEFLOW_UPSTREAM_HEADERS_TIMEOUT_MS || '60000', 10);
+// 0 switches the timeout off. An install-time option (info.xml): blank or
+// unusable means 60 seconds, and the value stays at or below one day (a timer
+// cannot hold much more).
+const RESPONSE_HEADERS_TIMEOUT_MS = intFromEnv(
+    'BEEFLOW_UPSTREAM_HEADERS_TIMEOUT_MS', { fallback: 60_000, min: 0, max: 86_400_000 });
 
 // Sockets per upstream origin. 0 (the default) = no cap. A cap is a shared
 // queue for every user of this Nextcloud: chat turns, project and document
@@ -130,12 +140,25 @@ const AGENT_OPTS = {
     maxSockets: UPSTREAM_MAX_SOCKETS > 0 ? UPSTREAM_MAX_SOCKETS : Infinity,
 };
 const httpAgent = new http.Agent(AGENT_OPTS);
-const httpsAgent = new https.Agent(AGENT_OPTS);
+// The https agent also trusts the certificate BEEFLOW_SERVER_CA_CERT names, next
+// to the default roots (serverTls.js), and goes through the outbound proxy when
+// HTTPS_PROXY names one (serverProxy.js). Both proxies reach a Bee Flow host only.
+const httpsAgent = new https.Agent({
+    ...AGENT_OPTS, ...serverTls.httpsAgentOptions(), ...serverProxy.httpsAgentOptions(),
+});
+// Neither of the two ever applies to a Nextcloud origin: a target on one (a Bee
+// Flow server behind the same address as Nextcloud) gets a plain agent.
+const plainHttpsAgent = serverTls.hasExtraCertificates() || serverProxy.hasProxy()
+    ? new https.Agent(AGENT_OPTS)
+    : httpsAgent;
 
 // Network-class errors where the socket/pool is suspect. Anything else
 // (protocol errors, aborts) is not a stale-pool symptom and never retried.
 /** @typedef {import('http-proxy-middleware').RequestHandler<import('express').Request, import('express').Response>} ProxyHandler */
 /** @typedef {import('http-proxy-middleware').Options<import('express').Request, import('express').Response>} ProxyOptions */
+
+// What a refused server certificate is called, here and in bootstrap.js.
+const CERT_UNTRUSTED_CODE = 'saas_cert_untrusted';
 
 const NETWORK_ERROR_CODES = new Set([
     'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'EHOSTUNREACH', 'ETIMEDOUT', 'EAI_AGAIN',
@@ -181,7 +204,9 @@ function retryOnceOnNetworkError({ err, req, res, agent, middleware, onExhausted
 // LOCAL paths (/setup, /js/embed, /img/app.svg) are handled by their own
 // routes in server.js and never reach the shell proxy; client-side SPA routes
 // (e.g. /agents) are NOT shell paths and stay proxied to the SaaS API.
-const SPA_SHELL = /^\/(assets\/|js\/|img\/|fonts\/|module-shims\/|monaco\/|favicon|app-icon\.svg$|n8n-color\.png$|BeeFlow-logo|bee-flow-logo|index\.html$|$)/;
+// `beeflow-runtime.js` is the web app's runtime settings script (written by
+// the web app image at start); the shell document asks for it next to itself.
+const SPA_SHELL = /^\/(assets\/|js\/|img\/|fonts\/|module-shims\/|monaco\/|favicon|app-icon\.svg$|n8n-color\.png$|BeeFlow-logo|bee-flow-logo|beeflow-runtime\.js$|index\.html$|$)/;
 
 /** @param {string} urlPath */
 function isSpaShellPath(urlPath) {
@@ -260,7 +285,11 @@ function perTarget(build) {
 
 /** @param {string} target */
 function agentFor(target) {
-    return String(target || '').startsWith('https://') ? httpsAgent : httpAgent;
+    if (!String(target || '').startsWith('https://')) return httpAgent;
+    if (plainHttpsAgent === httpsAgent) return httpsAgent;
+    let origin = '';
+    try { origin = new URL(target).origin; } catch { /* not a URL: no Nextcloud origin */ }
+    return ncOrigins().has(origin) ? plainHttpsAgent : httpsAgent;
 }
 
 /**
@@ -300,9 +329,13 @@ function buildApiProxy() {
     const proxyFor = perTarget(buildApiProxyFor);
     /** @type {(req: import('express').Request, res: import('express').Response, next: import('express').NextFunction) => unknown} */
     return (req, res, next) => {
+        // No server chosen: there is nowhere to forward to, and nothing about
+        // this request leaves the connector.
+        const target = config.apiBaseUrl;
+        if (!target) return res.status(503).json({ error: NOT_CHOSEN_MESSAGE, code: NOT_CHOSEN_CODE });
         rewriteRequestHeaders(req, API_REQUEST_HEADERS, apiRequestHeaders(req));
         armHeadersTimeout(req, res, 'Proxy');
-        return proxyFor(config.apiBaseUrl)(req, res, next);
+        return proxyFor(target)(req, res, next);
     };
 }
 
@@ -441,13 +474,23 @@ function buildApiProxyFor(target) {
             },
             error: (err, req, res) => {
                 if (!isExpressResponse(res)) return;
-                log.error(`[Proxy] ${req.method} ${req.url}: ${errMessage(err)}${req.__beeflowRetried ? ' (after retry)' : ''}`);
+                // A certificate the connector does not trust is not a blip: it
+                // gets its own code, and the log names the way out.
+                const untrusted = isCertificateError(err);
+                log.error(`[Proxy] ${req.method} ${req.url}: ${errMessage(err)}${req.__beeflowRetried ? ' (after retry)' : ''}`
+                    + (untrusted ? ` — the certificate of the Bee Flow server is not trusted; see ${serverTls.ENV_NAME}` : ''));
                 const respond502 = () => {
-                    if (!res.headersSent) {
+                    if (res.headersSent) return;
+                    if (untrusted) {
                         res.status(502).json({
-                            error: 'Bee Flow service is temporarily unavailable. Please try again.',
+                            code: CERT_UNTRUSTED_CODE,
+                            error: 'The certificate of the Bee Flow server is not trusted by the connector. Ask your administrator to check the Bee Flow setup page.',
                         });
+                        return;
                     }
+                    res.status(502).json({
+                        error: 'Bee Flow service is temporarily unavailable. Please try again.',
+                    });
                 };
                 if (retryOnceOnNetworkError({ err, req, res, agent, middleware: mw, onExhausted: respond502 })) {
                     log.warn(`[Proxy] retrying ${req.method} ${req.url} on a fresh socket (${err.code})`);
@@ -525,6 +568,14 @@ function shouldFallBack(status, url) {
     return status >= 500 || (status === 404 && isShellDocument(url));
 }
 
+// The runtime settings script: a web app host without one is answered by the
+// connector's own (empty) script, not by the host's error page.
+const RUNTIME_SETTINGS_PATH = '/beeflow-runtime.js';
+/** @param {string} url */
+function isRuntimeSettings(url) {
+    return String(url).split('?')[0] === RUNTIME_SETTINGS_PATH;
+}
+
 function buildEmbedProxy() {
     const proxyFor = perTarget(buildEmbedProxyFor);
     /** @type {(req: import('express').Request, res: import('express').Response, next: import('express').NextFunction) => unknown} */
@@ -553,6 +604,48 @@ function buildEmbedProxy() {
         req.__shellUrl = req.url;
         return proxyFor(target)(req, res, next);
     };
+}
+
+/**
+ * Is this the shell document on a path where Nextcloud adds its nonce to the
+ * script tags (htmlPadding.js)? Only a complete, uncompressed HTML answer of
+ * modest length is padded; anything else is passed on as it is.
+ * @param {import('http').IncomingMessage} proxyRes
+ * @param {import('http').IncomingMessage} req
+ */
+function needsNonceRoom(proxyRes, req) {
+    if (req.method !== 'GET' || proxyRes.statusCode !== 200) return false;
+    if (!isNoncePath(req.__shellUrl ?? req.url)) return false;
+    if (!isHtmlContentType(String(proxyRes.headers['content-type'] || ''))) return false;
+    const encoding = String(proxyRes.headers['content-encoding'] || 'identity').toLowerCase();
+    if (encoding !== 'identity') return false;
+    const announced = proxyRes.headers['content-length'];
+    return announced === undefined || Number(announced) <= MAX_PADDED_BYTES;
+}
+
+/**
+ * Send the shell document followed by the room for its nonces, with the
+ * Content-Length of both.
+ * @param {import('http').IncomingMessage} proxyRes
+ * @param {import('http').ServerResponse} res
+ */
+function sendWithNonceRoom(proxyRes, res) {
+    /** @type {Buffer[]} */
+    const chunks = [];
+    let size = 0;
+    proxyRes.on('data', (/** @type {Buffer} */ chunk) => {
+        size += chunk.length;
+        // Far larger than a shell document: not something to hold in memory.
+        if (size > MAX_PADDED_BYTES) { proxyRes.destroy(); res.destroy(); return; }
+        chunks.push(chunk);
+    });
+    proxyRes.on('error', () => res.destroy());
+    proxyRes.on('end', () => {
+        const body = Buffer.concat(chunks);
+        const room = Buffer.from(nonceRoom(body));
+        res.setHeader('content-length', body.length + room.length);
+        res.end(Buffer.concat([body, room]));
+    });
 }
 
 /** @param {string} target */
@@ -584,6 +677,17 @@ function buildEmbedProxyFor(target) {
             proxyRes: (proxyRes, req, /** @type {any} */ res) => {
                 const status = proxyRes.statusCode || 502;
                 if (res.headersSent) { proxyRes.resume(); return; }
+                if (isRuntimeSettings(req.__shellUrl ?? req.url ?? '')
+                    && (status !== 200 || !isJavascriptContentType(String(proxyRes.headers['content-type'] || '')))) {
+                    // This web app host has no runtime settings script: the
+                    // connector's own answers (server.js).
+                    proxyRes.resume();
+                    if (req.__shellUrl !== undefined) req.url = req.__shellUrl;
+                    if (typeof req.__shellNext === 'function') { req.__shellNext(); return; }
+                    res.statusCode = 404;
+                    res.end();
+                    return;
+                }
                 if (shouldFallBack(status, req.__shellUrl ?? req.url ?? '')) {
                     proxyRes.resume();
                     fallBack(req, res, `upstream answered ${status}`);
@@ -593,6 +697,10 @@ function buildEmbedProxyFor(target) {
                 for (const [name, value] of Object.entries(proxyRes.headers)) {
                     if (value === undefined || SHELL_RESPONSE_DROP.has(name)) continue;
                     res.setHeader(name, value);
+                }
+                if (needsNonceRoom(proxyRes, req)) {
+                    sendWithNonceRoom(proxyRes, res);
+                    return;
                 }
                 proxyRes.pipe(res);
             },
@@ -615,6 +723,6 @@ function buildEmbedProxyFor(target) {
 }
 
 module.exports = {
-    buildApiProxy, buildEmbedProxy, isSpaShellPath, rewriteToEmbed,
+    buildApiProxy, buildEmbedProxy, isSpaShellPath, rewriteToEmbed, RUNTIME_SETTINGS_PATH,
     API_REQUEST_HEADERS, SHELL_REQUEST_HEADERS,
 };

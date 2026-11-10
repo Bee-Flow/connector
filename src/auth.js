@@ -25,6 +25,7 @@ const config = require('./config');
 const { isPinMismatch } = require('./ncTlsPin');
 const log = require('./log');
 const { errMessage } = require('./errors');
+const { NOT_CHOSEN_CODE, NOT_CHOSEN_MESSAGE } = require('./serverChoice');
 
 /** @typedef {import('../types/types').NextcloudUser} NextcloudUser */
 
@@ -442,6 +443,12 @@ function appApiAuthMiddleware(req, res, next) {
                 // have produced the key. Same static-asset predicate as the
                 // anonymous branch above.
                 if (ANON_OK.test(req.path)) return next();
+                // No server chosen: there is no bootstrap to wait for. A normal
+                // page load in this state makes no such call (it gets the setup
+                // page from the gate in server.js).
+                if (!config.apiBaseUrl) {
+                    return res.status(503).json({ error: NOT_CHOSEN_MESSAGE, code: NOT_CHOSEN_CODE });
+                }
                 return res.status(502).json({ error: 'Tenant key not configured — bootstrap in progress' });
             }
             req.beeflow = { user, jwt: token };
@@ -479,6 +486,8 @@ module.exports = {
     appApiAuthMiddleware,
     _resetUserCacheForTests: () => { _userCache.clear(); _lookupsInFlight.clear(); },
     _settleLookupsForTests,
+    // Drop one user from the lookup cache: the next request asks Nextcloud.
+    forgetUser: (/** @type {string} */ uid) => { _userCache.delete(uid); },
     isDocumentNavigation,
     decodeAuthHeader,
     secretMatches,

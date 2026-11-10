@@ -11,6 +11,7 @@ const assert = require('node:assert/strict');
 
 process.env.APP_SECRET = 'test-secret';
 process.env.NEXTCLOUD_URL = 'https://cloud.example.com';
+process.env.BEEFLOW_API_BASE_URL = 'http://beeflow.test';
 process.env.BEEFLOW_TENANT_KEY = 'tenant-key';
 
 const security = require('../src/security');
@@ -119,6 +120,51 @@ test('a genuinely misconfigured proxy is still named, once', () => {
     assert.equal(lines.length, 1, 'one line per origin, not one per request');
     assert.ok(lines[0].includes('https://nc.customer.example'));
     assert.ok(lines[0].includes('BEEFLOW_TRUSTED_EMBED_ORIGINS'), 'and it names the fix');
+});
+
+test('a frame on this app\'s own origin is allowed by \'self\' and is not reported', () => {
+    security._resetOriginLog();
+    // The address users browse differs from NEXTCLOUD_URL; the browser says the
+    // request comes from the app's own origin.
+    const own = { origin: 'https://nc.customer.example', referer: 'https://nc.customer.example/apps/x', 'sec-fetch-site': 'same-origin' };
+    let header = '';
+    const lines = captureWarnings(() => {
+        for (let i = 0; i < 3; i += 1) header = security.frameAncestorsFor({ headers: own });
+    });
+    assert.deepEqual(lines, [], 'nothing to fix, nothing logged');
+    assert.ok(header.split(' ').includes("'self'"));
+    assert.ok(!header.includes('nc.customer.example'), 'the header itself is unchanged: the origin is not added');
+
+    // From another site the same origin header is still reported.
+    const elsewhere = captureWarnings(() => {
+        security.frameAncestorsFor({ headers: { origin: 'https://nc.customer.example', 'sec-fetch-site': 'cross-site' } });
+    });
+    assert.equal(elsewhere.length, 1);
+});
+
+test('without Sec-Fetch-Site (a Nextcloud on plain http) the host the request arrived on tells the app\'s own address', () => {
+    for (const arrived of [{ host: 'nc.customer.example:8080' }, { host: 'connector:23000', 'x-forwarded-host': 'NC.customer.example:8080, proxy.internal' }]) {
+        security._resetOriginLog();
+        const own = { ...arrived, origin: 'http://nc.customer.example:8080', referer: 'http://nc.customer.example:8080/apps/x' };
+        let header = '';
+        const lines = captureWarnings(() => { header = security.frameAncestorsFor({ headers: own }); });
+        assert.deepEqual(lines, [], 'the app\'s own address is not reported');
+        assert.ok(!header.includes('nc.customer.example'), 'and the header is unchanged');
+
+        // Another origin on the same request is reported as before.
+        const other = captureWarnings(() => {
+            security.frameAncestorsFor({ headers: { ...arrived, origin: 'http://elsewhere.example' } });
+        });
+        assert.equal(other.length, 1);
+        assert.ok(other[0].includes('http://elsewhere.example'));
+    }
+
+    // The browser said where the request comes from: its word decides, not the host.
+    security._resetOriginLog();
+    const crossSite = captureWarnings(() => {
+        security.frameAncestorsFor({ headers: { host: 'nc.customer.example', origin: 'https://nc.customer.example', 'sec-fetch-site': 'cross-site' } });
+    });
+    assert.equal(crossSite.length, 1);
 });
 
 test('BEEFLOW_TRUSTED_EMBED_ORIGINS is how a real reverse proxy gets listed', () => {

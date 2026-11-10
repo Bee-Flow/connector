@@ -11,6 +11,7 @@ const express = require('express');
 
 process.env.APP_SECRET = 'test-secret';
 process.env.BEEFLOW_TENANT_KEY = 'tenant-key';
+process.env.BEEFLOW_API_BASE_URL = 'http://beeflow.test';
 process.env.APP_ID = 'bee_flow';
 
 /** @type {Array<{method: string, url: string, destination?: string, body: string, override: unknown, auth: unknown}>} */

@@ -12,6 +12,7 @@ const assert = require('node:assert/strict');
 
 process.env.APP_SECRET = process.env.APP_SECRET || 'ci-test-secret';
 process.env.NEXTCLOUD_URL = process.env.NEXTCLOUD_URL || 'http://nextcloud.invalid';
+process.env.BEEFLOW_API_BASE_URL = 'http://beeflow.test';
 
 const fa = require('../src/filesActions');
 

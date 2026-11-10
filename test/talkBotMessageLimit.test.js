@@ -7,13 +7,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
+const { installWithStorage, CONNECTED } = require('./support/installValues');
 
-process.env.APP_SECRET = 'test-secret';
-process.env.NEXTCLOUD_URL = 'http://nc.test';
-process.env.BEEFLOW_TENANT_KEY = 'tenant-key';
-process.env.APP_PERSISTENT_STORAGE = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-connector-talk-limit-'));
+installWithStorage('bf-connector-talk-limit-', CONNECTED);
 
 const talkBot = require('../src/talkBot');
 

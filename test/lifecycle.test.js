@@ -10,6 +10,7 @@ const assert = require('node:assert/strict');
 
 process.env.APP_SECRET = 'test-secret';
 process.env.NEXTCLOUD_URL = 'http://nc.test';
+process.env.BEEFLOW_API_BASE_URL = 'http://beeflow.test';
 process.env.BEEFLOW_TENANT_KEY = 'tenant-key';
 
 const { appApiAuthMiddleware } = require('../src/auth');
@@ -160,4 +161,78 @@ test('a truncated secret is rejected (length is compared before the bytes)', (_,
         json: () => done(),
     };
     appApiAuthMiddleware(req, res, () => done(new Error('prefix of the secret was accepted')));
+});
+
+// No Bee Flow server chosen yet. AppAPI must still see a finished, healthy
+// install: /init answers at once and the background setup reports progress up
+// to 100 with no error, using Nextcloud only. The Talk bot is not offered to
+// conversations before there is a server to answer from.
+test('init reaches 100 without a Bee Flow server, and talks to Nextcloud only', async () => {
+    const { installFakeWorld } = require('./support/fakeWorld');
+    const config = require('../src/config');
+    const { runInitInBackground } = require('../src/heartbeat');
+    const before = { apiBaseUrl: config.apiBaseUrl, tenantKey: config.tenantKey };
+    config.apiBaseUrl = null;
+    config.tenantKey = null; // no server, no key
+    const world = installFakeWorld();
+    try {
+        await runInitInBackground();
+        const progress = world.calls
+            .filter((c) => c.url.endsWith('/ex-app/status'))
+            .map((c) => JSON.parse(c.body));
+        assert.deepEqual(progress, [{ progress: 25 }, { progress: 60 }, { progress: 100 }]);
+        assert.ok(world.calls.length > 3, 'the Nextcloud-side registrations ran');
+        for (const c of world.calls) {
+            assert.ok(c.url.startsWith('http://nc.test/'), `only Nextcloud is called, got ${c.method} ${c.url}`);
+        }
+        assert.equal(world.count((c) => c.url.includes('/talk_bot')), 0, 'no Talk bot without a server');
+        assert.equal(world.count((c) => c.url.includes('/cloud/groups/admin/users')), 0, 'the administrators are not looked up');
+    } finally {
+        require('../src/declarativeSettings').stopPolling();
+        world.restore();
+        config.apiBaseUrl = before.apiBaseUrl;
+        config.tenantKey = before.tenantKey;
+    }
+});
+
+test('the Talk bot is registered when a Bee Flow server becomes known', async () => {
+    const { installFakeWorld } = require('./support/fakeWorld');
+    const config = require('../src/config');
+    require('../src/heartbeat'); // subscribes the registration to bootstrap.onServerChosen
+    const bootstrap = require('../src/bootstrap');
+    const fs = require('node:fs');
+    const os = require('node:os');
+    const path = require('node:path');
+    const before = { apiBaseUrl: config.apiBaseUrl, tenantKey: config.tenantKey, storage: config.persistentStorage, auto: config.isAutoTenantKey };
+    const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-connector-lifecycle-'));
+    config.persistentStorage = storage;
+    config.isAutoTenantKey = true;
+    config.apiBaseUrl = null;
+    config.tenantKey = null;
+    const SERVER = 'http://chosen.beeflow.test';
+    const world = installFakeWorld({
+        servers: { [SERVER]: { 'POST /auth/connector/bootstrap': () => ({ tenantKey: 'fresh-key', organizationId: 'org-1' }) } },
+    });
+    try {
+        await bootstrap.invalidateAndRebootstrap({ apiBaseUrl: SERVER });
+        assert.equal(config.apiBaseUrl, SERVER);
+        // The listener runs in the background; give it a turn.
+        const t0 = Date.now();
+        while (!world.count((c) => c.url.includes('/talk_bot')) && Date.now() - t0 < 3000) {
+            await new Promise((r) => setTimeout(r, 10));
+        }
+        assert.equal(world.count((c) => c.method === 'POST' && c.url.includes('/talk_bot')), 1);
+    } finally {
+        // Let the key-dependent registrations that the new key started finish
+        // against the fake world before it goes away.
+        await require('../src/heartbeat').registerTenantKeyDependents().catch(() => {});
+        require('../src/taskProcessing').stopPolling();
+        require('../src/webhookListeners').stopRetry();
+        world.restore();
+        config.apiBaseUrl = before.apiBaseUrl;
+        config.tenantKey = before.tenantKey;
+        config.persistentStorage = before.storage;
+        config.isAutoTenantKey = before.auto;
+        fs.rmSync(storage, { recursive: true, force: true });
+    }
 });

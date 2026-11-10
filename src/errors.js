@@ -47,4 +47,13 @@ function asError(e) {
     return e instanceof Error ? e : new Error(errMessage(e));
 }
 
-module.exports = { errMessage, errCode, errText, asError };
+/**
+ * A message without the full stop it may end with, for a line that ends the sentence itself.
+ * @param {string} text
+ * @returns {string}
+ */
+function withoutFinalStop(text) {
+    return String(text).replace(/[.\s]+$/, '');
+}
+
+module.exports = { errMessage, errCode, errText, asError, withoutFinalStop };

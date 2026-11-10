@@ -47,6 +47,29 @@ test('console mode calls the console method at call time (spies keep working)', 
     assert.deepStrictEqual(seen, [['warn', 'a', 1], ['log', 'b']]);
 });
 
+// The image sets neither NODE_ENV nor LOG_FORMAT, so the install-time option
+// LOG_LEVEL has to work on the plain-text lines too.
+test('LOG_LEVEL filters the plain-text lines as well', () => {
+    const seen = [];
+    const real = { debug: console.debug, log: console.log, warn: console.warn, error: console.error };
+    for (const method of Object.keys(real)) console[method] = (...a) => seen.push([method, ...a]);
+    try {
+        const quiet = createLogger({ json: false, level: 'warn' });
+        quiet.debug('d'); quiet.info('i'); quiet.log('i2'); quiet.warn('w'); quiet.error('e');
+        assert.deepStrictEqual(seen, [['warn', 'w'], ['error', 'e']]);
+        seen.length = 0;
+        const standard = createLogger({ json: false });
+        standard.debug('d'); standard.info('i'); standard.warn('w');
+        assert.deepStrictEqual(seen, [['log', 'i'], ['warn', 'w']], 'the default is info');
+        seen.length = 0;
+        const all = createLogger({ json: false, level: 'debug' });
+        all.debug('d'); all.info('i');
+        assert.deepStrictEqual(seen, [['debug', 'd'], ['log', 'i']]);
+    } finally {
+        Object.assign(console, real);
+    }
+});
+
 test('isJsonMode: LOG_FORMAT wins, else production', () => {
     assert.strictEqual(isJsonMode({ NODE_ENV: 'production' }), true);
     assert.strictEqual(isJsonMode({ NODE_ENV: 'test' }), false);

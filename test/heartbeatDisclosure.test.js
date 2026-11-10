@@ -13,6 +13,7 @@ const assert = require('node:assert/strict');
 
 process.env.APP_SECRET = 'test-secret';
 process.env.NEXTCLOUD_URL = 'http://nc.test';
+process.env.BEEFLOW_API_BASE_URL = 'http://beeflow.test';
 process.env.BEEFLOW_TENANT_KEY = 'auto'; // no tenant key ⇒ a failure is reportable
 
 const { registerLifecycle } = require('../src/heartbeat');
@@ -70,4 +71,24 @@ test('a wrong secret is treated as anonymous, not as trusted', () => {
     const header = Buffer.from(':guessed').toString('base64');
     const body = callHeartbeat({ 'authorization-app-api': header });
     assert.equal(body.error, undefined);
+});
+
+// No Bee Flow server chosen yet: the connector is healthy and waits for an
+// administrator. That is a state name and nothing else, for every caller, and
+// it comes before anything a leftover error or pending file could say.
+test('no server chosen: status ok and the state name, without any detail, for every caller', () => {
+    const config = require('../src/config');
+    const before = { apiBaseUrl: config.apiBaseUrl, getPendingState: bootstrap.getPendingState };
+    config.apiBaseUrl = null;
+    bootstrap.getPendingState = () => ({ status: 'awaiting_email_verification', expiresAt: '2026-08-14T11:00:00.000Z' });
+    try {
+        const trusted = Buffer.from(':test-secret').toString('base64');
+        for (const headers of [{}, { 'authorization-app-api': trusted }]) {
+            const body = callHeartbeat(headers);
+            assert.deepEqual(body, { status: 'ok', bootstrap: 'server_not_chosen' });
+        }
+    } finally {
+        config.apiBaseUrl = before.apiBaseUrl;
+        bootstrap.getPendingState = before.getPendingState;
+    }
 });

@@ -1,8 +1,11 @@
 /**
  * Nextcloud `webhook_listeners` deliveries → Bee Flow Automations.
  *
- * Nextcloud POSTs here (via its own AppAPI ExApp proxy — see
- * webhookListeners.hookUri) whenever an event class we registered fires. We
+ * Nextcloud POSTs here whenever an event class we registered fires: through
+ * AppAPI's channel to this ExApp for a row with the relative uri, over the
+ * AppAPI proxy route for a row with an absolute one (see
+ * webhookListeners.hookUri). Both arrive at the same path with the same
+ * headers of ours. We
  * translate the envelope into our stable trigger taxonomy, sign it with the
  * tenant key and forward it to the SaaS at /api/automation/events/nextcloud.
  *
@@ -446,9 +449,56 @@ function deckTransitions(event, payload) {
 
 const router = express.Router();
 
-// express.json is not mounted globally for this path (see server.js — the raw
-// body must survive for /nc/*), so parse here.
-router.post(HOOK_PATH, express.json({ limit: '512kb' }), async (req, res) => {
+// Deliveries since this process started, for GET /setup/diagnostics. In memory
+// only, so the answer says "since <start>" and a restart begins again.
+const STARTED_AT = new Date().toISOString();
+let _deliveries = 0;
+/** @type {string | null} */
+let _lastDeliveryAt = null;
+// Events the Bee Flow server accepted (one delivery can be more than one
+// event, and a delivery of a class the connector does not forward is none).
+let _forwarded = 0;
+/** @type {string | null} */
+let _lastForwardedAt = null;
+
+/** @returns {{ since: string, deliveries: number, lastDeliveryAt: string | null, forwarded: number, lastForwardedAt: string | null }} */
+function deliveryStats() {
+    return {
+        since: STARTED_AT,
+        deliveries: _deliveries,
+        lastDeliveryAt: _lastDeliveryAt,
+        forwarded: _forwarded,
+        lastForwardedAt: _lastForwardedAt,
+    };
+}
+
+// AppAPI waits 3 seconds for the answer to a delivery it carries (its default
+// for a request to an ExApp) and Nextcloud logs anything later as a failed
+// call. The answer never depends on the forwarding below (see the end of the
+// handler), so it is sent once the forwarding is done or after this long,
+// whichever comes first; the forwarding then finishes by itself.
+let _answerWithinMs = 2_000;
+
+/**
+ * @param {Promise<void>} work  never rejects
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
+function doneOrAfter(work, ms) {
+    return new Promise((resolve) => {
+        const timer = setTimeout(resolve, ms);
+        timer.unref?.();
+        work.then(() => { clearTimeout(timer); resolve(); });
+    });
+}
+
+/**
+ * The secret gate, before anything is read from the body.
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {import('express').NextFunction} next
+ */
+function requireHookSecret(req, res, next) {
     const secret = hookSecret();
     if (!secret) return res.status(503).json({ error: 'Connector not yet bootstrapped' });
     // Verify FIRST, then bill only a genuine failure — the same order the
@@ -467,6 +517,18 @@ router.post(HOOK_PATH, express.json({ limit: '512kb' }), async (req, res) => {
         return res.status(401).json({ error: 'Invalid hook secret' });
     }
     secretLimiter.succeed();
+    return next();
+}
+
+// express.json is not mounted globally for this path (see server.js — the raw
+// body must survive for /nc/*), so parse here. Nextcloud's delivery job sends
+// the JSON envelope as a plain body and sets no Content-Type, so the body is
+// read as JSON whatever type the request names.
+const parseEnvelope = express.json({ limit: '512kb', type: () => true });
+
+router.post(HOOK_PATH, requireHookSecret, parseEnvelope, async (req, res) => {
+    _deliveries++;
+    _lastDeliveryAt = new Date().toISOString();
 
     /** @type {HookEnvelope} */
     const envelope = req.body || {};
@@ -478,25 +540,41 @@ router.post(HOOK_PATH, express.json({ limit: '512kb' }), async (req, res) => {
         return res.json({ ignored: eventClass || null });
     }
 
-    // Read once: the loop below awaits, and a re-bootstrap may clear the key in between.
+    // Read once: the forwarding awaits, and a re-bootstrap may clear the key in between.
     const tenantKey = config.tenantKey;
-    if (!config.ncInstanceId || !tenantKey) {
+    const ncInstanceId = config.ncInstanceId;
+    if (!ncInstanceId || !tenantKey) {
         return res.status(503).json({ error: 'Connector not yet bootstrapped' });
     }
 
     const ncUid = envelope.user?.uid || null;
     const payload = normalisePayload(event, envelope);
-    if (NODE_TYPE_EVENTS.has(event)) {
-        const owner = typeof payload.owner === 'string' ? payload.owner : null;
-        const nodePath = typeof payload.path === 'string' ? payload.path : null;
-        payload.nodeType = await nodeTypeOf(owner, nodePath);
-    }
 
     // One Nextcloud delivery can be more than one Bee Flow event: a Deck card
     // update that also completed the card is both `changed` and `completed`.
     // Both are sent — an automation on `changed` should still fire, and the
     // narrower trigger is the one most authors reach for.
     const events = [event, ...deckTransitions(event, payload)];
+
+    const work = forwardEvents({ event, events, ncUid, payload, tenantKey, ncInstanceId })
+        .catch((err) => log.warn(`[AutomationEvents] forward failed for ${event}: ${errMessage(err)}`));
+    await doneOrAfter(work, _answerWithinMs);
+    // Always 200 to Nextcloud so the background job doesn't enter a retry
+    // storm; SaaS failures are logged and recovered by the polling backstop.
+    res.json({ ok: true, event, events });
+});
+
+/**
+ * Sign and send one delivery's events to the Bee Flow server, in order.
+ * @param {{ event: string, events: string[], ncUid: string | null, payload: HookPayload, tenantKey: string, ncInstanceId: string }} delivery
+ * @returns {Promise<void>}
+ */
+async function forwardEvents({ event, events, ncUid, payload, tenantKey, ncInstanceId }) {
+    if (NODE_TYPE_EVENTS.has(event)) {
+        const owner = typeof payload.owner === 'string' ? payload.owner : null;
+        const nodePath = typeof payload.path === 'string' ? payload.path : null;
+        payload.nodeType = await nodeTypeOf(owner, nodePath);
+    }
 
     for (const name of events) {
         // Note the omission: `envelope.authentication` is deliberately not read
@@ -515,15 +593,19 @@ router.post(HOOK_PATH, express.json({ limit: '512kb' }), async (req, res) => {
                 headers: {
                     'Content-Type': 'application/json',
                     'X-Beeflow-Source': 'nextcloud-connector',
-                    'X-Beeflow-NC-Instance-Id': config.ncInstanceId,
+                    'X-Beeflow-NC-Instance-Id': ncInstanceId,
                     'X-Beeflow-Sig': `${ts}.${sig}`,
                 },
                 body,
                 signal: AbortSignal.timeout(10_000),
             });
-            if (!r.ok) {
+            if (r.ok) {
+                _forwarded++;
+                _lastForwardedAt = new Date().toISOString();
+                log.debug(`[AutomationEvents] ${name} accepted by the Bee Flow server (HTTP ${r.status})`);
+            } else {
                 const t = await r.text().catch(() => '');
-                log.warn(`[AutomationEvents] SaaS returned ${r.status} for ${name}: ${t.slice(0, 200)}`);
+                log.warn(`[AutomationEvents] the Bee Flow server answered ${r.status} for ${name}: ${t.slice(0, 200)}`);
             }
         } catch (err) {
             // Keep going: a failure forwarding `changed` must not swallow the
@@ -531,10 +613,7 @@ router.post(HOOK_PATH, express.json({ limit: '512kb' }), async (req, res) => {
             log.warn(`[AutomationEvents] forward failed for ${name}: ${errMessage(err)}`);
         }
     }
-    // Always 200 to Nextcloud so the background job doesn't enter a retry
-    // storm; SaaS failures are logged and recovered by the polling backstop.
-    res.json({ ok: true, event, events });
-});
+}
 
 module.exports = Object.assign(router, {
     mapEvent,
@@ -544,5 +623,8 @@ module.exports = Object.assign(router, {
     calendarSharesOf,
     nodeTypeOf,
     deckTransitions,
+    deliveryStats,
     _resetCardState: () => CARD_STATE.clear(),
+    /** @param {number} ms */
+    _setAnswerWithinMsForTests: (ms) => { _answerWithinMs = ms; },
 });

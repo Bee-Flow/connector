@@ -1,8 +1,9 @@
 // POST /setup/clear-cache answers with the name of the organisation the
-// connector is bound to. It used to read config.organizationName, which nothing
-// ever set, so the answer always said `organizationName: null`. The name now
-// comes from the bootstrap response (applyTenantKeyResponse) and from the
-// tenant-key cache at boot.
+// connector is bound to. The name comes from the bootstrap response
+// (applyTenantKeyResponse) and from the tenant-key cache at boot.
+//
+// Without a chosen server there is nothing to clear (409), and an install
+// with an install-time tenant key keeps that key without a bootstrap request.
 //
 // The route runs for real (express, setup router, bootstrap); only the network
 // is replaced: a fetch stub answers the Nextcloud OCS calls and the Bee Flow
@@ -29,6 +30,8 @@ const taskProcessing = require('../src/taskProcessing');
 
 const realFetch = globalThis.fetch;
 const saas = { organizationId: 'org-2', organizationName: 'Second Org' };
+/** Every outbound call the connector made, as `METHOD url`. */
+const outbound = [];
 
 function json(body, status = 200) {
     return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -37,6 +40,7 @@ function json(body, status = 200) {
 test.before(() => {
     globalThis.fetch = async (input, init) => {
         const url = String(input);
+        outbound.push(`${init?.method || 'GET'} ${url}`);
         if (url.startsWith('http://beeflow.test/')) {
             if (url.endsWith('/auth/connector/bootstrap') && init?.method === 'POST') {
                 return json({ tenantKey: 'tk-new', ...saas });
@@ -111,4 +115,50 @@ test('a failed re-bind rolls the organisation name back with the key', async () 
     }
     assert.equal(config.tenantKey, before.tenantKey);
     assert.equal(config.organizationName, before.organizationName);
+});
+
+test('no Bee Flow server chosen: 409, and the binding on disk is left alone', async () => {
+    const before = { apiBaseUrl: config.apiBaseUrl, tenantKey: config.tenantKey };
+    const cacheFile = path.join(storage, 'tenant-key.json');
+    const cacheBefore = fs.readFileSync(cacheFile, 'utf8');
+    config.apiBaseUrl = null;
+    config.tenantKey = null; // no server means no key in memory
+    outbound.length = 0;
+    try {
+        const { status, body } = await post('/setup/clear-cache');
+        assert.equal(status, 409);
+        assert.equal(body.ok, false);
+        assert.equal(body.code, 'server_not_chosen');
+        assert.deepEqual(outbound, [], 'nothing is asked anywhere');
+        assert.equal(fs.readFileSync(cacheFile, 'utf8'), cacheBefore);
+    } finally {
+        config.apiBaseUrl = before.apiBaseUrl;
+        config.tenantKey = before.tenantKey;
+    }
+});
+
+test('with an install-time tenant key, clear-cache keeps that key and makes no bootstrap request', async () => {
+    const before = { tenantKey: config.tenantKey, organizationId: config.organizationId, organizationName: config.organizationName };
+    const cacheFile = path.join(storage, 'tenant-key.json');
+    const cacheBefore = fs.readFileSync(cacheFile, 'utf8');
+    fs.rmSync(cacheFile); // an install-time key has no cache file
+    config.isAutoTenantKey = false;
+    config.envTenantKey = 'pasted-key';
+    config.tenantKey = 'pasted-key';
+    outbound.length = 0;
+    try {
+        const { status, body } = await post('/setup/clear-cache');
+        assert.equal(status, 200);
+        assert.equal(body.ok, true);
+        assert.equal(body.verificationPending, false);
+        assert.equal(config.tenantKey, 'pasted-key');
+        assert.deepEqual(outbound.filter((c) => c.includes('/auth/connector/bootstrap')), []);
+        assert.deepEqual(outbound.filter((c) => c.includes('/cloud/groups/admin/users')), [], 'the administrators are not read');
+        assert.equal(fs.existsSync(cacheFile), false, 'an install-time key is not cached');
+    } finally {
+        config.isAutoTenantKey = true;
+        config.envTenantKey = null;
+        Object.assign(config, before);
+        fs.writeFileSync(cacheFile, cacheBefore);
+    }
 });

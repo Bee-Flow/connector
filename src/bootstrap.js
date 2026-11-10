@@ -6,6 +6,11 @@ const log = require('./log');
  * Triggered from server.js on startup (and again on /init lifecycle if cache
  * is missing). Behaviour:
  *
+ *   0. If no Bee Flow server is chosen (config.apiBaseUrl is null) → nothing
+ *      happens: no file is read, Nextcloud is not asked for its administrators
+ *      and no request leaves. The flow starts when an administrator chooses a
+ *      server (serverChoice.js).
+ *
  *   1. If BEEFLOW_TENANT_KEY was explicitly set in env (not "auto") → done,
  *      use that. This preserves the legacy flow for self-hosted customers
  *      who pre-mint keys via the admin UI.
@@ -38,6 +43,8 @@ const { withWarmupRetry } = require('./appApiClient');
 // sends is, by construction, the one the server re-derives.
 const { ncHostFromUrl, stableInstanceIdFallback } = require('./shared/orgNaming');
 const { errMessage, errCode, errText } = require('./errors');
+const { notChosenError, CLOUD_API_BASE_URL } = require('./serverChoice');
+const { isCertificateError } = require('./serverProbe');
 
 /**
  * The part of an OCS user record the bootstrap reads.
@@ -350,8 +357,11 @@ async function fetchAdmins() {
         return out.sort((a, b) => a.uid.localeCompare(b.uid));
     }
 
-    // Slow-path fallback: AppAPI version doesn't expose /cloud/groups/admin/users.
-    // Walk the user list in parallel batches of 5 instead of one-by-one.
+    // Nextcloud answers the group lookup above only where it accepts an app
+    // that acts without a user; where it refuses (current Nextcloud versions
+    // do), the administrators are found here: the user list is walked in
+    // parallel batches of 5 and each record is read locally for its groups.
+    // Only the administrators' names and addresses are sent on.
     const uids = await fetchAllUids();
     if (uids.length === 0) throw new Error('No NC users visible to the ExApp');
     let sawAdminWithoutEmail = false;
@@ -393,22 +403,57 @@ function getPendingState() { return pendingState; }
 //
 // REMEDIATION lives here (single source of truth) so heartbeat.js and
 // setup.js can both consume it without drifting.
-/** @type {Record<string, string>} */
+// The entries that name the Bee Flow server are functions: they name the
+// server this connector is configured for, read when the text is asked for.
+/**
+ * The Bee Flow server this connector is on, as a failure text names it.
+ * @returns {string}
+ */
+function serverLabel() {
+    if (!config.apiBaseUrl) return 'The Bee Flow server';
+    if (config.apiBaseUrl === CLOUD_API_BASE_URL) return 'Bee Flow Cloud';
+    return `Your Bee Flow server (${config.apiBaseUrl})`;
+}
+
+/** @type {Record<string, string | (() => string)>} */
 const REMEDIATION = {
-    saas_unreachable:
-        'The Bee Flow service is not reachable from this Nextcloud. Test with `curl https://server.beeflow.nl/api/health` from the connector container and whitelist that hostname in your egress firewall.',
-    nc_not_publicly_reachable:
-        'Bee Flow Cloud cannot reach this Nextcloud for user-sync callbacks. Set BEEFLOW_NC_PUBLIC_URL to your public NC URL, or switch to self-hosted mode via the setup picker.',
+    saas_cert_untrusted:
+        'The certificate of your Bee Flow server is not trusted by the connector. Give the server a certificate from a public certificate authority, or put the certificate of your own certificate authority (PEM) in the install-time value BEEFLOW_SERVER_CA_CERT. Certificate verification cannot be switched off.',
+    saas_unreachable: () =>
+        `Your Bee Flow server is not reachable from this Nextcloud. Test with \`curl ${config.apiBaseUrl || '<your Bee Flow server>'}/api/health\` from the connector container and allow that hostname in your egress firewall.`,
+    // The Bee Flow server could not call this Nextcloud back. What helps
+    // depends on the server: Bee Flow Cloud calls from the internet, a server
+    // of the administrator's own can be told to call a private address.
+    nc_not_publicly_reachable: () => {
+        const address = config.nextcloudPublicUrl || config.nextcloudUrl;
+        if (!config.apiBaseUrl) {
+            return 'The Bee Flow server cannot reach this Nextcloud at the address the connector reports. Set an address the server can reach as the public Nextcloud URL on the Bee Flow setup page.';
+        }
+        if (config.apiBaseUrl === CLOUD_API_BASE_URL) {
+            return `Bee Flow Cloud cannot reach this Nextcloud at the address the connector reports (${address}). Bee Flow Cloud needs a Nextcloud that is reachable from the internet, directly or through a tunnel: set that address as the public Nextcloud URL on the Bee Flow setup page.`;
+        }
+        return `Your Bee Flow server (${config.apiBaseUrl}) cannot reach this Nextcloud at the address the connector reports (${address}). If the server reaches this Nextcloud at another address, set that address as the public Nextcloud URL on the Bee Flow setup page. If the address is on a private network, set NEXTCLOUD_ALLOW_PRIVATE_HOSTS=1 in the environment of the Bee Flow server and restart it. The server must also be able to resolve the name and trust the certificate of this Nextcloud.`;
+    },
+    // The connector itself could not read this Nextcloud (the step before
+    // anything is sent to the Bee Flow server).
+    nc_cert_untrusted: () =>
+        `The connector does not trust the certificate of this Nextcloud (${config.nextcloudUrl}), so it cannot read what it needs to connect. Nothing was sent to the Bee Flow server. For a certificate from your own certificate authority, put that authority's certificate (PEM text) in the install-time value BEEFLOW_NC_CA_CERT and check that it is the authority that issued this certificate. For a self-signed certificate, leave BEEFLOW_NC_TLS_PIN at auto: the connector then keeps to the certificate it saw first.`,
+    nc_unreachable: () =>
+        `The connector cannot read this Nextcloud at ${config.nextcloudUrl}, so it has nothing to connect with yet. Nothing was sent to the Bee Flow server. Check that this address answers from inside the connector container; the connector log names the cause.`,
     admin_lookup_failed:
         'No admin user found in this Nextcloud. Add one with `occ user:add --group admin <uid>` then redeploy the connector.',
     admin_email_missing:
         'Your Nextcloud admin user has no email address. Set an email on the admin account (Settings → Users) and redeploy the connector, or bind this Nextcloud to an existing Bee Flow organisation with a pairing code.',
     saas_auth_rejected:
-        'The Bee Flow service rejected our credentials. Check that this NC instance has not been disabled in your Bee Flow organisation.',
+        'Your Bee Flow server rejected the connector\'s credentials. Check that this Nextcloud has not been disabled in your Bee Flow organisation.',
     tenant_already_provisioned:
-        'This Nextcloud was bootstrapped previously and the tenant-key cache was lost. Recover the key from the Bee Flow admin UI, then set BEEFLOW_TENANT_KEY via `occ app_api:app:setenv`.',
-    pairing_required:
-        'This Bee Flow server does not auto-create organisations. Ask your Bee Flow organisation admin to generate a pairing code (Settings → Organisation → Pair a new Nextcloud), set it as BEEFLOW_PAIRING_CODE via `occ app_api:app:setenv bee_flow BEEFLOW_PAIRING_CODE <CODE>`, then redeploy the connector.',
+        'Your Bee Flow server answered that this Nextcloud, or its administrator, is already known there. To connect this Nextcloud to the existing organisation, ask a Bee Flow organisation admin to generate a pairing code (Settings → Organisation → Pair a new Nextcloud) and enter it on the Bee Flow setup page.',
+    pairing_required: () =>
+        `${serverLabel()} does not create an organisation by itself. Ask your Bee Flow organisation admin to generate a pairing code (Settings → Organisation → Pair a new Nextcloud) and enter it on the Bee Flow setup page.`,
+    pairing_code_invalid: () =>
+        `${serverLabel()} does not accept this pairing code: it is mistyped, expired or already used. Ask your Bee Flow organisation admin to generate a new one (Settings → Organisation → Pair a new Nextcloud) and enter it on the Bee Flow setup page. Nothing has to be installed again.`,
+    version_mismatch:
+        'The Bee Flow server at this address has no endpoint for this connector. Update the Bee Flow server and the connector to their latest release, and check that the address is the one of the server, not of the web app.',
     appstore_signature_invalid:
         'The downloaded connector tarball failed signature verification. Uninstall and reinstall from the App Store.',
     unknown:
@@ -419,15 +464,95 @@ const REMEDIATION = {
  * @returns {string}
  */
 function remediationFor(category) {
-    return REMEDIATION[category] || REMEDIATION.unknown;
+    const text = REMEDIATION[category] || REMEDIATION.unknown;
+    return typeof text === 'function' ? text() : text;
+}
+
+// The failures the Bee Flow server answers with a text of its own, where the
+// connector's text is the one to show: it names the server this install is on
+// and the setup page.
+const OWN_REMEDIATION_WINS = new Set(['nc_not_publicly_reachable', 'pairing_required', 'pairing_code_invalid']);
+
+/**
+ * The remediation of one failure, as stored and as answered to the
+ * administrator who started it: the text the Bee Flow server sent along,
+ * except for the categories above; without one, the connector's text for a
+ * failure on its own side of the connection.
+ * @param {string} category
+ * @param {string | null | undefined} fromServer
+ * @param {string | undefined} phase
+ * @returns {string | null}
+ */
+function remediationOf(category, fromServer, phase) {
+    if (OWN_REMEDIATION_WINS.has(category)) return remediationFor(category);
+    if (fromServer) return fromServer;
+    return phase === 'capabilities' ? remediationFor(category) : null;
+}
+
+/**
+ * The remediation of the failure on record, as diagnostics and the heartbeat
+ * show it: the same text the administrator who started the attempt got and the
+ * file on the volume holds. A text that names the server is read now, so it
+ * names the server in use; a failure without a stored text gets the
+ * connector's text for its category.
+ * @param {{ category: string, remediation?: string | null }} state
+ * @returns {string}
+ */
+function remediationShown(state) {
+    if (OWN_REMEDIATION_WINS.has(state.category)) return remediationFor(state.category);
+    return state.remediation || remediationFor(state.category);
+}
+
+/**
+ * What lies under a "fetch failed": the code and message of its cause
+ * (a refused certificate, a refused connection, a name that does not resolve).
+ * @param {unknown} err
+ * @returns {string}
+ */
+function causeDetail(err) {
+    const cause = typeof err === 'object' && err !== null && 'cause' in err ? err.cause : null;
+    if (typeof cause !== 'object' || cause === null) return '';
+    const code = errCode(cause);
+    const message = errMessage(cause);
+    return [code, message && message !== code ? message : ''].filter(Boolean).join(': ');
 }
 
 /** @type {BootstrapErrorState | null} */
 let lastErrorState = null;
 /**
+ * The last switch to another server that did not happen: which server, and
+ * why. In memory only; the next change of server starts with none.
+ * @typedef {{ apiBaseUrl: string, category: string, error: string, remediation: string, at: string }} RejectedSwitch
+ * @type {RejectedSwitch | null}
+ */
+let _rejectedSwitch = null;
+/** @returns {RejectedSwitch | null} */
+function getRejectedSwitch() { return _rejectedSwitch; }
+/**
+ * The switch to that server is no longer asked for: what is kept about it goes.
+ * A record about another server stays.
+ * @param {string} apiBaseUrl
+ */
+function withdrawRejectedSwitch(apiBaseUrl) {
+    const named = String(apiBaseUrl || '').replace(/\/+$/, '');
+    if (_rejectedSwitch && _rejectedSwitch.apiBaseUrl === named) _rejectedSwitch = null;
+}
+/**
  * @returns {BootstrapErrorState | null}
  */
 function getLastErrorState() { return lastErrorState; }
+/**
+ * Is a server chosen while connecting to it failed, and is there no key? That
+ * is the state after a first choice whose connect was refused or got no
+ * answer. Not while a code is awaited (the embedded app has its own screen for
+ * that) and not during a re-bootstrap of an install that holds a binding.
+ * @returns {boolean}
+ */
+function connectFailed() {
+    if (!config.apiBaseUrl || config.tenantKey || _rebindKey) return false;
+    if (pendingState && (pendingState.status === 'awaiting_email_verification' || pendingState.status === 'pending')) return false;
+    return lastErrorState?.status === 'failed';
+}
 /**
  * @returns {Promise<BootstrapErrorState | null>}
  */
@@ -443,18 +568,49 @@ async function readErrorFile() {
 /**
  * @param {BootstrapErrorState} data
  */
-async function writeErrorFile(data) {
+function writeErrorFile(data) {
     const p = path.join(config.persistentStorage, ERROR_FILE);
-    try {
-        await fs.mkdir(config.persistentStorage, { recursive: true });
-        await writeFileAtomic(p, JSON.stringify(data, null, 2));
-    } catch (e) {
-        log.warn(`[Bootstrap] Could not persist error state to ${p}: ${errMessage(e)}`);
+    return inErrorFileOrder(async () => {
+        try {
+            await fs.mkdir(config.persistentStorage, { recursive: true });
+            await writeFileAtomic(p, JSON.stringify(data, null, 2));
+        } catch (e) {
+            log.warn(`[Bootstrap] Could not persist error state to ${p}: ${errMessage(e)}`);
+        }
+    });
+}
+// Writes and removals of the record happen in the order they were asked for:
+// some are not awaited by their caller, and a removal must not be overtaken by
+// the write before it.
+/** @type {Promise<void>} */
+let _errorFileQueue = Promise.resolve();
+/**
+ * @param {() => Promise<void>} step  never rejects
+ * @returns {Promise<void>}
+ */
+function inErrorFileOrder(step) {
+    _errorFileQueue = _errorFileQueue.then(step);
+    return _errorFileQueue;
+}
+/**
+ * Put the failure record back to an earlier one (or to none), in memory and
+ * on the volume. A retry that is still scheduled keeps its time.
+ * @param {BootstrapErrorState | null} earlier
+ */
+async function restoreErrorState(earlier) {
+    if (!earlier) {
+        await clearErrorFile();
+        return;
     }
+    const nextRetryAt = _bootstrapRetryTimer ? (lastErrorState?.nextRetryAt ?? null) : null;
+    lastErrorState = { ...earlier, nextRetryAt };
+    await writeErrorFile(lastErrorState);
 }
 async function clearErrorFile() {
     const p = path.join(config.persistentStorage, ERROR_FILE);
-    try { await fs.unlink(p); } catch (_) { /* already gone */ }
+    await inErrorFileOrder(async () => {
+        try { await fs.unlink(p); } catch (_) { /* already gone */ }
+    });
     lastErrorState = null;
 }
 
@@ -464,6 +620,10 @@ async function clearErrorFile() {
 /** @type {Record<string, string>} */
 const SAAS_CODE_TO_CATEGORY = {
     nc_capabilities_unreachable: 'nc_not_publicly_reachable',
+    // The server refuses the address the connector reports for this Nextcloud
+    // (a private or loopback address, for one): the same situation, and the
+    // server's own remediation text names the setting.
+    invalid_callback_url: 'nc_not_publicly_reachable',
     nc_capabilities_mismatch: 'nc_capabilities_mismatch',
     missing_headers: 'connector_outdated',
     invalid_admin_email: 'admin_email_invalid',
@@ -472,9 +632,24 @@ const SAAS_CODE_TO_CATEGORY = {
     pending_admin_approval: 'awaiting_admin_approval',
     org_create_failed: 'saas_transient',
     pairing_required: 'pairing_required',
+    // The pairing code that came along is not one the server accepts.
+    pairing_code_invalid: 'pairing_code_invalid',
     // An existing binding the connector can no longer prove: a pairing code rebinds it.
     NC_REBIND_PROOF_REQUIRED: 'pairing_required',
 };
+
+// The Bee Flow server's certificate does not verify (see serverTls.js).
+const CERT_UNTRUSTED = 'saas_cert_untrusted';
+
+/**
+ * The code of a request to the Bee Flow server that got no answer: a refused
+ * certificate has its own, everything else is "unreachable".
+ * @param {unknown} err
+ * @returns {string}
+ */
+function noAnswerCode(err) {
+    return isCertificateError(err) ? CERT_UNTRUSTED : 'saas_unreachable';
+}
 
 // Categorise a thrown error into one of the well-known buckets that the
 // SPA's error overlay knows how to render. Prefers a structured `code`
@@ -493,9 +668,19 @@ function categoriseError(err, phase) {
     // phase-based buckets below — otherwise phase==='admin' would mislabel a
     // missing-email failure as a generic admin_lookup_failed.
     if (code === 'admin_email_missing') return 'admin_email_missing';
+    // A server that answers, but has no bootstrap endpoint: it predates this
+    // connector (or is not the server at all).
+    if (phase === 'saas_post' && err instanceof Error && err.status === 404) return 'version_mismatch';
     const msg = errText(err);
-    if (phase === 'capabilities' || /NC capabilities/i.test(msg)) return 'nc_not_publicly_reachable';
+    // The connector's own read of this Nextcloud failed: nothing has been sent
+    // to the Bee Flow server yet, and the cause is on this side.
+    if (phase === 'capabilities') return isCertificateError(err) ? 'nc_cert_untrusted' : 'nc_unreachable';
+    // The Bee Flow server says it could not read this Nextcloud.
+    if (/NC capabilities/i.test(msg)) return 'nc_not_publicly_reachable';
     if (phase === 'admin' || /admin/i.test(msg) && /No NC users|admin from user list/i.test(msg)) return 'admin_lookup_failed';
+    // The Bee Flow server answered the TLS handshake with a certificate that
+    // does not verify (fetch reports it as the cause of "fetch failed").
+    if (isCertificateError(err)) return CERT_UNTRUSTED;
     if (/HTTP 401|HTTP 403/i.test(msg)) return 'saas_auth_rejected';
     if (/HTTP 409/i.test(msg)) return 'tenant_already_provisioned';
     if (/ENOTFOUND|ECONNREFUSED|EHOSTUNREACH|fetch failed|network|AbortError|timeout/i.test(msg)) return 'saas_unreachable';
@@ -518,13 +703,14 @@ function categoriseError(err, phase) {
 async function recordBootstrapError(err, phase, opts = {}) {
     const category = categoriseError(err, phase);
     const now = new Date().toISOString();
+    const cause = causeDetail(err);
     /** @type {BootstrapErrorState} */
     const state = {
         status: 'failed',
         category,
         phase: phase || 'unknown',
-        error: errText(err) || 'unknown',
-        remediation: opts.remediation || (err instanceof Error ? err.remediation : undefined) || null,
+        error: `${errText(err) || 'unknown'}${cause ? ` (${cause})` : ''}`,
+        remediation: remediationOf(category, opts.remediation || (err instanceof Error ? err.remediation : undefined), phase),
         lastAttemptAt: now,
         nextRetryAt: new Date(Date.now() + 60_000).toISOString(),
     };
@@ -578,6 +764,27 @@ function tenantKeyReady() {
     }
 }
 
+// What waits for a Bee Flow server rather than for a key (the Talk bot)
+// subscribes here. Fired when a server becomes known at runtime: an
+// administrator chose one where there was none.
+/** @type {Array<() => unknown>} */
+const _serverChosenListeners = [];
+
+/** @param {() => unknown} listener */
+function onServerChosen(listener) {
+    _serverChosenListeners.push(listener);
+}
+
+function serverChosen() {
+    for (const listener of _serverChosenListeners) {
+        try {
+            Promise.resolve(listener()).catch(err => log.warn(`[Bootstrap] server-chosen listener failed: ${errMessage(err)}`));
+        } catch (err) {
+            log.warn(`[Bootstrap] server-chosen listener failed: ${errMessage(err)}`);
+        }
+    }
+}
+
 /** @type {NodeJS.Timeout | null} */
 let _bootstrapRetryTimer = null;
 let _bootstrapRetryAttempts = 0;
@@ -598,6 +805,16 @@ function isRetryableBootstrapError(err) {
 
 /** @param {unknown} err */
 function scheduleBootstrapRetry(err) {
+    // A re-bootstrap of an install that holds a binding goes back to that
+    // binding when it fails (invalidateAndRebootstrap): there is nothing to
+    // try again. The retry is for an install without a key.
+    if (_rebindKey) {
+        if (lastErrorState) {
+            lastErrorState = { ...lastErrorState, nextRetryAt: null };
+            writeErrorFile(lastErrorState).catch(() => {});
+        }
+        return;
+    }
     if (_bootstrapRetryTimer || config.tenantKey || !config.isAutoTenantKey) return;
     if (!(BOOTSTRAP_RETRY_MS > 0) || !isRetryableBootstrapError(err)) {
         if (lastErrorState) {
@@ -614,7 +831,7 @@ function scheduleBootstrapRetry(err) {
     }
     _bootstrapRetryTimer = setTimeout(() => {
         _bootstrapRetryTimer = null;
-        if (config.tenantKey || pendingState?.status === 'awaiting_email_verification') return;
+        if (config.tenantKey || _rebindKey || pendingState?.status === 'awaiting_email_verification') return;
         log.info(`[Bootstrap] retrying the bootstrap (attempt ${_bootstrapRetryAttempts + 1})`);
         bootstrapIfNeeded().catch(e => log.warn(`[Bootstrap] retry failed: ${errMessage(e)}`));
     }, delay);
@@ -629,6 +846,8 @@ function scheduleBootstrapRetry(err) {
 async function applyTenantKeyResponse(json, ncInstanceId, apiBaseUrl) {
     const tenantKey = json.tenantKey;
     if (!tenantKey) throw new Error('Bootstrap response missing tenantKey');
+    // No server, no key in memory.
+    if (!apiBaseUrl && !config.apiBaseUrl) throw notChosenError();
     // A key is only valid on the server that issued it: a verification
     // finished after a server switch binds the connector to that server.
     if (apiBaseUrl && apiBaseUrl !== config.apiBaseUrl && !config.apiBaseUrlLocked) {
@@ -649,7 +868,7 @@ async function applyTenantKeyResponse(json, ncInstanceId, apiBaseUrl) {
         // change to the default/picker URL can't silently repoint the connector
         // and mint a second org elsewhere. Only an explicit reset
         // (invalidateAndRebootstrap) drops this by deleting the cache.
-        boundApiBaseUrl: config.apiBaseUrl,
+        boundApiBaseUrl: config.apiBaseUrl ?? undefined,
         provisionedAt: new Date().toISOString(),
     });
     await deletePendingFile();
@@ -730,6 +949,9 @@ async function currentVerificationPending() {
  * @returns {Promise<{ ok: true, organizationId?: string, organizationName?: string }>}
  */
 async function submitVerificationCode(code) {
+    // A pending file on disk names the server that issued it; without a chosen
+    // server it is not acted on.
+    if (!config.apiBaseUrl) throw notChosenError();
     const pending = await currentVerificationPending();
     if (!pending || !pending.verifyUrl) {
         const e = new Error('No pending Nextcloud verification to confirm');
@@ -746,7 +968,7 @@ async function submitVerificationCode(code) {
         });
     } catch (e) {
         const err = new Error(`Could not reach Bee Flow to verify the code: ${errMessage(e)}`);
-        err.code = 'saas_unreachable';
+        err.code = noAnswerCode(e);
         throw err;
     }
     const json = /** @type {SaasBootstrapResponse} */ (await res.json().catch(() => ({})));
@@ -769,6 +991,7 @@ async function submitVerificationCode(code) {
  * @returns {Promise<{ ok: true, maskedEmail?: string | null, expiresAt?: string, emailSent?: boolean }>}
  */
 async function resendVerificationCode() {
+    if (!config.apiBaseUrl) throw notChosenError();
     const pending = await currentVerificationPending();
     if (!pending || !pending.resendUrl) {
         const e = new Error('No pending Nextcloud verification to resend');
@@ -784,7 +1007,7 @@ async function resendVerificationCode() {
         });
     } catch (e) {
         const err = new Error(`Could not reach Bee Flow to resend the code: ${errMessage(e)}`);
-        err.code = 'saas_unreachable';
+        err.code = noAnswerCode(e);
         throw err;
     }
     const json = /** @type {SaasBootstrapResponse} */ (await res.json().catch(() => ({})));
@@ -859,6 +1082,54 @@ function bootstrapIfNeeded() {
     return _bootstrapInFlight;
 }
 
+let _notChosenLogged = false;
+
+/**
+ * The instance id of this Nextcloud for an install-time tenant key.
+ *
+ * A key the server issued comes with the id it was issued for
+ * (tenant-key.json). An install-time key comes alone, and every signed call to
+ * the Bee Flow server (push-trigger events, Talk messages, Assistant tasks, the
+ * app menu) names the instance: the id is read from Nextcloud the way the
+ * bootstrap reads it, which is the id the server knows this Nextcloud by. One
+ * request to Nextcloud, none to the Bee Flow server. While Nextcloud does not
+ * answer it is asked again, with the delays of the bootstrap retry.
+ * @returns {Promise<boolean>} whether the id is known now
+ */
+async function resolveInstanceIdForEnvKey() {
+    if (config.ncInstanceId) return true;
+    try {
+        const caps = await fetchCapabilities();
+        config.ncInstanceId = caps.instanceId;
+        _instanceIdRetryAttempts = 0;
+        return true;
+    } catch (err) {
+        log.warn(`[Bootstrap] could not read this Nextcloud's instance id yet (${errMessage(err)}); `
+            + 'push triggers, the Talk bot and Assistant tasks start once it is known');
+        scheduleInstanceIdRetry();
+        return false;
+    }
+}
+
+/** @type {NodeJS.Timeout | null} */
+let _instanceIdRetryTimer = null;
+let _instanceIdRetryAttempts = 0;
+
+function scheduleInstanceIdRetry() {
+    if (_instanceIdRetryTimer || !(BOOTSTRAP_RETRY_MS > 0)) return;
+    const delay = Math.min(BOOTSTRAP_RETRY_MS * 2 ** _instanceIdRetryAttempts, BOOTSTRAP_RETRY_MAX_MS);
+    _instanceIdRetryAttempts += 1;
+    _instanceIdRetryTimer = setTimeout(() => {
+        _instanceIdRetryTimer = null;
+        // Only for an install-time key that is still in use.
+        if (config.isAutoTenantKey || !config.tenantKey || config.ncInstanceId) return;
+        resolveInstanceIdForEnvKey()
+            .then((known) => { if (known) tenantKeyReady(); })
+            .catch(e => log.warn(`[Bootstrap] instance id retry failed: ${errMessage(e)}`));
+    }, delay);
+    _instanceIdRetryTimer.unref?.();
+}
+
 async function _provisionFlow() {
     const generation = _provisionGeneration;
     const superseded = () => {
@@ -866,7 +1137,33 @@ async function _provisionFlow() {
         log.warn('[Bootstrap] a newer setup change superseded this provision — its answer is dropped');
         return true;
     };
+    // No server chosen: stop before anything is read or asked. It returns
+    // rather than throws, so no retry is scheduled either; the flow runs again
+    // when an administrator chooses a server.
+    if (!config.apiBaseUrl) {
+        if (!_notChosenLogged) {
+            _notChosenLogged = true;
+            log.info('[Bootstrap] No Bee Flow server chosen; waiting for an administrator');
+        }
+        return;
+    }
     if (!config.isAutoTenantKey) {
+        // An install-time key and a server that became known later (an
+        // administrator chose it, or a re-bootstrap dropped the key from
+        // memory): the key is taken into use as it is. No bootstrap request.
+        if (!config.tenantKey && config.envTenantKey) {
+            config.tenantKey = config.envTenantKey;
+            await clearErrorFile();
+            await resolveInstanceIdForEnvKey();
+            log.info('[Bootstrap] BEEFLOW_TENANT_KEY is in use for the chosen server');
+            tenantKeyReady();
+            return;
+        }
+        // The key was in use from the start (the server is fixed at install
+        // time too). What signs with the instance id starts once it is known.
+        if (config.tenantKey && !config.ncInstanceId && await resolveInstanceIdForEnvKey()) {
+            tenantKeyReady();
+        }
         log.info('[Bootstrap] BEEFLOW_TENANT_KEY explicitly set, skipping auto-bootstrap');
         return;
     }
@@ -888,6 +1185,10 @@ async function _provisionFlow() {
                 log.warn(`[Bootstrap] Pinning to bound server ${cached.boundApiBaseUrl} (ignoring configured ${config.apiBaseUrl})`);
             }
             config.apiBaseUrl = cached.boundApiBaseUrl;
+        } else if (!cached.boundApiBaseUrl && !config.apiBaseUrlLocked) {
+            // A cache from before the pin existed: record the server this
+            // binding resolved to, so it is named in the file from now on.
+            await writeCache({ ...cached, boundApiBaseUrl: config.apiBaseUrl });
         }
         await clearErrorFile();
         log.info(`[Bootstrap] Loaded cached tenant key for org ${cached.organizationId}`);
@@ -924,7 +1225,7 @@ async function _provisionFlow() {
         await deletePendingFile();
     }
 
-    log.info('[Bootstrap] No cached tenant key; provisioning from SaaS...');
+    log.info(`[Bootstrap] No cached tenant key; connecting to ${config.apiBaseUrl}...`);
 
     let caps, admins, admin;
     try {
@@ -1061,11 +1362,13 @@ async function _provisionFlow() {
         let parsed = null;
         try { parsed = JSON.parse(errBody); } catch (_) { /* not JSON */ }
         const msg = parsed?.error || errBody.slice(0, 200);
-        const e = new Error(`Bootstrap rejected by SaaS (HTTP ${res.status}): ${msg}`);
+        const e = new Error(`${serverLabel()} refused the connection (HTTP ${res.status}): ${msg}`);
         e.status = res.status;
         if (parsed?.code) e.code = parsed.code;
-        if (parsed?.remediation) e.remediation = parsed.remediation;
-        await recordBootstrapError(e, 'saas_post', { remediation: parsed?.remediation });
+        // What the administrator who started this reads (setup.js) is what is
+        // stored: the text that names the server this install is on.
+        const recorded = await recordBootstrapError(e, 'saas_post', { remediation: parsed?.remediation });
+        if (recorded.remediation) e.remediation = recorded.remediation;
         throw e;
     }
     const json = /** @type {SaasBootstrapResponse} */ (await res.json());
@@ -1100,11 +1403,18 @@ async function _provisionFlow() {
  * to the server that issued the pending binding.
  *
  * On failure everything rolls back (key, server URL, cache, pending state)
- * and the error is thrown.
+ * and the error is thrown. One exception: a first choice (there was no server
+ * before) stays chosen. The connector is then on that server without a key,
+ * with the failure recorded, exactly like an install whose first bootstrap
+ * failed: heartbeat, diagnostics and the retry all work from there, and the
+ * administrator can add what was missing (a pairing code, a public URL).
  * @param {{ pairingCode?: string, apiBaseUrl?: string }} [opts]
  * @returns {Promise<{ status: 'bound' | 'verification_pending' }>}
  */
 async function invalidateAndRebootstrap({ pairingCode, apiBaseUrl } = {}) {
+    // Without a target and without a chosen server there is nothing to
+    // re-bootstrap against, and nothing on disk is touched.
+    if (!apiBaseUrl && !config.apiBaseUrl) throw notChosenError();
     // Snapshot the previous working state so we can roll back if the new
     // target's bootstrap fails. Without this, a typo in the settings panel
     // (or a Cloud-mode pick from a localhost-only NC sandbox) wipes the
@@ -1120,8 +1430,15 @@ async function invalidateAndRebootstrap({ pairingCode, apiBaseUrl } = {}) {
         cacheFile: null,
         pairingCode: config.pairingCode,
     };
+    // The failure on record belongs to the server it happened on: when a
+    // switch is rolled back, the record goes back to what it was and the
+    // failure of the server that was not taken is kept apart (_rejectedSwitch).
+    const prevError = lastErrorState;
+    _rejectedSwitch = null;
     const rebindKey = prev.tenantKey && prev.apiBaseUrl ? { key: prev.tenantKey, apiBaseUrl: prev.apiBaseUrl } : null;
     _rebindKey = rebindKey;
+    // An install that holds a binding has no retry waiting.
+    if (rebindKey) stopBootstrapRetry();
     if (apiBaseUrl) config.apiBaseUrl = apiBaseUrl.replace(/\/+$/, '');
     const cachePath = path.join(config.persistentStorage, CACHE_FILE);
     try {
@@ -1139,7 +1456,9 @@ async function invalidateAndRebootstrap({ pairingCode, apiBaseUrl } = {}) {
         if (pairingCode) {
             config.pairingCode = pairingCode;
         }
-        log.info('[Bootstrap] Invalidated cached tenant key after setup change — re-bootstrapping');
+        log.info(prev.tenantKey
+            ? '[Bootstrap] Invalidated cached tenant key after setup change — re-bootstrapping'
+            : '[Bootstrap] Connecting after a setup change; no tenant key is held yet');
         // Explicit admin reset must force a fresh provision, not piggy-back on an
         // in-flight one (which may be mid-bind to the old target / without the
         // pairing code).
@@ -1150,16 +1469,50 @@ async function invalidateAndRebootstrap({ pairingCode, apiBaseUrl } = {}) {
             // Read through the getter: TS narrowed pendingState to null above.
             if (getPendingState()?.status === 'awaiting_email_verification') {
                 log.info(`[Bootstrap] ${config.apiBaseUrl} wants the emailed code before it binds — switch pending`);
+                if (apiBaseUrl) config.serverSource = 'picker';
+                if (!prev.apiBaseUrl) serverChosen();
                 return { status: 'verification_pending' };
             }
             // bootstrapIfNeeded swallows network errors and just logs; if we
             // got back here without a key, the new target is unreachable.
             throw new Error('bootstrap completed without producing a tenant key');
         }
+        if (apiBaseUrl) config.serverSource = 'picker';
+        if (!prev.apiBaseUrl) serverChosen();
         return { status: 'bound' };
     } catch (err) {
-        log.warn(`[Bootstrap] re-bootstrap failed (${errMessage(err)}); rolling back to previous tenant key`);
-        config.apiBaseUrl = prev.apiBaseUrl;
+        // Before anything is awaited: the binding in use comes back below,
+        // and no retry may run in between.
+        if (rebindKey) stopBootstrapRetry();
+        if (prev.apiBaseUrl) {
+            const kept = prev.tenantKey ? 'keeping the previous tenant key' : 'there was no tenant key before and there is none now';
+            log.warn(`[Bootstrap] re-bootstrap failed (${errMessage(err)}); staying on ${prev.apiBaseUrl}, ${kept}`);
+            // A switch that did not happen leaves no failure of the other
+            // server on the one that stays: it is kept apart, with that
+            // server's name. A failed attempt on the same server (a pairing
+            // code, a new public URL) is that server's newest failure and
+            // stays on record.
+            const attempted = config.apiBaseUrl;
+            if (attempted && attempted !== prev.apiBaseUrl) {
+                const failure = lastErrorState && lastErrorState !== prevError ? lastErrorState : null;
+                const category = failure?.category || 'unknown';
+                _rejectedSwitch = {
+                    apiBaseUrl: attempted,
+                    category,
+                    error: failure?.error || errMessage(err),
+                    // Read while the attempted server is still the configured one: the text names it.
+                    remediation: remediationFor(category),
+                    at: new Date().toISOString(),
+                };
+                config.apiBaseUrl = prev.apiBaseUrl;
+                await restoreErrorState(prevError);
+            }
+            config.apiBaseUrl = prev.apiBaseUrl;
+        } else {
+            log.warn(`[Bootstrap] ${config.apiBaseUrl} is chosen, but connecting to it failed (${errMessage(err)})`);
+            config.serverSource = 'picker';
+            serverChosen();
+        }
         config.tenantKey = prev.tenantKey;
         config.organizationId = prev.organizationId;
         config.organizationName = prev.organizationName;
@@ -1197,6 +1550,7 @@ async function invalidateAndRebootstrap({ pairingCode, apiBaseUrl } = {}) {
  * @returns {Promise<{ previousFingerprint: string, fingerprint: string }>}
  */
 async function rotateTenantKey() {
+    if (!config.apiBaseUrl) throw notChosenError();
     const before = config.tenantKey;
     if (!before) {
         const e = new Error('There is no tenant key to rotate yet.');
@@ -1204,7 +1558,7 @@ async function rotateTenantKey() {
         throw e;
     }
     if (!config.isAutoTenantKey) {
-        const e = new Error('The tenant key is set with BEEFLOW_TENANT_KEY. Rotate it in Bee Flow (Admin → Nextcloud) and set the new key with occ app_api:app:setenv.');
+        const e = new Error('The tenant key is set with BEEFLOW_TENANT_KEY at install time. Rotate it in Bee Flow (Admin → Nextcloud) and register the app again with the new key.');
         e.code = 'env_tenant_key';
         throw e;
     }
@@ -1262,7 +1616,7 @@ async function rotateTenantKey() {
         return { previousFingerprint: keyFingerprint(before), fingerprint: keyFingerprint(config.tenantKey) };
     }
     const e = new Error(`Could not rotate the tenant key: ${netErr ? errMessage(netErr) : `HTTP ${res?.status}`}. The current key is unchanged.`);
-    e.code = 'saas_unreachable';
+    e.code = netErr ? noAnswerCode(netErr) : 'saas_unreachable';
     throw e;
 }
 
@@ -1296,6 +1650,7 @@ async function isNcAdmin(uid) {
  * @returns {Promise<{ ok: true, maskedEmail?: string | null, expiresAt?: string, emailSent: boolean }>}
  */
 async function requestVerificationCode({ uid, email, displayName }) {
+    if (!config.apiBaseUrl) throw notChosenError();
     const pending = await currentVerificationPending();
     if (!pending) {
         const e = new Error('No pending Nextcloud verification');
@@ -1313,7 +1668,7 @@ async function requestVerificationCode({ uid, email, displayName }) {
         });
     } catch (e) {
         const err = new Error(`Could not reach Bee Flow to send the code: ${errMessage(e)}`);
-        err.code = 'saas_unreachable';
+        err.code = noAnswerCode(e);
         throw err;
     }
     const json = /** @type {SaasBootstrapResponse} */ (await res.json().catch(() => ({})));
@@ -1336,10 +1691,16 @@ async function requestVerificationCode({ uid, email, displayName }) {
 module.exports = {
     bootstrapIfNeeded,
     onTenantKeyReady,
+    onServerChosen,
     fetchCapabilities,
     getPendingState,
     getLastErrorState,
+    getRejectedSwitch,
+    withdrawRejectedSwitch,
+    connectFailed,
     remediationFor,
+    remediationShown,
+    categoriseError,
     invalidateAndRebootstrap,
     rotateTenantKey,
     submitVerificationCode,
@@ -1348,4 +1709,6 @@ module.exports = {
     isNcAdmin,
     stableInstanceIdFallback,
     ncHostFromUrl,
+    // Test hook: is a retry of the bootstrap scheduled?
+    _bootstrapRetryArmedForTests: () => _bootstrapRetryTimer !== null,
 };

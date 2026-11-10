@@ -1,33 +1,31 @@
 // Switching the Bee Flow server from /setup or the admin settings form.
 //
-//   H3  A failed switch from /setup left config.apiBaseUrl and the saved
-//       choice on the new server while the key rolled back to the old one:
-//       old-key requests to the new server, and the next restart moved there.
-//   M6  A new server that wants the emailed code first was treated as a
-//       failure: key and URL rolled back but the pending state stayed, verify
-//       went to the OLD server (404), and the settings poll opened a new
-//       pending binding on the new server every minute until it answered 429.
+//   H3  A failed switch from /setup puts everything back on the old server:
+//       the URL, the key and the saved choice, so a restart stays there too.
+//   M6  A new server that wants the emailed code first is a pending switch on
+//       that server: one pending binding, verify goes there, and a switch that
+//       is rolled back clears the pending state it created.
+//
+// Every test starts the way an install that is already connected starts: a
+// tenant-key cache bound to OLD on disk, resolved by serverChoice.applyAtBoot
+// (no install-time server), and the key loaded from that cache.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
+const { installWithStorage, NO_SERVER } = require('./support/installValues');
 
 const OLD = 'http://old.beeflow.test';
 const NEW = 'http://new.beeflow.test';
-const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-connector-switch-'));
-process.env.APP_SECRET = 'test-secret';
-process.env.NEXTCLOUD_URL = 'http://nc.test';
-process.env.BEEFLOW_TENANT_KEY = 'auto';
-process.env.BEEFLOW_API_BASE_URL = 'https://server.beeflow.nl'; // AppAPI's injected default, not a lock
-process.env.APP_PERSISTENT_STORAGE = storage;
-process.env.BEEFLOW_BOOTSTRAP_RETRY_MS = '0';
+// no install-time server: the binding on disk names it
+const storage = installWithStorage('bf-connector-switch-', NO_SERVER);
 
-const express = require('express');
+const { postAsAdmin, until } = require('./support/setupRequests');
 const { installFakeWorld, json, ocs } = require('./support/fakeWorld');
 const config = require('../src/config');
 const bootstrap = require('../src/bootstrap');
+const serverChoice = require('../src/serverChoice');
 const setupConfig = require('../src/setupConfig');
 const setupRouter = require('../src/setup');
 const declarativeSettings = require('../src/declarativeSettings');
@@ -37,41 +35,27 @@ function readJsonOrNull(file) {
     try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
 }
 
-const realFetch = globalThis.fetch;
+const post = (pathname, body) => postAsAdmin(setupRouter, pathname, body);
 
-async function post(pathname, body) {
-    const app = express();
-    app.use((req, _res, next) => { req.beeflow = { user: { uid: 'admin', isNcAdmin: true } }; next(); });
-    app.use('/setup', setupRouter);
-    const server = app.listen(0);
-    try {
-        const { port } = server.address();
-        const res = await realFetch(`http://127.0.0.1:${port}${pathname}`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-        });
-        return { status: res.status, body: await res.json() };
-    } finally {
-        server.close();
-    }
-}
-
-/** @param {() => boolean} cond */
-async function until(cond, ms = 3000) {
-    const t0 = Date.now();
-    while (!cond()) {
-        if (Date.now() - t0 > ms) throw new Error('condition not reached in time');
-        await new Promise((r) => setTimeout(r, 10));
-    }
-}
-
-function boundToOld() {
+async function boundToOld() {
     fs.writeFileSync(path.join(storage, 'tenant-key.json'), JSON.stringify({
         tenantKey: 'old-key', organizationId: 'org-old', ncInstanceId: 'inst-1', boundApiBaseUrl: OLD,
     }));
     fs.rmSync(path.join(storage, 'pending-bootstrap.json'), { force: true });
-    config.apiBaseUrl = OLD;
-    config.tenantKey = 'old-key';
     setupConfig.save({ mode: 'self-hosted', apiBaseUrl: OLD });
+    // The boot: the binding names the server, the cache gives the key.
+    const choice = serverChoice.applyAtBoot(config, setupConfig.get());
+    assert.deepEqual(choice, { url: OLD, source: 'binding', locked: false });
+    assert.equal(config.tenantKey, null, 'the key comes from the cache, not from the resolver');
+    const world = installFakeWorld();
+    try {
+        await bootstrap.bootstrapIfNeeded();
+        assert.equal(world.count((c) => c.url.includes('/auth/connector/bootstrap')), 0, 'a connected install asks for nothing at boot');
+    } finally {
+        world.restore();
+    }
+    assert.equal(config.apiBaseUrl, OLD);
+    assert.equal(config.tenantKey, 'old-key');
 }
 
 const VERIFY_202 = () => json({
@@ -88,7 +72,7 @@ test.after(() => {
 });
 
 test('H3: a failed switch in /setup leaves the URL, the key and the saved choice on the old server', async () => {
-    boundToOld();
+    await boundToOld();
     let attempted = false;
     const world = installFakeWorld({
         servers: { [NEW]: { 'POST /auth/connector/bootstrap': () => { attempted = true; return json({ error: 'down' }, 503); } } },
@@ -111,14 +95,17 @@ test('H3: a failed switch in /setup leaves the URL, the key and the saved choice
 });
 
 test('H3: a successful switch in /setup binds to the new server', async () => {
-    boundToOld();
+    await boundToOld();
     const world = installFakeWorld({
         servers: { [NEW]: { 'POST /auth/connector/bootstrap': () => ({ tenantKey: 'new-key', organizationId: 'org-new' }) } },
     });
     try {
         await post('/setup', { mode: 'self-hosted', apiBaseUrl: NEW });
         const cacheFile = path.join(storage, 'tenant-key.json');
-        await until(() => config.tenantKey === 'new-key' && readJsonOrNull(cacheFile)?.boundApiBaseUrl === NEW);
+        // The key is in memory before the switch is over; the choice is marked
+        // as made on the setup page when it is.
+        await until(() => config.tenantKey === 'new-key' && readJsonOrNull(cacheFile)?.boundApiBaseUrl === NEW
+            && config.serverSource === 'picker');
         assert.equal(config.apiBaseUrl, NEW);
         assert.equal(setupConfig.get()?.apiBaseUrl, NEW);
         const cached = readJsonOrNull(cacheFile);
@@ -129,7 +116,7 @@ test('H3: a successful switch in /setup binds to the new server', async () => {
 });
 
 test('M6: a switch to a server that wants the emailed code is pending there, once, and verify goes there', async () => {
-    boundToOld();
+    await boundToOld();
     let bootstraps = 0;
     let verifiedAt = null;
     const world = installFakeWorld({
@@ -162,7 +149,7 @@ test('M6: a switch to a server that wants the emailed code is pending there, onc
 });
 
 test('M6: a rolled-back switch clears the pending state it created', async () => {
-    boundToOld();
+    await boundToOld();
     const world = installFakeWorld({
         servers: {
             [NEW]: { 'POST /auth/connector/bootstrap': () => json({ error: 'nope' }, 500) },

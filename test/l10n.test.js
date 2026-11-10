@@ -15,6 +15,7 @@ const vm = require('node:vm');
 
 process.env.APP_SECRET = 'test-secret';
 process.env.NEXTCLOUD_URL = 'http://nc.test';
+process.env.BEEFLOW_API_BASE_URL = 'http://beeflow.test';
 process.env.BEEFLOW_TENANT_KEY = 'tenant-key';
 process.env.APP_PERSISTENT_STORAGE = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-connector-l10n-'));
 
@@ -74,6 +75,23 @@ test('every menu label, settings text and runtime message has a Dutch translatio
     for (const [en, nlText] of Object.entries(nl.translations)) {
         assert.notEqual(nlText.trim(), '', `empty translation for "${en}"`);
     }
+});
+
+test('the settings form: "No change" is its default, and it says what choosing a server sends', () => {
+    const { SETUP_TEXTS, SETTINGS_FORM_CONSENT } = require('../src/setupTexts');
+    const mode = FORM_SCHEME.fields.find((f) => f.id === 'deployment_mode');
+    assert.equal(mode.default, 'keep');
+    assert.deepEqual(mode.options[0], { name: 'No change (keep the current connection)', value: 'keep' });
+    assert.equal(nl.translations[mode.options[0].name], 'Geen wijziging (de huidige verbinding blijft)');
+
+    // The sentence of the setup page, in the form's description and its translation.
+    assert.ok(FORM_SCHEME.description.includes(SETTINGS_FORM_CONSENT));
+    const WHAT = /the names and e-mail addresses of this Nextcloud's administrators, its address, instance id and version are sent to .+, an organisation is created there, and users and groups are synchronised afterwards\. Nothing is sent before you /;
+    assert.match(SETTINGS_FORM_CONSENT, WHAT);
+    assert.match(SETUP_TEXTS.consent, WHAT);
+    const WAT = /de namen en e-mailadressen van de beheerders van deze Nextcloud, het adres, de instance-id en de versie naar .+ gestuurd, wordt daar een organisatie aangemaakt en worden gebruikers en groepen daarna gesynchroniseerd\. Er wordt niets verstuurd voordat je /;
+    assert.match(nl.translations[FORM_SCHEME.description], WAT);
+    assert.match(nl.translations[SETUP_TEXTS.consent], WAT);
 });
 
 test('the user\'s Nextcloud language picks the dictionary; anything else is English', () => {

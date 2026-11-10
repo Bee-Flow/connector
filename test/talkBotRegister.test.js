@@ -17,6 +17,7 @@ const path = require('node:path');
 
 process.env.APP_SECRET = 'ci-test-secret';
 process.env.NEXTCLOUD_URL = 'http://nextcloud.invalid';
+process.env.BEEFLOW_API_BASE_URL = 'http://beeflow.test';
 process.env.APP_PERSISTENT_STORAGE = fs.mkdtempSync(path.join(os.tmpdir(), 'beeflow-talkbot-register-'));
 
 const talkBot = require('../src/talkBot');
@@ -65,4 +66,46 @@ test('Talk not installed is still reported as such, without a DELETE', async () 
     const { result, calls } = await withFetch([new Response('', { status: 404 })], () => talkBot.registerTalkBot());
     assert.deepEqual(calls.map((c) => c.method), ['POST']);
     assert.equal(result.reason, 'talk-missing');
+});
+
+// AppAPI on a Nextcloud without Talk (33, 34 and 35) answers 400, not 404.
+test('a Nextcloud without Talk that answers 400 is reported as such: no DELETE, no second attempt, no warning', async () => {
+    const noTalk = () => new Response(JSON.stringify({
+        ocs: { meta: { status: 'failure', statuscode: 400, message: 'Talk bots could not be registered' }, data: [] },
+    }), { status: 400 });
+    const stored = path.join(process.env.APP_PERSISTENT_STORAGE, 'talk-bot.json');
+    const lines = [];
+    const real = { log: console.log, warn: console.warn };
+    console.log = (...a) => lines.push(['info', a.join(' ')]);
+    console.warn = (...a) => lines.push(['warn', a.join(' ')]);
+    try {
+        // With the secret of an earlier registration on the volume, and without one.
+        const kept = await withFetch([noTalk()], () => talkBot.registerTalkBot());
+        assert.deepEqual(kept.calls.map((c) => c.method), ['POST']);
+        assert.deepEqual(kept.result, { ok: false, reason: 'talk-missing' });
+
+        fs.rmSync(stored, { force: true });
+        delete require.cache[require.resolve('../src/talkBot')];
+        const fresh = require('../src/talkBot');
+        assert.equal(fresh.loadSecret(), null);
+        const { result, calls } = await withFetch([noTalk()], () => fresh.registerTalkBot());
+        assert.deepEqual(calls.map((c) => c.method), ['POST']);
+        assert.deepEqual(result, { ok: false, reason: 'talk-missing' });
+    } finally {
+        Object.assign(console, real);
+    }
+    assert.deepEqual(lines.filter(([level]) => level === 'warn'), []);
+    assert.equal(lines.some(([, text]) => /removing/i.test(text)), false, 'nothing is said to be removed');
+});
+
+test('another 400 without a stored secret still takes the remove-and-register path', async () => {
+    delete require.cache[require.resolve('../src/talkBot')];
+    const fresh = require('../src/talkBot');
+    fs.rmSync(path.join(process.env.APP_PERSISTENT_STORAGE, 'talk-bot.json'), { force: true });
+    const other = new Response('{"ocs":{"meta":{"statuscode":400,"message":"something else"}}}', { status: 400 });
+    const { result, calls } = await withFetch(
+        [other, new Response('{}', { status: 200 }), registered('second-secret')],
+        () => fresh.registerTalkBot());
+    assert.deepEqual(calls.map((c) => c.method), ['POST', 'DELETE', 'POST']);
+    assert.equal(result.ok, true);
 });

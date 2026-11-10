@@ -7,13 +7,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const express = require('express');
+const { installValues, CONNECTED } = require('./support/installValues');
 
-process.env.APP_SECRET = 'test-secret';
 // Unreachable upstream: a request that PASSES the gate is proxied and comes back
 // 502 (connection refused). That 502 — as opposed to 429 — is the proof it got
 // past the rate limiter.
-process.env.NEXTCLOUD_URL = 'http://127.0.0.1:1';
-process.env.BEEFLOW_TENANT_KEY = 'tenant-key';
+installValues({ ...CONNECTED, nextcloudUrl: 'http://127.0.0.1:1' });
 
 const ncProxy = require('../src/ncProxy');
 const config = require('../src/config');

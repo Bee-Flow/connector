@@ -246,7 +246,7 @@ async function fetchNextTask(id) {
     // Nothing queued is a 204 with no body (getNextScheduledTask). A 404 is
     // read the same way, as this code always did.
     if (res.status === 204 || res.status === 404) return null;
-    if (!res.ok) throw new Error(`next task HTTP ${res.status}`);
+    if (!res.ok) throw Object.assign(new Error(`next task HTTP ${res.status}`), { status: res.status });
     const body = /** @type {{ ocs?: { data?: { task?: NcTask } } } | null} */ (await res.json().catch(() => null));
     return body?.ocs?.data?.task || null;
 }
@@ -453,29 +453,47 @@ async function _drainWith({ fetchNextTask: fetchNext, runTask: run }, id, { conc
     try {
         let started = 0;
         let queueEmpty = false;
+        let claimed = 0;
 
-        const worker = async () => {
-            while (!queueEmpty && started < MAX_TASKS_PER_DRAIN) {
-                /** @type {NcTask | null} */
-                let task;
-                try {
-                    task = await fetchNext(id);
-                } catch (err) {
-                    log.warn(`[TaskProcessing] could not fetch next task for ${id}: ${errMessage(err)}`);
-                    // Stop the whole pool: if Nextcloud is refusing us, the
-                    // other workers will only produce the same error N times.
-                    queueEmpty = true;
-                    return;
-                }
-                if (!task) { queueEmpty = true; return; }
-                started += 1;
+        /** @returns {Promise<NcTask | null>} the next task, or null when this worker is done */
+        const next = async () => {
+            // Claimed before the request, so workers that ask at the same
+            // moment cannot go over the budget together.
+            if (queueEmpty || claimed >= MAX_TASKS_PER_DRAIN) return null;
+            claimed += 1;
+            /** @type {NcTask | null} */
+            let task;
+            try {
+                task = await fetchNext(id);
+            } catch (err) {
+                log.warn(`[TaskProcessing] could not fetch next task for ${id}: ${errMessage(err)}`);
+                if (isRefusal(err)) _refusedThisRound = true;
+                // Stop the whole pool: if Nextcloud is refusing us, the
+                // other workers will only produce the same error N times.
+                queueEmpty = true;
+                return null;
+            }
+            if (!task) { queueEmpty = true; return null; }
+            started += 1;
+            return task;
+        };
+
+        /** @param {NcTask | null} [task] a task this worker starts with */
+        const worker = async (task) => {
+            for (let current = task || await next(); current; current = await next()) {
                 // run never throws — it reports failure to Nextcloud and
                 // returns, so one bad task cannot take the pool down with it.
-                await run(task);
+                await run(current);
             }
         };
 
-        await Promise.all(Array.from({ length: Math.max(1, concurrency) }, worker));
+        // One request first: an empty queue, or a Nextcloud that refuses, then
+        // costs one request and not one per worker. The pool starts once
+        // there is a task.
+        const first = await next();
+        if (!first) return 0;
+        const pool = Math.max(1, concurrency);
+        await Promise.all(Array.from({ length: pool }, (_, i) => worker(i === 0 ? first : null)));
         return started;
     } finally {
         _draining.delete(id);
@@ -508,25 +526,54 @@ async function drainProvider(id, opts) {
 const POLL_FAST_MS = 5_000;
 const POLL_IDLE_MS = 300_000;
 const POLL_BACKOFF_AFTER_EMPTY = 6;
+// Nextcloud refuses this app's requests (the app is being registered again or
+// updated, or Nextcloud limits the address): the round stops at the first
+// provider, since the others would get the same answer, and the next round
+// waits longer each time, up to the idle tick. Nextcloud counts refused
+// requests per address and slows that address down when there are many.
+const POLL_REFUSED_MS = 30_000;
 
 /** @type {NodeJS.Timeout | null} */
 let _pollTimer = null;
 let _emptyRounds = 0;
+let _refusedRounds = 0;
+let _refusedThisRound = false;
+
+/**
+ * Did Nextcloud refuse the request itself (not: nothing queued, not: an error
+ * while handling it)?
+ * @param {unknown} err
+ */
+function isRefusal(err) {
+    const status = typeof err === 'object' && err !== null && 'status' in err ? err.status : null;
+    return status === 401 || status === 403 || status === 429;
+}
 
 async function pollOnce() {
     let found = 0;
+    _refusedThisRound = false;
     for (const t of TASK_TYPES) {
         try {
             found += await drainProvider(providerId(t.id));
         } catch (err) {
             log.warn(`[TaskProcessing] poll failed for ${t.id}: ${errMessage(err)}`);
         }
+        if (_refusedThisRound) break;
     }
+    if (_refusedThisRound) {
+        _refusedRounds += 1;
+        if (_refusedRounds === 1) {
+            log.warn('[TaskProcessing] Nextcloud refuses this app\'s requests; the other providers are not asked, and the next rounds wait longer until it answers again.');
+        }
+        return found;
+    }
+    _refusedRounds = 0;
     if (found > 0) _emptyRounds = 0; else _emptyRounds += 1;
     return found;
 }
 
 function currentPollDelay() {
+    if (_refusedRounds > 0) return Math.min(POLL_IDLE_MS, POLL_REFUSED_MS * 2 ** (_refusedRounds - 1));
     return _emptyRounds >= POLL_BACKOFF_AFTER_EMPTY ? POLL_IDLE_MS : POLL_FAST_MS;
 }
 
@@ -550,6 +597,7 @@ function stopPolling() {
     if (_pollTimer) clearTimeout(_pollTimer);
     _pollTimer = null;
     _emptyRounds = 0;
+    _refusedRounds = 0;
 }
 
 /**
@@ -561,8 +609,10 @@ function handleTrigger(req, res) {
     res.json({ status: 'ok' });
     if (!id) return;
     // A trigger means work exists, so come off the idle tick immediately —
-    // the next few minutes are the likeliest time for more.
+    // the next few minutes are the likeliest time for more. Nextcloud calling
+    // also means it knows this app.
     _emptyRounds = 0;
+    _refusedRounds = 0;
     scheduleNextPoll();
     setImmediate(() => {
         drainProvider(id).catch(err =>
@@ -604,4 +654,7 @@ module.exports = {
     MAX_CONCURRENT_PER_PROVIDER,
     POLL_FAST_MS,
     POLL_IDLE_MS,
+    POLL_REFUSED_MS,
+    _pollOnce: pollOnce,
+    _currentPollDelay: currentPollDelay,
 };

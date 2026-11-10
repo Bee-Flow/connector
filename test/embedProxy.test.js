@@ -10,6 +10,7 @@ const http = require('node:http');
 
 process.env.APP_SECRET = 'test-secret';
 process.env.NEXTCLOUD_URL = 'http://nc.test';
+process.env.BEEFLOW_API_BASE_URL = 'http://beeflow.test';
 process.env.BEEFLOW_TENANT_KEY = 'tenant-key';
 // Leave BEEFLOW_EMBED_BASE_URL unset so the default is exercised below.
 
@@ -35,6 +36,7 @@ test('SPA shell paths are classified as shell (proxied to /embed/)', () => {
         '/fonts/cabinet-grotesk/CabinetGrotesk-Variable.woff2',
         '/module-shims/react-dom-client.js', // Studio app runtime
         '/n8n-color.png',
+        '/beeflow-runtime.js',        // the web app's runtime settings, next to the shell
     ]) {
         assert.equal(isSpaShellPath(p), true, `${p} should be a shell path`);
     }
@@ -51,6 +53,8 @@ test('API + client-route paths are NOT shell paths (stay on the SaaS api-proxy)'
         '/setup',          // handled by its own router, never the shell proxy
         '/nc/remote.php',  // HMAC reverse-proxy, mounted before auth
         '/monacoish',      // only the folder, not a prefix match
+        '/beeflow-runtime.json',
+        '/x/beeflow-runtime.js',
     ]) {
         assert.equal(isSpaShellPath(p), false, `${p} should NOT be a shell path`);
     }
@@ -68,6 +72,55 @@ test('rewriteToEmbed maps connector-local shell paths onto the cloud /embed/ pre
 test('buildApiProxy / buildEmbedProxy return middleware functions', () => {
     assert.equal(typeof buildApiProxy(), 'function');
     assert.equal(typeof buildEmbedProxy(), 'function');
+});
+
+// No Bee Flow server chosen: the API proxy has nowhere to forward to and
+// answers by itself, and the shell proxy hands every path to the baked bundle,
+// also when BEEFLOW_EMBED_BASE_URL locks a frontend host. A local listener
+// stands in for that host and must see no connection.
+test('no server chosen: nothing is proxied, the shell is the baked one, also with the embed lock', async () => {
+    let connections = 0;
+    const host = http.createServer((_req, res) => res.end('FROM_A_BEE_FLOW_HOST'));
+    host.on('connection', () => { connections += 1; });
+    await new Promise((r) => host.listen(0, '127.0.0.1', r));
+    const hostUrl = `http://127.0.0.1:${host.address().port}`;
+
+    const before = { apiBaseUrl: config.apiBaseUrl, embedBaseUrl: config.embedBaseUrl, embedBaseUrlLocked: config.embedBaseUrlLocked };
+    config.apiBaseUrl = null;
+    config.embedBaseUrl = hostUrl;
+    config.embedBaseUrlLocked = true;
+
+    const api = buildApiProxy();
+    const embed = buildEmbedProxy();
+    const front = http.createServer((req, res) => {
+        if (req.url.startsWith('/shell')) {
+            req.url = req.url.slice('/shell'.length) || '/';
+            req.__shellNext = () => { res.statusCode = 200; res.end('BAKED'); };
+            return embed(req, res, req.__shellNext);
+        }
+        // What express gives the API proxy.
+        res.status = (code) => { res.statusCode = code; return res; };
+        res.json = (body) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(body)); };
+        return api(req, res, () => res.end('NEXT'));
+    });
+    await new Promise((r) => front.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${front.address().port}`;
+    try {
+        for (const p of ['/shell/', '/shell/index.html', '/shell/assets/index-abc.js']) {
+            const res = await fetch(base + p);
+            assert.equal(await res.text(), 'BAKED', p);
+        }
+        for (const [method, p] of [['GET', '/auth/user'], ['POST', '/api/chat'], ['GET', '/agents']]) {
+            const res = await fetch(base + p, { method });
+            assert.equal(res.status, 503, `${method} ${p}`);
+            assert.equal((await res.json()).code, 'server_not_chosen', `${method} ${p}`);
+        }
+        assert.equal(connections, 0, 'no connection to a Bee Flow host');
+    } finally {
+        Object.assign(config, before);
+        front.close();
+        host.close();
+    }
 });
 
 // When the cloud frontend host is unreachable, the embed proxy must NOT 502 —
@@ -100,6 +153,46 @@ test('embed proxy falls back to next() (baked /public) when the cloud is unreach
             });
         });
     });
+});
+
+// The web app's runtime settings script comes from the web app host, under its
+// /embed/ prefix. A host that has none (an error page, or its HTML fallback)
+// is answered by the connector's own script, never by a page served as script.
+test('the runtime settings script comes from the web app host; a host without one hands over to the connector', async () => {
+    let asked = null;
+    let answer = (res) => {
+        res.setHeader('Content-Type', 'application/javascript');
+        res.end('window.__BEEFLOW_RUNTIME__ = Object.freeze({});');
+    };
+    const upstream = http.createServer((req, res) => { asked = req.url; answer(res); });
+    await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+    process.env.BEEFLOW_EMBED_BASE_URL = `http://127.0.0.1:${upstream.address().port}`;
+    delete require.cache[require.resolve('../src/config')];
+    delete require.cache[require.resolve('../src/proxy')];
+    const fresh = require('../src/proxy');
+    assert.equal(fresh.RUNTIME_SETTINGS_PATH, '/beeflow-runtime.js');
+    const embedProxy = fresh.buildEmbedProxy();
+    const server = http.createServer((req, res) => {
+        req.__shellNext = () => { res.statusCode = 200; res.end('CONNECTOR_SCRIPT'); };
+        embedProxy(req, res, req.__shellNext);
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const url = `http://127.0.0.1:${server.address().port}/beeflow-runtime.js`;
+    try {
+        const served = await fetch(url);
+        assert.equal(asked, '/embed/beeflow-runtime.js');
+        assert.equal(await served.text(), 'window.__BEEFLOW_RUNTIME__ = Object.freeze({});');
+        assert.match(served.headers.get('content-type'), /javascript/);
+
+        answer = (res) => { res.statusCode = 404; res.setHeader('Content-Type', 'text/html'); res.end('<pre>Cannot GET</pre>'); };
+        assert.equal(await (await fetch(url)).text(), 'CONNECTOR_SCRIPT', 'a 404 page is not passed on');
+
+        answer = (res) => { res.setHeader('Content-Type', 'text/html'); res.end('<!doctype html><html></html>'); };
+        assert.equal(await (await fetch(url)).text(), 'CONNECTOR_SCRIPT', 'a page with status 200 is not passed on as script');
+    } finally {
+        server.close();
+        upstream.close();
+    }
 });
 
 // Nextcloud's AppAPI proxy copies the browser's `Accept-Encoding: gzip` onto

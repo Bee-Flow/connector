@@ -20,6 +20,7 @@ const assert = require('node:assert/strict');
 process.env.BEEFLOW_TENANT_KEY = process.env.BEEFLOW_TENANT_KEY || 't'.repeat(64);
 process.env.APP_SECRET = process.env.APP_SECRET || 's'.repeat(32);
 process.env.NEXTCLOUD_URL = process.env.NEXTCLOUD_URL || 'https://nc.example.com';
+process.env.BEEFLOW_API_BASE_URL = 'http://beeflow.test';
 
 const proxy = require('../src/proxy');
 const proxyPath = require.resolve('../src/proxy.js');

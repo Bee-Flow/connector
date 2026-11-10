@@ -18,6 +18,7 @@ const express = require('express');
 
 process.env.APP_SECRET = process.env.APP_SECRET || 'ci-test-secret';
 process.env.NEXTCLOUD_URL = process.env.NEXTCLOUD_URL || 'http://nextcloud.invalid';
+process.env.BEEFLOW_API_BASE_URL = 'http://beeflow.test';
 // Keep the secret file out of the real persistent-storage path.
 process.env.APP_PERSISTENT_STORAGE = process.env.APP_PERSISTENT_STORAGE
     || fs.mkdtempSync(path.join(os.tmpdir(), 'beeflow-talkbot-'));

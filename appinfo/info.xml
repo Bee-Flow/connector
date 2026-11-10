@@ -10,7 +10,7 @@
     <name>Bee Flow</name>
     <summary>AI assistant for your Nextcloud — chat with Files, Mail, Calendar, Deck, Notes, Tasks, Contacts and Talk.</summary>
     <description><![CDATA[
-> ✅ **Install in one click from the Nextcloud App Store** — no setup needed on most Nextclouds, including Nextcloud All-in-One and other managed/hosted setups. A few self-managed servers first need AppAPI's deploy daemon enabled; the short [install guide](https://docs.beeflow.ai/getting-started/nextcloud) shows how.
+> **Requires AppAPI with a Docker deploy daemon** (HaRP recommended). Nextcloud All-in-One offers HaRP as an optional container. Bee Flow cannot be installed on managed or shared hosting without Docker. The short [install guide](https://docs.beeflow.ai/getting-started/nextcloud) shows what your Nextcloud needs.
 
 **Bee Flow turns your Nextcloud into an AI workspace.**
 
@@ -18,7 +18,7 @@ Click the bee icon in your top bar and chat with an assistant that already knows
 
 ## What you get
 
-- **One-click install, zero configuration.** The install connects your Nextcloud to **Bee Flow Cloud** — our hosted service, which runs on **Scaleway** with all servers located in **the Netherlands (EU)**. Sign in with your existing Nextcloud account — no second password, no app-passwords, no API keys to paste anywhere.
+- **You choose where Bee Flow runs.** After installing, an administrator chooses once where Bee Flow runs: **Bee Flow Cloud** — our hosted service, which runs on **Scaleway** with all servers located in **the Netherlands (EU)** — or your own server. Until then nothing leaves your Nextcloud. Sign in with your existing Nextcloud account — no second password, no app-passwords, no API keys to paste anywhere.
 - **An AI agent with context.** Bee Flow can read and act on **Files, Mail, Calendar, Contacts, Deck, Notes, Tasks, Talk, Activity** and **Notifications** — only on the items you explicitly point it at.
 - **Built-in privacy shield.** Detects emails, phone numbers, IBANs, BSNs and other sensitive data in your prompts and replaces them with placeholders before anything reaches the language model. The original values are restored in the reply, only on your screen.
 - **Multi-user from day one.** Mirrors your Nextcloud users and groups automatically. Admins decide which groups get which Bee Flow integrations — disable Talk for interns, enable everything for the leadership team.
@@ -26,35 +26,37 @@ Click the bee icon in your top bar and chat with an assistant that already knows
 
 ## How it works
 
-This Nextcloud app is a thin connector. It runs as an ExApp container next to your Nextcloud and connects the embedded Bee Flow web client (an open-source React SPA) to **Bee Flow Cloud**, our hosted service running on **Scaleway** with all servers located in **the Netherlands (EU)**. Browser → Nextcloud signed proxy → connector → Bee Flow Cloud. Your Nextcloud session is the only credential.
+This Nextcloud app is a thin connector. It runs as an ExApp container next to your Nextcloud and connects the embedded Bee Flow web client (an open-source React SPA) to the Bee Flow server an administrator chooses: **Bee Flow Cloud**, our hosted service running on **Scaleway** with all servers located in **the Netherlands (EU)**, or your own server. Browser → Nextcloud → connector → Bee Flow server. Your Nextcloud session is the only credential.
 
-**Prefer to keep everything on your own infrastructure?** You can also run Bee Flow fully self-hosted on your own servers — the connector, the SPA and the Bee Flow server are all open source ([Bee-Flow on GitHub](https://github.com/Bee-Flow)), and Bee Flow Cloud runs the very same code. Follow the [self-hosting guide](https://docs.beeflow.ai/self-hosting) to deploy your own Bee Flow server, then point this connector at it instead of Bee Flow Cloud (Settings → Bee Flow server URL).
+**Prefer to keep everything on your own infrastructure?** You can also run Bee Flow fully self-hosted on your own servers — the connector, the SPA and the Bee Flow server are all open source ([Bee-Flow on GitHub](https://github.com/Bee-Flow)), and Bee Flow Cloud runs the very same code. Follow the [self-hosting guide](https://docs.beeflow.ai/self-hosting) to deploy your own Bee Flow server, then choose "Self-hosted" when you open Bee Flow for the first time and enter its address.
 
 ## Data flow disclosure
 
-When you act on a Nextcloud item, the connector sends the item to the Bee Flow service over TLS. Specifically:
+Nothing is sent to any Bee Flow server until an administrator has chosen one. When the administrator connects, the names and e-mail addresses of this Nextcloud's administrators, its address, instance id and version are sent to the chosen server and an organisation is created there. Users and groups are synchronised afterwards.
+
+When you act on a Nextcloud item, the connector sends the item to the chosen Bee Flow server. Specifically:
 
 - **Always** — your Nextcloud user ID, email, display name and group memberships (used to identify your tenant and apply group-based permissions).
 - **On demand** — the contents of items you explicitly point the assistant at (e.g. an email you ask it to summarise, a file you ask it to read).
 
 Bee Flow **does not** bulk-export file contents, mail bodies, calendars or contacts. The connector forwards individual requests; nothing is copied, mirrored or indexed by default.
 
-Bee Flow Cloud is hosted on **Scaleway**, with all servers located in **the Netherlands (EU)** — your data is processed and stored within the EU.
+When you choose Bee Flow Cloud: it is hosted on **Scaleway**, with all servers located in **the Netherlands (EU)** — your data is processed and stored within the EU. When you choose your own server, it goes there and nowhere else.
 
 Full privacy policy: <https://beeflow.nl/privacy>.
 
 ## Getting started
 
 1. Install this app from the Nextcloud App Store.
-2. Open Bee Flow from the top bar.
-3. The first time the organisation admin opens it, the onboarding wizard runs automatically — pick your user-sync mode and privacy settings.
-4. Other users see a "Setup in progress" screen until the admin finishes — then the chat opens for everyone in the chosen sync scope.
+2. As a Nextcloud administrator, open Bee Flow from the top bar and choose where it runs: Bee Flow Cloud or your own server.
+3. The onboarding wizard then runs — pick your user-sync mode and privacy settings.
+4. Other users see a "not set up yet" notice, and then a "Setup in progress" screen, until the administrator has finished — then the chat opens for everyone in the chosen sync scope.
 
 ## Support
 
 Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We support Bee Flow Cloud and can also help you get Bee Flow running on a self-managed or self-hosted Nextcloud.
         ]]></description>
-    <version>1.7.0</version>
+    <version>2.0.0</version>
     <licence>AGPL-3.0-or-later</licence>
     <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.nl/">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>
@@ -126,30 +128,28 @@ Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We su
             <variable>
                 <name>BEEFLOW_TENANT_KEY</name>
                 <display-name>Bee Flow tenant key (optional)</display-name>
-                <description>Leave at "auto" to automatically create a NEW Bee Flow organisation the first time the connector starts, at whichever server is set in "Bee Flow server" below (Bee Flow Cloud by default). Override with an existing tenant key only to connect this Nextcloud to an organisation that already exists (e.g. an enterprise reinstall). To join an existing organisation without a key, use a pairing code below.</description>
+                <description>Leave at "auto": a new Bee Flow organisation is created when an administrator connects this Nextcloud, at the server you choose. Override with an existing tenant key only to connect this Nextcloud to an organisation that already exists (e.g. an enterprise reinstall). To join an existing organisation without a key, use a pairing code below.</description>
                 <default>auto</default>
             </variable>
             <variable>
                 <name>BEEFLOW_API_BASE_URL</name>
-                <display-name>Bee Flow server — Cloud (default) or self-hosted</display-name>
-                <description>Where the connector sends API calls. The default, https://server.beeflow.nl, is Bee Flow Cloud: installing with this default creates a new Bee Flow organisation hosted by Bee Flow B.V. (EU) and your data is stored there. To self-host instead and keep data on your own infrastructure, run your own Bee Flow server (the Community tier is free) and enter its URL here. See https://beeflow.nl.</description>
-                <default>https://server.beeflow.nl</default>
+                <display-name>Bee Flow server (optional)</display-name>
+                <description>Leave empty: after installing, an administrator opens Bee Flow and chooses between Bee Flow Cloud and an own server. Nothing is sent anywhere before that choice. Fill this in only to fix the choice at install time: the URL of your own Bee Flow server, or the word cloud for Bee Flow Cloud (hosted by Bee Flow B.V., Netherlands). For Bee Flow Cloud type the word cloud, not its address. A value set here cannot be changed from inside Nextcloud.</description>
             </variable>
             <variable>
                 <name>BEEFLOW_EMBED_BASE_URL</name>
-                <display-name>Bee Flow frontend — Cloud (default) or self-hosted</display-name>
-                <description>Where the connector loads the embedded Bee Flow app (the SPA shell: index.html and assets) from. Leave at the default in almost all cases: on Bee Flow Cloud the app comes from Cloud's frontend, and when you switch to a self-hosted server (in /setup or in Settings → Artificial Intelligence) it comes from the web app URL you enter there, or from the copy built into the connector when you leave that empty. Set this only to force one frontend host whatever server is chosen.</description>
-                <default>https://beeflow.nl</default>
+                <display-name>Bee Flow web app host (optional, advanced)</display-name>
+                <description>Leave empty in almost all cases. The embedded Bee Flow app then follows the server that is chosen: with Bee Flow Cloud it comes from Cloud's web app, and with a self-hosted server from the web app URL entered next to the server address (on the setup page or under Settings → Artificial Intelligence), or from the copy built into the connector when that is left empty. Set this only to force one web app host whatever server is chosen. Nothing is loaded from it before a server is chosen.</description>
             </variable>
             <variable>
                 <name>BEEFLOW_NC_PUBLIC_URL</name>
                 <display-name>Public Nextcloud URL (optional, advanced)</display-name>
-                <description>Public URL where Bee Flow Cloud can call this Nextcloud back during bootstrap and for user-sync. Leave blank if your Nextcloud is already publicly reachable at its main URL — the common case. Set this only if your Nextcloud is behind NAT or only reachable via a tunnel/reverse-proxy. The picker in /setup also writes here at runtime.</description>
+                <description>Address at which the Bee Flow server can call this Nextcloud back when connecting and for user synchronisation. Leave blank if the Bee Flow server can reach your Nextcloud at its main URL — the common case. Set this only if your Nextcloud is behind NAT or only reachable via a tunnel/reverse-proxy. It can also be entered later on the setup page.</description>
             </variable>
             <variable>
                 <name>BEEFLOW_PAIRING_CODE</name>
                 <display-name>Pairing code (one-shot, optional)</display-name>
-                <description>One-shot 8-char code generated by the org admin in an existing Bee Flow organisation (Settings → Organisation → Nextcloud Sync → "Pair a new Nextcloud"). Setting this before first boot binds this Nextcloud to that existing organisation instead of auto-creating a new one at Bee Flow Cloud. The code is consumed once during bootstrap and ignored afterwards — safe to leave set, but you can also clear it after a successful bind.</description>
+                <description>One-shot 8-char code generated by the org admin in an existing Bee Flow organisation (Settings → Organisation → Nextcloud Sync → "Pair a new Nextcloud"). Setting this before first boot binds this Nextcloud to that existing organisation instead of creating a new one. The code is used once, when the connector connects to the server you choose, and ignored afterwards. It can also be entered on the setup page.</description>
             </variable>
             <variable>
                 <name>BEEFLOW_TRUSTED_EMBED_ORIGINS</name>
@@ -166,6 +166,57 @@ Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We su
                 <display-name>Auto-trust self-signed Nextcloud cert (optional, advanced)</display-name>
                 <description>"auto" (default) lets the connector trust your Nextcloud's certificate when it is self-signed or signed by an internal CA, so the app can complete setup on local/on-prem installs. The certificate is pinned on first use: the connector remembers its key and refuses a different one, and an administrator accepts a renewed certificate on the connector's setup page. This never weakens a valid public certificate. Set to "off" in security-strict environments to disable automatic trust — then only a publicly-trusted certificate or an explicit "Nextcloud CA certificate" above will be accepted.</description>
                 <default>auto</default>
+            </variable>
+            <!--
+                BEEFLOW_API_BASE_URL and BEEFLOW_EMBED_BASE_URL above have NO
+                <default> element either: the server is chosen by an
+                administrator after installing. Both stay declared, because
+                AppAPI only passes on values of variables this file declares
+                (test/infoXmlDefaults.test.js).
+
+                The ones below have NO <default> element on purpose: AppAPI
+                exports nothing for a variable that is left blank, so the
+                connector's own default applies. Never add an empty <default>.
+            -->
+            <variable>
+                <name>BEEFLOW_NC_PROXY_MAX_BODY_MB</name>
+                <display-name>Largest upload from Bee Flow to Nextcloud, in MB (optional, advanced)</display-name>
+                <description>Leave blank in almost all cases (100). The largest body one request from the Bee Flow server into Nextcloud may carry, for example a file an agent writes. 0 means no cap.</description>
+            </variable>
+            <variable>
+                <name>BEEFLOW_NC_PROXY_MAX_INFLIGHT_MB</name>
+                <display-name>Memory for uploads in progress, in MB (optional, advanced)</display-name>
+                <description>Leave blank in almost all cases (512). The most upload data all requests from the Bee Flow server together may hold in memory at one moment. 0 means no cap.</description>
+            </variable>
+            <variable>
+                <name>BEEFLOW_UPSTREAM_HEADERS_TIMEOUT_MS</name>
+                <display-name>Time to wait for the Bee Flow server, in milliseconds (optional, advanced)</display-name>
+                <description>Leave blank in almost all cases (60000). How long the Bee Flow server may take to start answering a request. 0 switches the timeout off.</description>
+            </variable>
+            <variable>
+                <name>LOG_LEVEL</name>
+                <display-name>Log level (optional, advanced)</display-name>
+                <description>Leave blank in almost all cases (info). One of: debug, info, warn, error.</description>
+            </variable>
+            <variable>
+                <name>BEEFLOW_SIG_SKEW_SECONDS</name>
+                <display-name>Allowed clock difference, in seconds (optional, advanced)</display-name>
+                <description>Leave blank in almost all cases (300). How far the timestamp of a signed request may differ from this host's clock. Accepted range: 30 to 900.</description>
+            </variable>
+            <variable>
+                <name>BEEFLOW_SERVER_CA_CERT</name>
+                <display-name>Bee Flow server CA certificate (optional, advanced)</display-name>
+                <description>Leave blank when your Bee Flow server has a certificate from a public certificate authority. For a self-hosted Bee Flow server with a certificate from your own certificate authority, or a self-signed one: the PEM certificate (or chain) to trust, or the path of a PEM file inside the container. It is added to the default certificate authorities and used for the connection to the Bee Flow server only. Certificate verification stays on.</description>
+            </variable>
+            <variable>
+                <name>HTTPS_PROXY</name>
+                <display-name>Outbound proxy for the Bee Flow server (optional, advanced)</display-name>
+                <description>Leave blank unless this container reaches the outside only through a forward proxy. The URL of that proxy, for example http://proxy.example.com:3128 (with user:password@ in front of the host when the proxy asks for it). Used for https connections to the Bee Flow server only; Nextcloud is always reached directly.</description>
+            </variable>
+            <variable>
+                <name>NO_PROXY</name>
+                <display-name>Hosts reached without the outbound proxy (optional, advanced)</display-name>
+                <description>Only read when an outbound proxy is set above. Comma-separated host names that are reached directly, for example a Bee Flow server inside your own network. Nextcloud does not have to be listed.</description>
             </variable>
         </environment-variables>
         <!--
@@ -211,18 +262,22 @@ Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We su
             <route><url>^/?init$</url><verb>POST</verb><access_level>ADMIN</access_level></route>
             <route><url>^/?enabled$</url><verb>PUT</verb><access_level>ADMIN</access_level></route>
 
-            <!-- Setup picker (Bee Flow Cloud vs self-hosted) — admin only.
-                 /diagnostics returns categorised bootstrap status + the
-                 active SaaS URL; it stays ADMIN because both can leak
-                 internal-network shape. -->
+            <!-- Setup picker (Bee Flow Cloud vs self-hosted) — admin only. -->
             <route><url>^/?setup\/?$</url><verb>GET,POST</verb><access_level>ADMIN</access_level></route>
+            <!-- /setup/diagnostics: the embedded app asks it for every user
+                 whose sign-in did not succeed, so it is open to signed-in
+                 users here and the connector itself checks for a Nextcloud
+                 administrator: an administrator gets the diagnosis (bootstrap
+                 status, the active server URL), anybody else a one-line
+                 answer without any of it. -->
+            <route><url>^/?setup\/diagnostics$</url><verb>GET</verb><access_level>USER</access_level></route>
             <!-- Admin-only connector actions. Explicitly ADMIN-gated so they are
                  NOT caught by the USER-level catch-all below: any of these would
                  disrupt the whole organisation (clear/rotate the tenant key,
                  repoint the server, redeem a pairing code). The email-verification
                  endpoints stay USER (they run before a tenant key exists and are
                  gated by the one-time emailed code). -->
-            <route><url>^/?setup\/(status|test|diagnostics|rotate-tenant-key|apply-pairing-code|public-nc-url|diagnose|clear-cache|nc-certificate|accept-nc-certificate)$</url><verb>GET,POST</verb><access_level>ADMIN</access_level></route>
+            <route><url>^/?setup\/(status|test|rotate-tenant-key|apply-pairing-code|public-nc-url|diagnose|clear-cache|nc-certificate|accept-nc-certificate)$</url><verb>GET,POST</verb><access_level>ADMIN</access_level></route>
 
             <!-- Nextcloud `webhook_listeners` deliveries -> connector.
                  PUBLIC because the delivery is made by a Nextcloud background

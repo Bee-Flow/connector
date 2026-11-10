@@ -55,13 +55,14 @@ const { errMessage } = require('./errors');
 const ALLOWED_PREFIXES = ['/ocs/', '/remote.php/dav/', '/index.php/apps/'];
 
 /**
- * A size in MiB from the environment, as bytes; 0 = no cap.
+ * A size in MiB from the environment, as bytes; 0 = no cap. Unset, blank,
+ * negative or not a number: the fallback.
  * @param {string} name
  * @param {number} fallbackMb
  */
 function mbFromEnv(name, fallbackMb) {
-    const raw = process.env[name];
-    const mb = raw === undefined || raw === '' ? fallbackMb : Number(raw);
+    const raw = String(process.env[name] ?? '').trim();
+    const mb = raw === '' ? fallbackMb : Number(raw);
     if (!Number.isFinite(mb) || mb < 0) return fallbackMb * 1024 * 1024;
     return mb === 0 ? Infinity : Math.floor(mb * 1024 * 1024);
 }

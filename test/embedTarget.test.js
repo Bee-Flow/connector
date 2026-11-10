@@ -15,12 +15,12 @@ const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-connector-embed-'));
 process.env.APP_SECRET = 'test-secret';
 process.env.NEXTCLOUD_URL = 'http://nc.test';
 process.env.BEEFLOW_TENANT_KEY = 'auto';
-process.env.BEEFLOW_API_BASE_URL = 'https://server.beeflow.nl'; // AppAPI's injected default, not a lock
-process.env.BEEFLOW_EMBED_BASE_URL = 'https://beeflow.nl'; // likewise
+process.env.BEEFLOW_API_BASE_URL = 'https://server.beeflow.nl'; // the literal Cloud URL: no lock, and no choice
+process.env.BEEFLOW_EMBED_BASE_URL = 'https://beeflow.nl'; // likewise no lock
 process.env.APP_PERSISTENT_STORAGE = storage;
 process.env.BEEFLOW_BOOTSTRAP_RETRY_MS = '0';
 
-const express = require('express');
+const { postAsAdmin, until } = require('./support/setupRequests');
 const { installFakeWorld, json, ocs } = require('./support/fakeWorld');
 const config = require('../src/config');
 const setupConfig = require('../src/setupConfig');
@@ -29,6 +29,7 @@ const declarativeSettings = require('../src/declarativeSettings');
 const { shellBaseUrl } = require('../src/embedTarget');
 const { buildEmbedProxy } = require('../src/proxy');
 
+// Each test names the server it runs on (onCloud(), or config.apiBaseUrl).
 setupConfig.init(storage);
 const realFetch = globalThis.fetch;
 config.tenantKey = null;
@@ -81,29 +82,7 @@ async function getShell(pathname) {
     }
 }
 
-async function postSetup(body) {
-    const app = express();
-    app.use((req, _res, next) => { req.beeflow = { user: { uid: 'admin', isNcAdmin: true } }; next(); });
-    app.use('/setup', setupRouter);
-    const server = app.listen(0);
-    try {
-        const res = await realFetch(`http://127.0.0.1:${server.address().port}/setup`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-        });
-        return { status: res.status, body: await res.json() };
-    } finally {
-        server.close();
-    }
-}
-
-/** @param {() => boolean} cond */
-async function until(cond, ms = 3000) {
-    const t0 = Date.now();
-    while (!cond()) {
-        if (Date.now() - t0 > ms) throw new Error('condition not reached in time');
-        await new Promise((r) => setTimeout(r, 10));
-    }
-}
+const postSetup = (body) => postAsAdmin(setupRouter, '/setup', body);
 
 /** A fake world in which the self-hosted server answers the bootstrap with a fresh key. */
 function selfHostedBootstraps(t) {
@@ -218,4 +197,40 @@ test('BEEFLOW_EMBED_BASE_URL naming another host stays the admin lock', () => {
         config.embedBaseUrlLocked = before.locked;
         config.embedBaseUrl = before.url;
     }
+});
+
+// No Bee Flow server chosen: there is no shell host either. The shell is the
+// copy baked into the image, and no request goes to any frontend host, not
+// even the one BEEFLOW_EMBED_BASE_URL locks.
+test('no server chosen: the baked shell, and no shell host is contacted, also with the embed lock', async (t) => {
+    const host = await shellHost();
+    let connections = 0;
+    host.srv.on('connection', () => { connections += 1; });
+    t.after(() => host.srv.close());
+    const before = {
+        apiBaseUrl: config.apiBaseUrl, tenantKey: config.tenantKey,
+        locked: config.embedBaseUrlLocked, url: config.embedBaseUrl,
+    };
+    t.after(() => {
+        config.apiBaseUrl = before.apiBaseUrl;
+        config.tenantKey = before.tenantKey;
+        config.embedBaseUrlLocked = before.locked;
+        config.embedBaseUrl = before.url;
+    });
+    config.apiBaseUrl = null;
+    config.tenantKey = null;
+    // A saved web app URL of an earlier choice does not count either.
+    setupConfig.save({ mode: 'self-hosted', apiBaseUrl: SELF, embedBaseUrl: host.url });
+
+    for (const locked of [false, true]) {
+        config.embedBaseUrlLocked = locked;
+        config.embedBaseUrl = locked ? host.url : 'https://beeflow.nl';
+        assert.equal(shellBaseUrl(), null, `embed lock ${locked}`);
+        for (const p of ['/', '/index.html', '/assets/index-abc.js']) {
+            const shell = await getShell(p);
+            assert.equal(shell.body, 'BAKED', `${p} with embed lock ${locked}`);
+        }
+    }
+    assert.deepEqual(host.seen, []);
+    assert.equal(connections, 0, 'the frontend host got no connection at all');
 });

@@ -5,204 +5,275 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Bee Flow — Connect</title>
 <style>
+    /* The look of the Bee Flow Studio surfaces, written out: this page is
+       served by the connector on its own and cannot load the web app's
+       stylesheet. Same neutral palette, one bordered card on the page colour,
+       13px text, the chosen option outlined in the text colour. */
     :root {
-        --bg: #f8fafc;
+        --bg: #f3f3f3;
         --card: #ffffff;
-        --card-border: #e5e7eb;
+        --panel: #f3f3f3;
+        --border: rgba(15, 23, 42, 0.22);
         --text: #0f172a;
-        --text-muted: #64748b;
+        --text-2: #334155;
+        --text-3: #55606d;
+        /* The brand's honey, on the things that move the administrator on:
+           the connect button, the focused field, the chosen option's dot. */
         --accent: #f59e0b;
-        --accent-dark: #d97706;
-        --accent-soft: #fef3c7;
-        --ok: #16a34a;
+        --accent-hover: #fbbf24;
+        --accent-fg: #111827;
+        --ok: #059669;
         --err: #dc2626;
-        --shadow: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.06);
+        --focus: color-mix(in srgb, var(--text) 55%, transparent);
     }
     @media (prefers-color-scheme: dark) {
         :root {
-            --bg: #0f172a;
-            --card: #1e293b;
-            --card-border: #334155;
-            --text: #f1f5f9;
-            --text-muted: #94a3b8;
-            --accent-soft: #422006;
+            --bg: #0f0f13;
+            --card: #1a1a24;
+            --panel: #16161d;
+            --border: rgba(255, 255, 255, 0.2);
+            --text: #f8fafc;
+            --text-2: #94a3b8;
+            --text-3: #8b9bb0;
+            --ok: #10b981;
+            --err: #ef4444;
         }
     }
     * { box-sizing: border-box; }
     html, body {
         margin: 0;
         padding: 0;
-        font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        font-size: 13px;
         background: var(--bg);
         color: var(--text);
         line-height: 1.5;
     }
-    .wrap { max-width: 760px; margin: 0 auto; padding: 48px 24px; }
-    header { margin-bottom: 32px; }
-    h1 { font-size: 28px; margin: 0 0 8px; }
-    .lede { color: var(--text-muted); margin: 0 0 4px; font-size: 15px; }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 40px 24px 8px; }
+    header { margin-bottom: 20px; }
+    h1 { font-size: 20px; font-weight: 600; line-height: 1.3; margin: 0 0 6px; }
+    h2 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
+    h2 .aside { font-weight: 400; color: var(--text-3); font-size: 12px; }
+    p { margin: 0 0 8px; }
+    .lede { color: var(--text); margin: 0 0 4px; }
     .badge {
-        display: inline-block;
-        padding: 4px 10px;
+        display: inline-flex;
+        align-items: center;
+        padding: 3px 8px;
         border-radius: 999px;
-        background: var(--accent-soft);
-        color: var(--accent-dark);
-        font-size: 12px;
+        border: 1px solid var(--border);
+        background: var(--card);
+        color: var(--text);
+        font-size: 11px;
         font-weight: 600;
         margin-bottom: 12px;
     }
-    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 6px; }
+    code {
+        font-family: ui-monospace, 'Menlo', monospace;
+        font-size: 12px;
+        background: var(--panel);
+        padding: 1px 5px;
+        border-radius: 4px;
+    }
+    a { color: var(--text); text-underline-offset: 2px; }
+    hr { margin: 28px 0; border: 0; border-top: 1px solid var(--border); }
+
+    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     @media (max-width: 640px) { .cards { grid-template-columns: 1fr; } }
 
     .card {
         background: var(--card);
-        border: 2px solid var(--card-border);
-        border-radius: 12px;
-        padding: 20px;
-        cursor: pointer;
-        transition: border-color 0.15s, box-shadow 0.15s, transform 0.05s;
-        position: relative;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px;
     }
-    .card:hover { border-color: var(--accent); }
-    .card.selected {
-        border-color: var(--accent);
-        box-shadow: 0 0 0 3px var(--accent-soft);
-    }
-    .card .icon {
-        font-size: 32px;
-        margin-bottom: 8px;
-        line-height: 1;
-    }
-    .card h3 { margin: 0 0 6px; font-size: 17px; }
-    .card p { margin: 0; color: var(--text-muted); font-size: 13px; }
-    .card .pill {
-        position: absolute;
-        top: 16px;
-        right: 16px;
-        font-size: 11px;
-        background: var(--accent-soft);
-        color: var(--accent-dark);
-        padding: 2px 8px;
-        border-radius: 999px;
-        font-weight: 600;
-    }
+    /* The two choices. The chosen one gets a 2px outline in the text colour;
+       its padding gives the extra pixel back so the text does not move. */
+    .card[data-mode] { cursor: pointer; transition: border-color 0.15s; }
+    .card[data-mode]:hover { border-color: var(--text-3); }
+    .card[data-mode].selected { border: 2px solid var(--text); padding: 13px; }
+    .card h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+    .card h3 svg { width: 16px; height: 16px; flex: none; color: var(--text-2); }
+    .card h3 .dot { width: 14px; height: 14px; flex: none; border-radius: 50%; border: 1.5px solid var(--border); }
+    .card.selected h3 .dot { border: 4px solid var(--accent); }
+    .card p { margin: 0; color: var(--text-2); font-size: 12px; line-height: 17px; }
+    .card .more { display: inline-block; margin-top: 8px; font-size: 12px; font-weight: 600; }
+    /* The tool sections under the choice. */
+    .card.tool { max-width: 672px; margin: 12px auto; padding: 16px; }
+    .card.tool p { margin: 0 0 8px; font-size: 13px; line-height: 1.5; }
+    .card.tool:last-of-type { margin-bottom: 40px; }
 
     .form {
-        margin-top: 24px;
+        margin-top: 12px;
         background: var(--card);
-        border: 1px solid var(--card-border);
-        border-radius: 12px;
-        padding: 20px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 16px;
         display: none;
     }
-    .form.show { display: block; }
-    .form label {
-        display: block;
-        font-size: 13px;
-        font-weight: 600;
-        margin-bottom: 6px;
-    }
-    .form input[type=url] {
+    .form.show, .form.always { display: block; }
+    label { display: block; font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+    label.spaced { margin-top: 14px; }
+    input[type=url], input[type=text] {
         width: 100%;
-        padding: 10px 12px;
-        font-size: 15px;
+        padding: 8px 12px;
+        font: inherit;
         border-radius: 8px;
-        border: 1px solid var(--card-border);
-        background: var(--bg);
+        border: 1px solid var(--border);
+        background: var(--card);
         color: var(--text);
-        font-family: inherit;
     }
-    .form input[type=url]:focus {
-        outline: none;
-        border-color: var(--accent);
-        box-shadow: 0 0 0 2px var(--accent-soft);
+    input[type=text] {
+        width: 200px;
+        font-family: ui-monospace, 'Menlo', monospace;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
     }
-    .hint { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
+    input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent); }
+    input:disabled { opacity: 0.6; }
+    .hint { font-size: 11.5px; line-height: 1.4; color: var(--text-3); margin-top: 4px; }
+    .hint.inline { margin: 0; }
+    .consent {
+        margin: 12px 0 0;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        border-radius: 8px;
+        font-size: 12px;
+        color: var(--text-2);
+        display: none;
+    }
+    .consent.show { display: block; }
+    .note { margin-top: 12px; color: var(--text-2); display: none; }
+    .note.show { display: block; }
+    .locked { color: var(--text-2); }
 
-    .actions {
-        margin-top: 24px;
-        display: flex;
-        gap: 10px;
-        align-items: center;
-        flex-wrap: wrap;
-    }
+    .actions { margin-top: 14px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     button {
         font: inherit;
-        padding: 10px 18px;
-        border-radius: 8px;
-        border: none;
-        cursor: pointer;
+        font-size: 13px;
         font-weight: 600;
-        font-size: 14px;
-        transition: opacity 0.1s;
+        padding: 8px 14px;
+        border-radius: 8px;
+        border: 1px solid transparent;
+        cursor: pointer;
+        transition: opacity 0.1s, background 0.1s;
     }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
-    .btn-primary {
-        background: var(--accent);
-        color: white;
-    }
-    .btn-primary:hover:not(:disabled) { background: var(--accent-dark); }
-    .btn-secondary {
-        background: transparent;
-        color: var(--text-muted);
-        border: 1px solid var(--card-border);
-    }
-    .btn-secondary:hover:not(:disabled) { color: var(--text); }
+    button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .btn-primary { background: var(--accent); color: var(--accent-fg); }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .btn-secondary { background: var(--card); color: var(--text); border-color: var(--border); }
+    .btn-secondary:hover:not(:disabled) { background: var(--panel); }
 
     .status {
-        margin-top: 18px;
-        padding: 12px 16px;
+        margin-top: 14px;
+        padding: 9px 12px;
         border-radius: 8px;
-        font-size: 14px;
+        border: 1px solid var(--border);
+        font-size: 12px;
+        line-height: 1.45;
         display: none;
     }
     .status.show { display: block; }
-    .status.info { background: #f1f5f9; color: var(--text); }
-    .status.ok { background: #dcfce7; color: #14532d; }
-    .status.err { background: #fee2e2; color: #7f1d1d; }
-    @media (prefers-color-scheme: dark) {
-        .status.info { background: #1e293b; color: var(--text); }
-        .status.ok { background: #14532d; color: #dcfce7; }
-        .status.err { background: #7f1d1d; color: #fee2e2; }
+    .status.info { background: var(--panel); color: var(--text-2); }
+    .status.ok {
+        border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+        background: color-mix(in srgb, var(--ok) 10%, transparent);
+        color: color-mix(in srgb, var(--ok) 70%, var(--text));
     }
-    .status code {
-        font-family: ui-monospace, 'Menlo', monospace;
-        background: rgba(0,0,0,0.05);
-        padding: 1px 5px;
-        border-radius: 3px;
+    .status.err {
+        border-color: color-mix(in srgb, var(--err) 40%, transparent);
+        background: color-mix(in srgb, var(--err) 10%, transparent);
+        color: color-mix(in srgb, var(--err) 75%, var(--text));
     }
+    .status .detail { display: block; margin-top: 6px; opacity: 0.85; }
+    .status button { margin-top: 10px; }
 
-    .meta {
-        margin-top: 32px;
-        padding-top: 24px;
-        border-top: 1px solid var(--card-border);
-        font-size: 12px;
-        color: var(--text-muted);
-    }
+    .meta { margin-top: 20px; font-size: 12px; color: var(--text-3); }
     .meta strong { color: var(--text); }
+    .output {
+        display: none;
+        margin: 12px 0 0;
+        padding: 10px 12px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        font-family: ui-monospace, 'Menlo', monospace;
+        font-size: 12px;
+        max-height: 240px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+    .output.shown { display: block; }
+
+    /* First-run mode: no Bee Flow server is chosen yet. The connector serves
+       this page as the embedded app with `data-first-run` on the body element, and adds
+       `data-can-configure` for a Nextcloud administrator. Everybody sees the
+       notice; the picker appears once the script has confirmed the
+       administrator (class `can-configure`). The tools that act on a chosen
+       server stay hidden in this mode. */
+    .first-run-notice {
+        display: none;
+        max-width: 440px;
+        margin: 96px auto 0;
+        padding: 28px 24px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        text-align: center;
+    }
+    .first-run-notice h1 { font-size: 17px; }
+    .first-run-only { display: none; }
+    body[data-first-run]:not(.can-configure) .first-run-notice { display: block; }
+    body[data-first-run]:not(.can-configure) .wrap { display: none; }
+    body[data-first-run] > .card:not(#card-nc-cert),
+    body[data-first-run]:not(.can-configure) > .card { display: none; }
+    body[data-first-run] .first-run-only { display: block; }
+
+    /* A server is chosen, but connecting to it did not succeed and there is
+       no key (`data-connect-failed`): the connector serves this page as the
+       embedded app until the connection is made. An administrator gets the
+       whole page with the failure; everybody else the notice
+       (`data-first-run` is then set as well). */
+    .connect-failed-only { display: none; }
+    body[data-connect-failed] .connect-failed-only { display: block; }
+    body[data-connect-failed] .not-chosen-only { display: none; }
 </style>
 </head>
 <body>
+<div class="first-run-notice" id="first-run-notice">
+    <h1 class="not-chosen-only">Bee Flow is not set up yet</h1>
+    <p class="lede not-chosen-only">Ask your Nextcloud administrator to open Bee Flow and choose where it runs.</p>
+    <h1 class="connect-failed-only">Bee Flow is not connected yet</h1>
+    <p class="lede connect-failed-only">Ask your Nextcloud administrator to open Bee Flow and finish connecting it.</p>
+</div>
 <div class="wrap">
     <header>
         <span class="badge" id="badge-current">Loading…</span>
         <h1>Connect Bee Flow</h1>
-        <p class="lede">Pick where this Nextcloud should send Bee Flow API traffic.</p>
+        <p class="lede">Choose where Bee Flow runs for this Nextcloud.</p>
+        <p class="lede first-run-only">No Bee Flow server is chosen yet. Nothing about this Nextcloud
+           is sent to a Bee Flow server before you connect.</p>
+        <p class="lede connect-failed-only">Bee Flow is not connected yet: connecting to the chosen server
+           did not succeed. The cause is shown below; fix it and connect again.</p>
+        <p class="note" id="note-literal-cloud-env"></p>
     </header>
 
     <div class="cards">
         <div class="card" id="card-cloud" data-mode="cloud">
-            <span class="pill">Recommended</span>
-            <div class="icon">☁️</div>
-            <h3>Bee Flow Cloud</h3>
-            <p>Hosted by Bee Flow B.V. Zero infra. Updates and uptime are taken care of.
+            <h3><span class="dot"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>Bee Flow Cloud</h3>
+            <p>Hosted by Bee Flow B.V. in the Netherlands. Updates and uptime are taken care of.
                Connects to <code>server.beeflow.nl</code>.</p>
         </div>
         <div class="card" id="card-self" data-mode="self-hosted">
-            <div class="icon">🏠</div>
-            <h3>Self-hosted server</h3>
-            <p>Point at a Bee Flow server you run yourself — local, on-premise, or on
-               your own cloud account. You provide the URL.</p>
+            <h3><span class="dot"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="8" rx="2"/><rect x="2" y="13" width="20" height="8" rx="2"/><path d="M6 7h.01M6 17h.01"/></svg>Self-hosted server</h3>
+            <p>A Bee Flow server you run yourself: on-premise or on your own cloud account.
+               You provide its address.</p>
+            <a class="more" id="link-self-hosting" target="_blank" rel="noopener noreferrer"
+               style="display:none;">How to run Bee Flow on your own server</a>
         </div>
     </div>
 
@@ -213,10 +284,10 @@
                autocomplete="off"
                spellcheck="false" />
         <div class="hint">
-            Include the scheme. Example: <code>https://beeflow.example.com</code>
-            or <code>http://bee-flow-server:3001</code> for a Docker-network sandbox.
+            The address of the Bee Flow server (not the web app), with <code>https://</code> or
+            <code>http://</code> in front.
         </div>
-        <label for="embedBaseUrl" style="margin-top: 16px;">Web app URL (optional)</label>
+        <label for="embedBaseUrl" class="spaced">Web app URL (optional)</label>
         <input type="url" id="embedBaseUrl"
                placeholder="https://app.beeflow.example.com"
                autocomplete="off"
@@ -226,12 +297,22 @@
             Nextcloud is then loaded from there, so it is always the same version as your server.
             Leave empty to use the copy built into this connector. Nothing is loaded from beeflow.nl.
         </div>
+        <label for="firstPairingCode" class="spaced">Pairing code (optional)</label>
+        <input type="text" id="firstPairingCode" placeholder="XXXX-XXXX"
+               maxlength="9" autocomplete="off" spellcheck="false" />
+        <div class="hint">
+            Only when your Bee Flow server asks for one, or to connect this Nextcloud to an
+            organisation that already exists there. Generate it in Bee Flow:
+            <em>Settings → Organisation → Pair a new Nextcloud</em>.
+        </div>
     </div>
+
+    <p class="consent" id="consent"></p>
 
     <div class="actions">
         <button class="btn-secondary" id="btn-test" disabled>Test connection</button>
         <button class="btn-primary"   id="btn-save" disabled>Save and connect</button>
-        <span class="hint" id="status-inline" style="margin: 0;"></span>
+        <span class="hint inline" id="status-inline"></span>
     </div>
 
     <div class="status" id="status"></div>
@@ -239,24 +320,24 @@
     <div class="meta">
         <p><strong>Currently active</strong>: <code id="meta-active">…</code></p>
         <p id="meta-env" style="display:none;">
-            ⚠️ <strong>Locked by AppAPI env</strong> —
-            <code>BEEFLOW_API_BASE_URL</code> is set on the connector container, so this
-            picker is disabled. Unset it via
-            <code>occ app_api:app:setenv bee_flow BEEFLOW_API_BASE_URL ''</code>.
+            <strong>Fixed at install time</strong> —
+            <code>BEEFLOW_API_BASE_URL</code> was given a value when this app was installed,
+            so the server cannot be changed here. To change it, register the app again with
+            another value, or without one to choose here.
         </p>
     </div>
 
-    <hr style="margin: 32px 0; border: 0; border-top: 1px solid #e5e7eb;" />
+    <hr />
 
-    <h2 style="margin-top: 0;">Public Nextcloud URL <span style="font-weight: normal; color: #6b7280; font-size: 0.9em;">(advanced)</span></h2>
+    <h2>Public Nextcloud URL <span class="aside">(advanced)</span></h2>
     <p>
-        Bee Flow Cloud calls your Nextcloud back at this URL to verify ownership during
+        The Bee Flow server calls your Nextcloud back at this URL to verify ownership during
         first-time setup and for runtime user-sync. Leave blank if your Nextcloud is already
         publicly reachable at <code id="meta-internal-nc">…</code> — that's the common case.
         Set this only if your Nextcloud is behind NAT or only reachable via a tunnel /
         reverse-proxy you control.
     </p>
-    <div class="form">
+    <div class="form always">
         <label for="publicNcUrl">Public Nextcloud URL</label>
         <input type="url" id="publicNcUrl"
                placeholder="https://nextcloud.example.com"
@@ -269,16 +350,16 @@
     </div>
     <div class="actions">
         <button class="btn-primary" id="btn-save-public">Save public URL</button>
-        <span class="hint" id="status-public-inline" style="margin: 0;"></span>
+        <span class="hint inline" id="status-public-inline"></span>
     </div>
-    <p id="meta-public-env" style="display:none; color:#6b7280;">
-        ⚠️ Locked by <code>BEEFLOW_NC_PUBLIC_URL</code> env — unset it via
-        <code>occ app_api:app:setenv bee_flow BEEFLOW_NC_PUBLIC_URL ''</code> to use this field.
+    <p id="meta-public-env" class="locked" style="display:none;">
+        Fixed at install time by <code>BEEFLOW_NC_PUBLIC_URL</code>. To use this field,
+        register the app again without that value.
     </p>
 </div>
 
-<div class="card">
-    <h2 style="margin-top: 0;">Bind to existing organisation</h2>
+<div class="card tool">
+    <h2>Bind to existing organisation</h2>
     <p>
         Paste a pairing code generated in your Bee Flow admin panel
         (<em>Settings → Organisation → Nextcloud pairing codes</em>) to bind this
@@ -287,30 +368,18 @@
         be used once. The previous key is restored automatically if the code
         is invalid or expired.
     </p>
-    <label for="pairing-code-input"
-           style="display:block; font-size:13px; font-weight:600; margin: 12px 0 6px;">
-        Pairing code
-    </label>
+    <label for="pairing-code-input" class="spaced">Pairing code</label>
     <input id="pairing-code-input" type="text" placeholder="XXXX-XXXX"
-           maxlength="9" autocomplete="off" spellcheck="false"
-           style="width: 220px; padding: 10px 12px; font-size: 15px;
-                  border-radius: 8px; border: 1px solid var(--card-border);
-                  background: var(--bg); color: var(--text);
-                  font-family: monospace; letter-spacing: 0.1em;
-                  text-transform: uppercase;" />
+           maxlength="9" autocomplete="off" spellcheck="false" />
     <div class="actions">
         <button class="btn-primary" id="btn-apply-pairing-code">Apply pairing code</button>
-        <span class="hint" id="status-pairing-inline" style="margin: 0;"></span>
+        <span class="hint inline" id="status-pairing-inline"></span>
     </div>
-    <pre id="pairing-output"
-         style="display:none; margin-top: 12px; padding: 12px;
-                background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 6px;
-                font-size: 0.85em; max-height: 200px; overflow: auto;
-                white-space: pre-wrap; word-break: break-word;"></pre>
+    <pre id="pairing-output" class="output"></pre>
 </div>
 
-<div class="card">
-    <h2 style="margin-top: 0;">Rotate tenant key</h2>
+<div class="card tool">
+    <h2>Rotate tenant key</h2>
     <p>
         Asks the Bee Flow server for a fresh tenant key for the same organisation;
         the old key stops working at once. Use this if the current key is suspected
@@ -319,36 +388,28 @@
     </p>
     <div class="actions">
         <button class="btn-secondary" id="btn-rotate-key">Rotate tenant key</button>
-        <span class="hint" id="status-rotate-inline" style="margin: 0;"></span>
+        <span class="hint inline" id="status-rotate-inline"></span>
     </div>
-    <pre id="rotate-output"
-         style="display:none; margin-top: 12px; padding: 12px;
-                background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 6px;
-                font-size: 0.85em; max-height: 200px; overflow: auto;
-                white-space: pre-wrap; word-break: break-word;"></pre>
+    <pre id="rotate-output" class="output"></pre>
 </div>
 
-<div class="card" id="card-nc-cert" style="display:none;">
-    <h2 style="margin-top: 0;">Nextcloud certificate</h2>
+<div class="card tool" id="card-nc-cert" style="display:none;">
+    <h2>Nextcloud certificate</h2>
     <p>
         Your Nextcloud uses a self-signed certificate. The connector trusted the first one it
         saw and only connects to Nextcloud while it presents that same key, so nobody in
         between can read the traffic. When the certificate is renewed with a new key, the
         connector stops and waits for you here.
     </p>
-    <pre id="nc-cert-output"
-         style="margin-top: 12px; padding: 12px;
-                background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 6px;
-                font-size: 0.85em; max-height: 200px; overflow: auto;
-                white-space: pre-wrap; word-break: break-word;"></pre>
+    <pre id="nc-cert-output" class="output shown"></pre>
     <div class="actions" id="nc-cert-actions" style="display:none;">
         <button class="btn-secondary" id="btn-accept-nc-cert">Accept the new certificate</button>
-        <span class="hint" id="status-nc-cert-inline" style="margin: 0;"></span>
+        <span class="hint inline" id="status-nc-cert-inline"></span>
     </div>
 </div>
 
-<div class="card">
-    <h2 style="margin-top: 0;">Clear organisation cache &amp; re-bootstrap</h2>
+<div class="card tool">
+    <h2>Clear organisation cache &amp; re-bootstrap</h2>
     <p>
         Drops the cached organisation binding (tenant key) and re-bootstraps from
         scratch. Use this to recover when this Nextcloud is bound to a Bee Flow
@@ -360,17 +421,13 @@
     </p>
     <div class="actions">
         <button class="btn-secondary" id="btn-clear-cache">Clear organisation cache</button>
-        <span class="hint" id="status-clear-cache-inline" style="margin: 0;"></span>
+        <span class="hint inline" id="status-clear-cache-inline"></span>
     </div>
-    <pre id="clear-cache-output"
-         style="display:none; margin-top: 12px; padding: 12px;
-                background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 6px;
-                font-size: 0.85em; max-height: 200px; overflow: auto;
-                white-space: pre-wrap; word-break: break-word;"></pre>
+    <pre id="clear-cache-output" class="output"></pre>
 </div>
 
-<div class="card">
-    <h2 style="margin-top: 0;">Tenant key diagnostic</h2>
+<div class="card tool">
+    <h2>Tenant key diagnostic</h2>
     <p>
         Run this when sign-in fails with <em>“Connector token rejected: no matching tenant key”</em>
         or you keep seeing <code>502 Bad Gateway</code> on <code>/api/*</code>. The connector asks
@@ -379,19 +436,23 @@
     </p>
     <div class="actions">
         <button class="btn-secondary" id="btn-diagnose">Run diagnostic</button>
-        <span class="hint" id="status-diagnose-inline" style="margin: 0;"></span>
+        <span class="hint inline" id="status-diagnose-inline"></span>
     </div>
-    <pre id="diagnose-output"
-         style="display:none; margin-top: 12px; padding: 12px;
-                background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 6px;
-                font-size: 0.85em; max-height: 400px; overflow: auto;
-                white-space: pre-wrap; word-break: break-word;"></pre>
+    <pre id="diagnose-output" class="output"></pre>
 </div>
 
 <script>
 (() => {
+    // First-run mode (see the style block). Without `data-can-configure` the
+    // notice is the whole page: stop here, before any request.
+    const firstRun = document.body.hasAttribute('data-first-run');
+    if (firstRun && !document.body.hasAttribute('data-can-configure')) return;
+    // Served as the embedded app because connecting failed (see the style block).
+    const connectFailedMode = document.body.hasAttribute('data-connect-failed');
+
     const $ = (id) => document.getElementById(id);
-    const cards = document.querySelectorAll('.card');
+    // The two choices; the tool sections further down are cards too.
+    const cards = document.querySelectorAll('.card[data-mode]');
     const formSelf = $('form-self');
     const inputUrl = $('apiBaseUrl');
     const inputWebUrl = $('embedBaseUrl');
@@ -403,34 +464,65 @@
     const metaActive = $('meta-active');
     const metaEnv = $('meta-env');
 
+    const inputPairingFirst = $('firstPairingCode');
+    const consent = $('consent');
+    const noteLiteralCloudEnv = $('note-literal-cloud-env');
+    const linkSelfHosting = $('link-self-hosting');
+    const PAIRING_RE = /^[A-Z0-9]{4}-[A-Z0-9]{4}$/;
+
     let mode = null;
     let envLocked = false;
+    // The server the connector is on now; null while none is chosen.
+    let active = null;
     let cloudUrl = 'https://server.beeflow.nl';
+    // The texts of the choice in the administrator's language (GET setup/status).
+    let texts = { errors: {} };
 
     // When loaded through NC's AppAPI proxy the page lives under a path
     // like `/index.php/apps/app_api/proxy/bee_flow/setup`. Absolute paths
     // like `/setup/status` would hit NC at `:port/setup/status` (404 HTML
     // → "Unexpected token '<'" in JSON.parse). Compute the connector mount
     // prefix from the current URL so every fetch goes back through the
-    // signed proxy.
-    const BASE = window.location.pathname.replace(/\/setup\/?$/, '') + '/';
+    // signed proxy. In first-run mode the page is the embedded app itself,
+    // at `…/proxy/bee_flow/index.html` or `/exapps/bee_flow/`.
+    const BASE = window.location.pathname.replace(/\/(?:setup\/?|index\.html)?$/, '') + '/';
+
+    function targetUrl() {
+        return mode === 'cloud' ? cloudUrl : inputUrl.value.trim();
+    }
+
+    /** The host of the server about to be chosen; '' while there is none to name. */
+    function targetHost() {
+        try { return new URL(targetUrl()).host; } catch (_) { return ''; }
+    }
+
+    // What connecting sends, and to which host. Shown as soon as there is a
+    // host to name; the host is set as text, never as markup.
+    function renderConsent() {
+        const host = envLocked ? '' : targetHost();
+        const template = texts.consent || '';
+        consent.textContent = '';
+        if (!host || !template.includes('{host}')) { consent.classList.remove('show'); return; }
+        const [before, after] = template.split('{host}');
+        const strong = document.createElement('strong');
+        strong.textContent = host;
+        consent.append(before, strong, after);
+        consent.classList.add('show');
+    }
+
+    function refreshButtons() {
+        const ready = mode === 'cloud' || (mode === 'self-hosted' && !!inputUrl.value.trim());
+        btnTest.disabled = !ready;
+        btnSave.disabled = envLocked || !ready;
+    }
 
     function setMode(m) {
         mode = m;
         cards.forEach(c => c.classList.toggle('selected', c.dataset.mode === m));
         formSelf.classList.toggle('show', m === 'self-hosted');
-        if (m === 'cloud') {
-            btnSave.disabled = envLocked;
-            btnTest.disabled = false;
-        } else {
-            btnSave.disabled = envLocked || !inputUrl.value.trim();
-            btnTest.disabled = !inputUrl.value.trim();
-        }
+        refreshButtons();
+        renderConsent();
         clearStatus();
-    }
-
-    function targetUrl() {
-        return mode === 'cloud' ? cloudUrl : inputUrl.value.trim();
     }
 
     function clearStatus() {
@@ -462,17 +554,143 @@
         statusBox.textContent = String(text == null ? '' : text);
     }
 
-    cards.forEach(c => c.addEventListener('click', () => {
+    cards.forEach(c => c.addEventListener('click', (ev) => {
+        // The documentation link inside the card is a link, not a choice.
+        if (ev.target.closest('a')) return;
         if (envLocked) return;
         setMode(c.dataset.mode);
     }));
 
     inputUrl.addEventListener('input', () => {
-        const has = !!inputUrl.value.trim();
-        btnTest.disabled = !has;
-        btnSave.disabled = envLocked || !has;
+        refreshButtons();
+        renderConsent();
         clearStatus();
     });
+
+    /** A failure without a name: the technical line, and what to do under it. */
+    function showFailure(text, remediation) {
+        showStatusText('err', text);
+        if (remediation) {
+            const small = document.createElement('span');
+            small.className = 'detail';
+            small.textContent = String(remediation);
+            statusBox.append(small);
+        }
+    }
+
+    /** A named failure ({ code, error } from the connector) as a status line. */
+    function showNamedError(named, detail, suffix) {
+        statusBox.className = 'status show err';
+        statusBox.textContent = ((named && named.error) || (texts.errors && texts.errors.server_unreachable) || 'Connecting failed.') + (suffix || '');
+        if (detail) {
+            const small = document.createElement('span');
+            small.className = 'detail';
+            small.textContent = String(detail);
+            statusBox.append(small);
+        }
+    }
+
+    /**
+     * A status line with, where this page stands in for the app, the button
+     * that opens Bee Flow. With `goOn` (a connect made on this page just
+     * succeeded) Bee Flow opens by itself after a moment, which takes an
+     * administrator straight on to the organisation set-up; the button stays
+     * for whoever wants to be faster.
+     */
+    function showOutcome(kind, text, offerOpen, goOn) {
+        showStatusText(kind, text);
+        if (!offerOpen || !(firstRun || connectFailedMode)) return;
+        const openBeeFlow = () => window.location.reload();
+        const open = document.createElement('button');
+        open.className = 'btn-primary';
+        open.textContent = 'Open Bee Flow';
+        open.addEventListener('click', openBeeFlow);
+        if (goOn) {
+            const next = document.createElement('span');
+            next.className = 'detail';
+            next.textContent = 'Opening Bee Flow…';
+            statusBox.append(next);
+            setTimeout(openBeeFlow, 1500);
+        }
+        statusBox.append(document.createElement('br'), open);
+    }
+
+    // After a save the connector binds in the background. Follow it for about
+    // twenty seconds and say what happened: connected, a code was e-mailed,
+    // or why it failed. Only outcomes recorded after `startedAt` (the
+    // connector's clock) belong to this save.
+    async function followOutcome(savedUrl, startedAt) {
+        const since = Date.parse(startedAt) || 0;
+        for (let i = 0; i < 20; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            let d;
+            try {
+                const r = await fetch(BASE + 'setup/diagnostics');
+                if (!r.ok) continue;
+                d = await r.json();
+            } catch (_) { continue; }
+            const here = d.apiBaseUrl === savedUrl;
+            const fresh = d.lastError && Date.parse(d.lastError.lastAttemptAt) >= since ? d.lastError : null;
+            if (here && d.hasTenantKey) {
+                active = savedUrl;
+                metaActive.textContent = savedUrl;
+                showOutcome('ok', d.organizationName ? `Connected to ${d.organizationName}.` : 'Connected.', true, true);
+                return;
+            }
+            if (here && d.state === 'awaiting_email_verification') {
+                active = savedUrl;
+                metaActive.textContent = savedUrl;
+                const to = d.verification && d.verification.maskedEmail;
+                showOutcome('info', `A code was e-mailed${to ? ` to ${to}` : ''}. Enter it in Bee Flow.`, true, true);
+                return;
+            }
+            const rejected = d.rejectedSwitch && Date.parse(d.rejectedSwitch.at) >= since ? d.rejectedSwitch : null;
+            if (rejected && !here) {
+                // The switch went back; the failure is the other server's.
+                if (d.apiBaseUrl) metaActive.textContent = d.apiBaseUrl;
+                const kept = ' The previous server is still in use.';
+                if (rejected.connectError) showNamedError(rejected.connectError, rejected.error, kept);
+                else showFailure(`Connecting failed (${rejected.category}): ${rejected.error}.${kept}`, rejected.remediation);
+                return;
+            }
+            if (fresh) {
+                if (here) { active = savedUrl; metaActive.textContent = savedUrl; }
+                const kept = here ? '' : ' The previous server is still in use.';
+                if (d.connectError && here) showNamedError(d.connectError, null);
+                else showFailure(`Connecting failed (${fresh.category}): ${fresh.error}.${kept}`, here ? fresh.remediation : null);
+                return;
+            }
+            if (!here && d.apiBaseUrl && i >= 2) {
+                // The switch went back to the server that works.
+                metaActive.textContent = d.apiBaseUrl;
+                showStatusText('err', 'Connecting to that server failed. The previous server is still in use.');
+                return;
+            }
+        }
+        showStatusText('info', 'Still connecting. Reload this page in a moment to see the outcome.');
+    }
+
+    // What the connection is like right now, shown when the page opens: a
+    // connect that failed stays visible until it succeeds, also on a later
+    // visit. Left alone once the administrator has started something here.
+    async function showCurrentState() {
+        let d;
+        try {
+            const r = await fetch(BASE + 'setup/diagnostics');
+            if (!r.ok) return;
+            d = await r.json();
+        } catch (_) { return; }
+        if (statusBox.classList.contains('show') || statusInline.textContent) return;
+        if (d.state === 'failed' && d.lastError) {
+            if (d.connectError) showNamedError(d.connectError, d.lastError.error);
+            else showFailure(`Connecting to ${d.apiBaseUrl} failed (${d.lastError.category}): ${d.lastError.error}.`, d.lastError.remediation);
+        } else if (d.state === 'awaiting_email_verification') {
+            const to = d.verification && d.verification.maskedEmail;
+            showOutcome('info', `A code was e-mailed${to ? ` to ${to}` : ''}. Open Bee Flow to enter it.`, true);
+        } else if (d.state === 'ok') {
+            showOutcome('ok', d.organizationName ? `Connected to ${d.organizationName}.` : 'Connected.', true);
+        }
+    }
 
     btnTest.addEventListener('click', async () => {
         const url = targetUrl();
@@ -491,8 +709,8 @@
                     `<strong>Reachable.</strong> Server responded
                      <code>${esc(d.status)}</code>${d.version ? ` · version <code>${esc(d.version)}</code>` : ''}${d.tier ? ` · tier <code>${esc(d.tier)}</code>` : ''}.`);
             } else {
-                showStatus('err',
-                    `Could not reach <code>${esc(d.url)}</code>: ${esc(d.error || 'unknown')}.`);
+                const code = d.reason === 'certificate' ? 'certificate_not_trusted' : 'server_unreachable';
+                showNamedError({ code, error: texts.errors && texts.errors[code] }, d.error);
             }
         } catch (e) {
             showStatusText('err', `Test failed: ${e.message}`);
@@ -506,8 +724,17 @@
         const body = mode === 'cloud'
             ? { mode: 'cloud' }
             : { mode: 'self-hosted', apiBaseUrl: inputUrl.value.trim(), embedBaseUrl: inputWebUrl.value.trim() };
+        if (mode === 'self-hosted') {
+            const code = (inputPairingFirst.value || '').toUpperCase().trim();
+            if (code && !PAIRING_RE.test(code)) {
+                showStatusText('err', 'Pairing codes look like XXXX-XXXX (8 letters or digits, one dash).');
+                return;
+            }
+            if (code) body.pairingCode = code;
+        }
         btnSave.disabled = true;
-        statusInline.textContent = 'saving…';
+        btnTest.disabled = true;
+        statusInline.textContent = 'connecting…';
         try {
             const r = await fetch(BASE + 'setup', {
                 method: 'POST',
@@ -516,50 +743,84 @@
             });
             const d = await r.json();
             if (!r.ok) {
-                showStatusText('err', d.error || 'save failed');
-                btnSave.disabled = false;
+                // A named failure comes in the administrator's language.
+                if (d.code && texts.errors && texts.errors[d.code]) showNamedError(d, d.detail);
+                else showStatusText('err', d.error || 'save failed');
                 return;
             }
-            metaActive.textContent = d.saved.apiBaseUrl;
-            badgeCurrent.textContent = d.saved.mode === 'cloud' ? '☁️ Cloud' : '🏠 Self-hosted';
-            const probeMsg = d.probe?.ok
-                ? `Server is reachable.`
-                : `Saved, but the server isn't reachable yet (<code>${esc(d.probe?.error || 'unknown')}</code>). Check the URL or start the server, then retry the test.`;
-            showStatus(d.probe?.ok ? 'ok' : 'info',
-                `<strong>Saved.</strong> ${probeMsg}`);
+            if (d.probeError) {
+                showNamedError(d.probeError, d.probe && d.probe.error);
+            } else {
+                showStatusText('info', 'Connecting…');
+            }
+            inputPairingFirst.value = '';
+            await followOutcome(d.saved.apiBaseUrl, d.startedAt);
+            renderBadge();
         } catch (e) {
             showStatusText('err', `Save failed: ${e.message}`);
         } finally {
-            btnSave.disabled = envLocked;
+            refreshButtons();
             statusInline.textContent = '';
         }
     });
 
+    function renderBadge() {
+        if (envLocked) badgeCurrent.textContent = 'Fixed at install time';
+        else if (!active) badgeCurrent.textContent = 'Not set up yet';
+        else badgeCurrent.textContent = active === cloudUrl ? 'Bee Flow Cloud' : 'Self-hosted server';
+        // A first choice is "Connect"; after that the button saves a change.
+        btnSave.textContent = active ? 'Save and connect' : 'Connect';
+    }
+
     // Initial state
-    fetch(BASE + 'setup/status').then(r => r.json()).then(s => {
+    fetch(BASE + 'setup/status').then(async r => {
+        const s = await r.json();
+        if (firstRun) {
+            // Anything but a clear yes leaves the notice in place.
+            if (!r.ok || s.canConfigure !== true) return null;
+            document.body.classList.add('can-configure');
+        }
+        return s;
+    }).then(s => {
+        if (!s) return;
         cloudUrl = s.cloudUrl || cloudUrl;
-        metaActive.textContent = s.active;
+        texts = s.texts || texts;
+        active = s.active || null;
+        metaActive.textContent = active || 'none (no server chosen yet)';
         envLocked = !!s.envOverridden;
+        if (s.selfHostingDocsUrl) {
+            linkSelfHosting.href = s.selfHostingDocsUrl;
+            if (texts.selfHostingLink) linkSelfHosting.textContent = texts.selfHostingLink;
+            linkSelfHosting.style.display = '';
+        }
+        // Only where it applies: the install-time value is the literal Cloud
+        // address and no server is chosen.
+        if (s.legacyCloudEnv && !active && texts.literalCloudEnv) {
+            noteLiteralCloudEnv.textContent = texts.literalCloudEnv;
+            noteLiteralCloudEnv.classList.add('show');
+        }
         if (envLocked) {
             metaEnv.style.display = '';
-            cards.forEach(c => c.style.opacity = '0.5');
+            cards.forEach(c => { c.style.opacity = '0.6'; c.style.cursor = 'not-allowed'; });
             inputUrl.disabled = true;
             inputWebUrl.disabled = true;
-            btnSave.disabled = true;
-            btnTest.disabled = !s.active;
-            badgeCurrent.textContent = `🔒 Env-locked`;
-        } else if (s.chosen) {
-            badgeCurrent.textContent = s.chosen.mode === 'cloud' ? '☁️ Cloud' : '🏠 Self-hosted';
-            if (s.chosen.mode === 'self-hosted') {
-                inputUrl.value = s.chosen.apiBaseUrl;
-                inputWebUrl.value = s.chosen.embedBaseUrl || '';
+            inputPairingFirst.disabled = true;
+            mode = active === cloudUrl ? 'cloud' : 'self-hosted';
+            if (mode === 'self-hosted') inputUrl.value = active || '';
+            refreshButtons();
+        } else if (active) {
+            // The card of the server in use, whatever made the choice (this
+            // page, the settings form, an existing connection).
+            const isCloud = active === cloudUrl;
+            if (!isCloud) {
+                inputUrl.value = active;
+                inputWebUrl.value = (s.chosen && s.chosen.apiBaseUrl === active && s.chosen.embedBaseUrl) || '';
             }
-            setMode(s.chosen.mode);
-        } else {
-            badgeCurrent.textContent = '⚠️ Not configured';
-            // Default-select Cloud as the recommended path.
-            setMode('cloud');
+            setMode(isCloud ? 'cloud' : 'self-hosted');
         }
+        // No server chosen: no card is preselected, the administrator picks one.
+        renderBadge();
+        if (active) showCurrentState();
 
         // Public NC URL section
         const pnu = s.publicNcUrl || {};
@@ -609,7 +870,7 @@
             const code = (inputPairing.value || '').toUpperCase().trim();
             if (!/^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code)) {
                 statusPairingInline.textContent =
-                    '⚠️ Code must look like XXXX-XXXX (8 letters/digits + one dash).';
+                    'Code must look like XXXX-XXXX (8 letters/digits + one dash).';
                 return;
             }
             statusPairingInline.textContent = 'Redeeming code…';
@@ -626,11 +887,11 @@
                 pairingOutput.style.display = 'block';
                 if (d.ok) {
                     statusPairingInline.textContent =
-                        '✅ Bound to org ' + (d.organizationId || '?') + ' — reload the embedded app.';
+                        'Bound to org ' + (d.organizationId || '?') + ' — reload the embedded app.';
                     inputPairing.value = '';
                 } else {
                     statusPairingInline.textContent =
-                        '❌ ' + (d.error || 'redemption failed') +
+                        (d.error || 'redemption failed') +
                         (d.remediation ? ' — ' + d.remediation : '');
                 }
             } catch (err) {
@@ -662,11 +923,11 @@
                 rotateOutput.style.display = 'block';
                 if (d.ok) {
                     statusRotateInline.textContent =
-                        '✅ Rotated — fingerprint ' + d.previousTenantKeyFingerprint
+                        'Rotated: fingerprint ' + d.previousTenantKeyFingerprint
                         + ' → ' + d.tenantKeyFingerprint;
                 } else {
                     statusRotateInline.textContent =
-                        '❌ ' + (d.error || 'rotation failed');
+                        (d.error || 'rotation failed');
                 }
             } catch (err) {
                 statusRotateInline.textContent = 'Error: ' + err.message;
@@ -713,7 +974,7 @@
                 body: JSON.stringify({ spki: pendingSpki }),
             });
             const d = await r.json();
-            statusNcCertInline.textContent = d.ok ? '✅ Accepted for ' + d.accepted.join(', ') : '❌ ' + (d.error || 'failed');
+            statusNcCertInline.textContent = d.ok ? 'Accepted for ' + d.accepted.join(', ') : (d.error || 'failed');
             loadNcCert();
         } catch (err) {
             statusNcCertInline.textContent = 'Error: ' + err.message;
@@ -744,10 +1005,10 @@
                 clearCacheOutput.style.display = 'block';
                 if (d.ok) {
                     statusClearCacheInline.textContent =
-                        '✅ Cleared — org ' + (d.organizationId || '?') + ' re-bootstrapped.';
+                        'Cleared: org ' + (d.organizationId || '?') + ' re-bootstrapped.';
                 } else {
                     statusClearCacheInline.textContent =
-                        '❌ ' + (d.error || 'clear failed');
+                        (d.error || 'clear failed');
                 }
             } catch (err) {
                 statusClearCacheInline.textContent = 'Error: ' + err.message;
@@ -771,11 +1032,11 @@
                 diagnoseOutput.textContent = JSON.stringify(d, null, 2);
                 diagnoseOutput.style.display = 'block';
                 if (d.match === 'fingerprints_match') {
-                    statusDiagnoseInline.textContent = '✅ Keys match — auth failure is elsewhere.';
+                    statusDiagnoseInline.textContent = 'Keys match — auth failure is elsewhere.';
                 } else if (typeof d.match === 'string') {
-                    statusDiagnoseInline.textContent = '⚠️ ' + d.match;
+                    statusDiagnoseInline.textContent = d.match;
                 } else if (d.error) {
-                    statusDiagnoseInline.textContent = '❌ ' + d.error;
+                    statusDiagnoseInline.textContent = d.error;
                 } else {
                     statusDiagnoseInline.textContent = 'Done.';
                 }

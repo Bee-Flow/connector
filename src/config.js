@@ -5,9 +5,21 @@
  * container — see ExApp lifecycle docs:
  *   https://docs.nextcloud.com/server/32/developer_manual/exapp_development/development_overview/ExAppLifecycle.html
  *
- * BEEFLOW_TENANT_KEY and BEEFLOW_API_BASE_URL are configured by the customer
- * admin via `occ app_api:app:setenv bee_flow KEY VALUE` after install.
+ * BEEFLOW_TENANT_KEY and BEEFLOW_API_BASE_URL are optional install-time values
+ * (`occ app_api:app:register bee_flow <daemon> --env NAME=VALUE`, or the
+ * advanced deploy options in the Nextcloud UI). Without them an administrator
+ * chooses the Bee Flow server after installing; see serverChoice.js.
+ *
+ * A value given at install time is fixed: AppAPI replays it on every update
+ * and has no command to change it. Changing one means registering the app
+ * again (the data volume is kept unless `--rm-data` is passed). AppAPI passes
+ * only the variables info.xml declares.
  */
+
+const { envLock } = require('./serverChoice');
+const { parseAllowedUrl } = require('./remoteHost');
+const { intFromEnv } = require('./envValues');
+const log = require('./log');
 
 /** @param {string} name */
 function required(name) {
@@ -16,24 +28,83 @@ function required(name) {
     return v;
 }
 
+/**
+ * An install-time value as a log line shows it: without the user and password
+ * a URL may carry, and no longer than a line can hold.
+ * @param {unknown} raw
+ * @returns {string}
+ */
+function shownValue(raw) {
+    const value = String(raw || '').trim().replace(/\/\/[^/@\s]*@/, '//');
+    return value.length > 120 ? `${value.slice(0, 120)}…` : value;
+}
+
+/**
+ * BEEFLOW_EMBED_BASE_URL as a shell host: the URL without a trailing slash, or
+ * '' when it is blank or not a URL this connector fetches from.
+ * @param {unknown} raw
+ * @returns {string}
+ */
+function usableEmbedBaseUrl(raw) {
+    const value = String(raw || '').trim().replace(/\/+$/, '');
+    if (!value) return '';
+    try {
+        parseAllowedUrl(value, { label: 'BEEFLOW_EMBED_BASE_URL' });
+    } catch (err) {
+        log.warn(`[Config] ignoring BEEFLOW_EMBED_BASE_URL (${shownValue(value)}): ${err instanceof Error ? err.message : String(err)}`);
+        return '';
+    }
+    return value;
+}
+
+/**
+ * BEEFLOW_NC_PUBLIC_URL as the address the Bee Flow server calls this
+ * Nextcloud back on: the URL without a trailing slash, or null when it is
+ * blank or not an http(s) URL. A value that is not a URL fixes nothing: it is
+ * logged and ignored, and the address entered on the setup page (or
+ * NEXTCLOUD_URL) is used.
+ * @param {unknown} raw
+ * @returns {string | null}
+ */
+function usablePublicNcUrl(raw) {
+    const value = String(raw || '').trim().replace(/\/+$/, '');
+    if (!value) return null;
+    try {
+        const u = new URL(value);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('it must start with http:// or https://');
+    } catch (err) {
+        const why = err instanceof Error && /must start/.test(err.message) ? err.message : 'it is not a URL';
+        log.warn(`[Config] ignoring BEEFLOW_NC_PUBLIC_URL (${shownValue(value)}): ${why}. The public Nextcloud URL of the setup page, or NEXTCLOUD_URL, is used.`);
+        return null;
+    }
+    return value;
+}
+
 // Auto-bootstrap mode: when BEEFLOW_TENANT_KEY is unset or set to literal
-// "auto", the connector calls /auth/connector/bootstrap on first boot to
-// auto-provision an org + mint a tenant key. The result is cached in
-// APP_PERSISTENT_STORAGE (survives container restarts but not disk wipe).
-// This is what enables one-click install from the Nextcloud App Store —
-// the customer admin doesn't need to mint or paste any keys.
+// "auto", the connector calls /auth/connector/bootstrap on the server an
+// administrator chose, to provision an org + mint a tenant key. The result is
+// cached in APP_PERSISTENT_STORAGE (survives container restarts but not disk
+// wipe), so the admin doesn't need to mint or paste any keys. Without a chosen
+// server there is no bootstrap.
 const rawTenantKey = process.env.BEEFLOW_TENANT_KEY || 'auto';
 
-// Bee Flow Cloud's API. Same value as setupConfig.CLOUD_URL (that module
-// needs config, so it cannot be the source here).
-const CLOUD_API_BASE_URL = 'https://server.beeflow.nl';
-const envApiBaseUrl = (process.env.BEEFLOW_API_BASE_URL || '').trim().replace(/\/+$/, '');
+// Rule 1 of serverChoice.js: BEEFLOW_API_BASE_URL fixes the server when it is
+// the word `cloud` or the URL of a server. The literal Cloud URL is not a
+// lock and by itself not a choice.
+const serverLock = envLock(process.env.BEEFLOW_API_BASE_URL);
+if (serverLock.invalid) {
+    log.warn(`[Config] ignoring BEEFLOW_API_BASE_URL (${shownValue(process.env.BEEFLOW_API_BASE_URL)}): ${serverLock.invalid}`);
+}
 // Bee Flow Cloud's frontend, where the embedded SPA shell comes from while the
-// connector talks to Cloud. Same value as setupConfig.CLOUD_EMBED_URL. AppAPI injects this info.xml <default> like the one
-// above, so the same value is no lock either.
+// connector talks to Cloud. Same value as setupConfig.CLOUD_EMBED_URL. That
+// same value in BEEFLOW_EMBED_BASE_URL is no lock.
 const CLOUD_EMBED_BASE_URL = 'https://beeflow.nl';
-const envEmbedBaseUrl = (process.env.BEEFLOW_EMBED_BASE_URL || '').trim().replace(/\/+$/, '');
+// A value that is not the URL of a host (a stray word, a value AppAPI filled in
+// by itself) fixes nothing: it is ignored, exactly like an unusable
+// BEEFLOW_API_BASE_URL, and the shell host follows the server choice.
+const envEmbedBaseUrl = usableEmbedBaseUrl(process.env.BEEFLOW_EMBED_BASE_URL);
 const isAutoTenantKey = (rawTenantKey === 'auto' || rawTenantKey === '');
+const envPublicNcUrl = usablePublicNcUrl(process.env.BEEFLOW_NC_PUBLIC_URL);
 
 /**
  * @typedef {object} ConnectorConfig
@@ -45,13 +116,16 @@ const isAutoTenantKey = (rawTenantKey === 'auto' || rawTenantKey === '');
  * @property {string} persistentStorage
  * @property {string} nextcloudUrl
  * @property {string | null} nextcloudPublicUrl
- * @property {string | null} tenantKey        filled in at runtime (env, bootstrap cache or the bootstrap call)
+ * @property {boolean} nextcloudPublicUrlLocked  BEEFLOW_NC_PUBLIC_URL holds a URL: fixed at install time, the setup page does not change it
+ * @property {string | null} tenantKey        filled in at runtime (env, bootstrap cache or the bootstrap call); always null while no server is chosen
+ * @property {string | null} envTenantKey     an explicit BEEFLOW_TENANT_KEY (null in auto mode); it becomes tenantKey once a server is known
  * @property {boolean} isAutoTenantKey
  * @property {string | null} organizationId
  * @property {string | null} organizationName
  * @property {string | null} ncInstanceId
- * @property {string} apiBaseUrl
- * @property {boolean} apiBaseUrlLocked     BEEFLOW_API_BASE_URL names a server other than Cloud: the admin's lock
+ * @property {string | null} apiBaseUrl      the chosen Bee Flow server; null until an administrator chooses one
+ * @property {import('./serverChoice').ServerSource} serverSource  where apiBaseUrl came from at boot (serverChoice.js)
+ * @property {boolean} apiBaseUrlLocked     BEEFLOW_API_BASE_URL fixes the server (the word `cloud` or a server URL): the admin's lock
  * @property {string} embedBaseUrl
  * @property {boolean} embedBaseUrlLocked   BEEFLOW_EMBED_BASE_URL names a host other than Cloud's frontend: the admin's lock
  * @property {string | null} pairingCode
@@ -81,12 +155,17 @@ const config = {
     // the bootstrap claim sent to the SaaS uses the publicly-reachable URL
     // (e.g. an ngrok / cloudflared tunnel). Falls back to nextcloudUrl when
     // unset, which is correct for production (NC is publicly addressable).
-    nextcloudPublicUrl: (process.env.BEEFLOW_NC_PUBLIC_URL || '').replace(/\/+$/, '') || null,
+    nextcloudPublicUrl: envPublicNcUrl,
+    nextcloudPublicUrlLocked: !!envPublicNcUrl,
 
     // ── Customer-configured / auto-provisioned ─────────────────
     // tenantKey is filled in at runtime: either from env, or from the bootstrap
-    // cache file, or by calling the SaaS bootstrap endpoint. See bootstrap.js.
-    tenantKey: isAutoTenantKey ? null : rawTenantKey,
+    // cache file, or by calling the bootstrap endpoint of the chosen server.
+    // See bootstrap.js. No server means no key in memory: an explicit
+    // BEEFLOW_TENANT_KEY is applied here only when the env also fixes the
+    // server, and otherwise by serverChoice.applyAtBoot once a server is known.
+    tenantKey: (!isAutoTenantKey && serverLock.url) ? rawTenantKey : null,
+    envTenantKey: isAutoTenantKey ? null : rawTenantKey,
     isAutoTenantKey,
     // Cache for auto-provisioned tenant key + org id. Written by bootstrap.js.
     organizationId: null,
@@ -94,18 +173,20 @@ const config = {
     // the admin by /setup/clear-cache. Null until a binding is applied.
     organizationName: null,
     ncInstanceId: null,
-    // Override only for staging / on-prem. Default points at the Bee Flow dev
-    // environment.
-    apiBaseUrl: envApiBaseUrl || CLOUD_API_BASE_URL,
+    // The Bee Flow server. Null until one is known: at load only the env lock
+    // counts; serverChoice.applyAtBoot (server.js) then resolves what the
+    // install already holds (an existing binding, a saved choice), and the
+    // setup page or the settings form set it when an administrator chooses.
+    // Never an empty string or a placeholder.
+    apiBaseUrl: serverLock.url,
+    serverSource: serverLock.url ? 'env-lock' : 'none',
     // Whether BEEFLOW_API_BASE_URL is a deliberate admin lock that the /setup
     // picker, the admin settings form and the bound-server pin must not
-    // override. AppAPI exports every variable info.xml declares, with its
-    // <default> when nobody typed a value (ExAppEnvVarsHelper::
-    // normalizeAndValidate), so every App Store install runs with
-    // BEEFLOW_API_BASE_URL=https://server.beeflow.nl. Reading "set" as "locked"
-    // made the settings form a no-op and reverted a /setup switch on every
-    // restart. Only a value other than the Cloud default is a lock.
-    apiBaseUrlLocked: !!envApiBaseUrl && envApiBaseUrl !== CLOUD_API_BASE_URL,
+    // override: the word `cloud`, or the URL of a server. AppAPI replays the
+    // value it stored at install time on every update, so the literal Cloud
+    // URL can be present without anybody having typed it; that value is not a
+    // lock.
+    apiBaseUrlLocked: !!serverLock.url,
 
     // Upstream for the embedded SPA SHELL (index.html + hashed assets). The
     // connector proxies the shell from a frontend host's `/embed/` build
@@ -120,18 +201,22 @@ const config = {
     embedBaseUrlLocked: !!envEmbedBaseUrl && envEmbedBaseUrl !== CLOUD_EMBED_BASE_URL,
 
     // One-shot pairing code for binding this NC to an existing Bee Flow org
-    // (instead of creating a new one). Admin sets this via
-    // `occ app_api:app:setenv bee_flow BEEFLOW_PAIRING_CODE <CODE>` after
-    // generating the code in the existing org's Settings → Organisation →
-    // Nextcloud Sync panel. Consumed once at bootstrap; clear after.
+    // (instead of creating a new one). An install-time value, or entered on
+    // the setup page after generating the code in the existing org's
+    // Settings → Organisation → Nextcloud Sync panel. Consumed once at
+    // bootstrap; clear after.
     pairingCode: (process.env.BEEFLOW_PAIRING_CODE || '').trim().toUpperCase() || null,
 
     // ── Operational knobs ──────────────────────────────────────
     // JWT TTL — short on purpose. The SaaS treats every request as a new
     // bearer; we don't want a leaked token to be useful for long.
-    jwtTtlSeconds: parseInt(process.env.BEEFLOW_JWT_TTL_SECONDS || '300', 10),
-    // Skew tolerance for AppAPI signed-request timestamp.
-    sigSkewSeconds: parseInt(process.env.BEEFLOW_SIG_SKEW_SECONDS || '300', 10),
+    // Not an install-time option in info.xml; a value set on the container by
+    // hand is kept between 30 seconds and 15 minutes.
+    jwtTtlSeconds: intFromEnv('BEEFLOW_JWT_TTL_SECONDS', { fallback: 300, min: 30, max: 900 }),
+    // How far the timestamp of a signed request may differ from this host's
+    // clock. An install-time option (info.xml); blank or unusable means 300,
+    // and a value is kept between 30 seconds and 15 minutes.
+    sigSkewSeconds: intFromEnv('BEEFLOW_SIG_SKEW_SECONDS', { fallback: 300, min: 30, max: 900 }),
 };
 
 module.exports = config;

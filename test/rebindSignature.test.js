@@ -2,6 +2,10 @@
 // prove the binding with the tenant key it held: the server releases the key
 // only to a bootstrap signed with it (X-Beeflow-Sig). A switch to another
 // server never carries a signature made with the old server's key.
+//
+// Every test starts the way an install that is already connected starts: a
+// tenant-key cache bound to OLD on disk, resolved by serverChoice.applyAtBoot
+// (no install-time server), and the key loaded from that cache.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -16,20 +20,30 @@ const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-connector-rebind-'));
 process.env.APP_SECRET = 'test-secret';
 process.env.NEXTCLOUD_URL = 'http://nc.test';
 process.env.BEEFLOW_TENANT_KEY = 'auto';
-process.env.BEEFLOW_API_BASE_URL = 'https://server.beeflow.nl';
+delete process.env.BEEFLOW_API_BASE_URL; // no install-time server: the binding on disk names it
 process.env.APP_PERSISTENT_STORAGE = storage;
 process.env.BEEFLOW_BOOTSTRAP_RETRY_MS = '0';
 
 const { installFakeWorld } = require('./support/fakeWorld');
 const config = require('../src/config');
 const bootstrap = require('../src/bootstrap');
+const serverChoice = require('../src/serverChoice');
 
-function boundToOld() {
+async function boundToOld() {
     fs.writeFileSync(path.join(storage, 'tenant-key.json'), JSON.stringify({
         tenantKey: 'old-key', organizationId: 'org-old', ncInstanceId: 'inst-1', boundApiBaseUrl: OLD,
     }));
-    config.apiBaseUrl = OLD;
-    config.tenantKey = 'old-key';
+    // The boot: the binding names the server, the cache gives the key.
+    const choice = serverChoice.applyAtBoot(config, null);
+    assert.deepEqual(choice, { url: OLD, source: 'binding', locked: false });
+    const world = installFakeWorld();
+    try {
+        await bootstrap.bootstrapIfNeeded();
+        assert.equal(world.calls.length, 0, 'a connected install asks for nothing at boot');
+    } finally {
+        world.restore();
+    }
+    assert.equal(config.tenantKey, 'old-key');
 }
 
 /** @param {{ headers: Record<string, string>, body: string | null }} call */
@@ -46,7 +60,7 @@ test.after(() => {
 });
 
 test('a re-bootstrap on the same server is signed with the key it held', async () => {
-    boundToOld();
+    await boundToOld();
     const world = installFakeWorld({
         servers: { [OLD]: { 'POST /auth/connector/bootstrap': () => ({ tenantKey: 'old-key', organizationId: 'org-old' }) } },
     });
@@ -61,7 +75,7 @@ test('a re-bootstrap on the same server is signed with the key it held', async (
 });
 
 test('a switch to another server sends no signature made with the old key', async () => {
-    boundToOld();
+    await boundToOld();
     const world = installFakeWorld({
         servers: { [NEW]: { 'POST /auth/connector/bootstrap': () => ({ tenantKey: 'new-key', organizationId: 'org-new' }) } },
     });
@@ -76,9 +90,11 @@ test('a switch to another server sends no signature made with the old key', asyn
 });
 
 test('a later first-time bootstrap carries no signature', async () => {
+    // A server is chosen, but nothing is bound to it yet.
     fs.rmSync(path.join(storage, 'tenant-key.json'), { force: true });
-    config.apiBaseUrl = OLD;
-    config.tenantKey = null;
+    const choice = serverChoice.applyAtBoot(config, { apiBaseUrl: OLD });
+    assert.deepEqual(choice, { url: OLD, source: 'picker', locked: false });
+    assert.equal(config.tenantKey, null);
     const world = installFakeWorld({
         servers: { [OLD]: { 'POST /auth/connector/bootstrap': () => ({ tenantKey: 'k2', organizationId: 'org-2' }) } },
     });

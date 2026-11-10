@@ -108,7 +108,11 @@ const EXPECTED = [
     // Admin-only connector actions must NOT be absorbed by the USER catch-all.
     ['setup', 'GET', ACCESS.ADMIN],
     ['setup/rotate-tenant-key', 'POST', ACCESS.ADMIN],
-    ['setup/diagnostics', 'GET', ACCESS.ADMIN],
+    ['setup/status', 'GET', ACCESS.ADMIN],
+    ['setup/public-nc-url', 'POST', ACCESS.ADMIN],
+    // Open to signed-in users: the embedded app asks it for everybody, and the
+    // connector answers the diagnosis to administrators only (setup.js).
+    ['setup/diagnostics', 'GET', ACCESS.USER],
     ['webhook/nc-events', 'POST', ACCESS.ADMIN],
     // Nextcloud `webhook_listeners` deliveries. PUBLIC because the calling
     // background job has no user session; the X-Beeflow-Hook-Secret header is

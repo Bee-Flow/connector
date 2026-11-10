@@ -16,6 +16,7 @@
  */
 process.env.APP_SECRET = 'test-secret';
 process.env.NEXTCLOUD_URL = 'http://nc.test';
+process.env.BEEFLOW_API_BASE_URL = 'http://beeflow.test';
 process.env.BEEFLOW_TENANT_KEY = 'auto'; // no key yet — bootstrap in flight
 
 const test = require('node:test');

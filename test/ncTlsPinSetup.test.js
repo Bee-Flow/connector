@@ -13,6 +13,7 @@ const path = require('node:path');
 const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-nc-pin-setup-'));
 process.env.APP_SECRET = 'test-secret';
 process.env.NEXTCLOUD_URL = 'https://nc.test';
+process.env.BEEFLOW_API_BASE_URL = 'http://beeflow.test';
 process.env.BEEFLOW_TENANT_KEY = 'tenant-key';
 process.env.APP_PERSISTENT_STORAGE = storage;
 process.env.BEEFLOW_NC_TLS_INSECURE = '1'; // the self-signed mode

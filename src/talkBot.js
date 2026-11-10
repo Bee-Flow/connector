@@ -107,6 +107,19 @@ function postRegistration() {
 }
 
 /**
+ * AppAPI's answer on a Nextcloud without Talk (33-35): HTTP 400 with the OCS
+ * message "Talk bots could not be registered". A bot that is already
+ * registered is refused differently (an OCS 500, see registerTalkBot).
+ * @param {Response} res
+ * @returns {Promise<boolean>}
+ */
+async function saysNoTalkBots(res) {
+    if (res.status !== 400) return false;
+    const body = await res.clone().text().catch(() => '');
+    return /Talk bots could not be registered/i.test(body);
+}
+
+/**
  * Register the bot with Talk (via AppAPI) and keep the secret it returns.
  *
  * NOT idempotent upstream: AppAPI mints a new secret on every registration,
@@ -132,9 +145,9 @@ async function registerTalkBot() {
         return { ok: false, reason: 'request-failed' };
     }
 
-    if (res.status === 404 || res.status === 501) {
+    if (res.status === 404 || res.status === 501 || await saysNoTalkBots(res)) {
         // Talk not installed. Perfectly normal — chat triggers are simply
-        // unavailable on this instance.
+        // unavailable on this instance. Nothing is removed: there is no bot.
         log.info('[TalkBot] Talk is not installed on this Nextcloud — chat triggers unavailable.');
         return { ok: false, reason: 'talk-missing' };
     }

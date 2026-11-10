@@ -15,10 +15,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const express = require('express');
+const { installValues, CONNECTED } = require('./support/installValues');
 
-process.env.APP_SECRET = 'test-secret';
-process.env.NEXTCLOUD_URL = 'http://127.0.0.1:1';
-process.env.BEEFLOW_TENANT_KEY = 'tenant-key';
+installValues({ ...CONNECTED, nextcloudUrl: 'http://127.0.0.1:1' });
 
 const config = require('../src/config');
 const rateLimit = require('../src/rateLimit');

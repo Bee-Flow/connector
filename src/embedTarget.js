@@ -17,6 +17,9 @@
  *      switch can never pair one server's API with another's frontend.
  *   4. A self-hosted server without a web app URL gets the shell baked into
  *      this image (null here). No request goes to beeflow.nl.
+ *
+ * Ahead of all four: while no server is chosen there is no shell host at all
+ * (null), also with the lock of rule 1.
  */
 
 'use strict';
@@ -28,6 +31,9 @@ function shellBaseUrl() {
     // Read per call, not at import: the live config object is the one the
     // pickers write to (and the one a test rebuilds).
     const config = require('./config');
+    // No server chosen: no shell host either, whatever BEEFLOW_EMBED_BASE_URL
+    // says. Nothing is fetched from a Bee Flow host before the choice.
+    if (!config.apiBaseUrl) return null;
     if (config.embedBaseUrlLocked) return config.embedBaseUrl;
     if (config.apiBaseUrl === setupConfig.CLOUD_URL) return setupConfig.CLOUD_EMBED_URL;
     const stored = setupConfig.get();

@@ -9,6 +9,25 @@ The Nextcloud App Store reads the entry whose heading matches `<version>` in `ap
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-10
+
+### Changed
+- **Supported Nextcloud versions are now 33 to 35.** Nextcloud 32 reached end of life in September 2026 (last release 32.0.15), so listing it promised support that could not be honoured. An installation on Nextcloud 32 keeps the connector version it has and gets no newer one until Nextcloud is upgraded.
+
+### Security
+- **The install and enable hooks now require Nextcloud's shared secret.** `/init` and `/enabled` used to answer a caller without it, limited to three calls per fifteen minutes, so another container on the Nextcloud docker network could make the connector re-run its registrations against your Nextcloud. Nextcloud signs both calls on every supported version (32 to 35), so they are now refused with a 401 otherwise. If Nextcloud and the container hold different secrets, the install now fails with that error instead of appearing to succeed.
+
+- **The connector runs as an unprivileged user.** The container still starts as root for the steps that need it (the trust store and the certificates HaRP mounts) and then runs the connector itself as `node`; its storage is handed to that user at start. Set `BEEFLOW_RUN_AS=root` to keep the old behaviour.
+- **Registering again with Bee Flow proves the existing binding.** When the connector drops its key and registers again, it signs the request with the key it held, and Bee Flow releases an existing binding only to that proof. A connector that can no longer prove it (lost storage, for example) asks for a pairing code instead of silently taking the binding over.
+- **The metadata-address block also covers the hexadecimal IPv6 form.** A server address such as `[::ffff:a9fe:a9fe]` is the cloud metadata address `169.254.169.254` written differently and was not recognised as such.
+
+### Fixed
+- **An Assistant answer that Nextcloud did not accept is sent again.** When Nextcloud answered the result of a task with an error, the connector dropped it without a log line and the task kept spinning. It now retries twice and logs what Nextcloud answered.
+- **A long Talk answer with an emoji at the cut is delivered.** Answers are cut at Talk's 32,000 characters; when the cut fell in the middle of an emoji, Talk refused the whole message and the person who asked got nothing.
+- **A Nextcloud that is still starting when the connector boots is no longer taken for one with a self-signed certificate.** The boot-time certificate check treated every failed connection (refused, no DNS, timeout, a plain-HTTP port) as an untrusted certificate, which put an install with a valid public certificate in the relaxed, pinned posture and, since 1.6.6, recorded a certificate pin under that wrong decision. The check now tells a certificate problem from a connection problem, retries an unreachable Nextcloud for up to 30 seconds (`BEEFLOW_NC_TLS_PROBE_BUDGET_MS`), and keeps strict verification when it stays unreachable. A certificate the public roots trust is never pinned, also when the relaxed posture is active, and supersedes an older self-signed pin. A peer that closed mid-handshake used to hang the boot check.
+- **Many requests of one person at once no longer each ask Nextcloud who they are.** When the cached account of a user had just expired, every request of a page load made its own account lookup, and on installs that reach the connector through Nextcloud's PHP proxy those lookups could wait behind the very requests that caused them until they timed out, which showed the sign-in screen. Concurrent lookups for one account now share a single call, an expired account is used at once and refreshed behind the request, and a throttled (429) or timed-out (408) answer from Nextcloud is retried like a network error instead of being taken as a verdict on the account.
+- **The connector's state files survive a crash while they are written.** The binding key and the pending and error files were emptied before they were rewritten, so a crash or a reader at that moment saw an empty file and the connector could lose its binding. They are now written to a temporary file and moved into place.
+
 ## [1.6.7] - 2026-10-28
 
 ### Fixed

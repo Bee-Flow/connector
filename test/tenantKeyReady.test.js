@@ -149,6 +149,27 @@ test('M2: a first bootstrap that fails on the network is retried by itself', asy
     }
 });
 
+test('an existing binding without proof is reported as needing a pairing code', async () => {
+    reset();
+    let attempts = 0;
+    const world = installFakeWorld({
+        servers: {
+            [SAAS]: {
+                'POST /auth/connector/bootstrap': () => { attempts += 1; return json({ error: 'already bound', code: 'NC_REBIND_PROOF_REQUIRED' }, 403); },
+            },
+        },
+    });
+    try {
+        await assert.rejects(bootstrap.bootstrapIfNeeded(), /HTTP 403/);
+        await new Promise((r) => setTimeout(r, 150));
+        assert.equal(attempts, 1);
+        assert.equal(bootstrap.getLastErrorState()?.category, 'pairing_required');
+        assert.equal(bootstrap.getLastErrorState()?.nextRetryAt, null);
+    } finally {
+        world.restore();
+    }
+});
+
 test('M2: a rejection the admin has to fix is not retried', async () => {
     reset();
     let attempts = 0;

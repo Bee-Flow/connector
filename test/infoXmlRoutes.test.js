@@ -166,8 +166,8 @@ test('the supported-version floor tracks Nextcloud maintenance, not history', ()
     const dep = xml.match(/<nextcloud\s+min-version="(\d+)"\s+max-version="(\d+)"/);
     assert.ok(dep, '<nextcloud min-version/max-version> must be declared');
     const min = Number(dep[1]);
-    assert.ok(min >= 32,
-        `min-version ${min}: Nextcloud 31 reached end-of-life in February 2026 — `
+    assert.ok(min >= 33,
+        `min-version ${min}: Nextcloud 32 reached end-of-life in September 2026 — `
         + 'claiming it promises support that cannot be honoured');
     assert.ok(Number(dep[2]) >= min);
 });

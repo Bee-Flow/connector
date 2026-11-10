@@ -458,7 +458,12 @@ async function _sendBotMessage(token, msg, replyTo) {
  * @param {string | number | null | undefined} [replyTo]
  */
 async function postBotMessage(token, message, replyTo) {
-    const msg = String(message || '').slice(0, 32000);
+    // Talk's limit is 32,000 characters. slice() counts UTF-16 units, so it can
+    // cut an emoji in half; the lone high surrogate that leaves behind makes
+    // PHP's json_decode reject the whole body. Drop it.
+    let msg = String(message || '').slice(0, 32000);
+    const last = msg.charCodeAt(msg.length - 1);
+    if (last >= 0xD800 && last <= 0xDBFF) msg = msg.slice(0, -1);
     if (!msg) return;
     let res = await _sendBotMessage(token, msg, replyTo);
     // A stale/invalid replyTo (deleted message, or one the bot can't see) makes
@@ -594,6 +599,7 @@ module.exports = Object.assign(router, {
     mentionsBot,
     extractQuestion,
     handleMention,
+    _postBotMessage: postBotMessage,
     talkConversationToken,
     BOT_ROUTE,
     BOT_NAME,

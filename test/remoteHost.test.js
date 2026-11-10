@@ -75,3 +75,15 @@ test('an unresolvable host is not treated as a security failure', async () => {
     const url = await assertAllowedUrl('https://does-not-exist.invalid/', { label: 'test' });
     assert.equal(url.hostname, 'does-not-exist.invalid');
 });
+
+test('the v4-mapped spelling is refused in the form the URL parser writes it', async () => {
+    // new URL('http://[::ffff:169.254.169.254]/').hostname is '[::ffff:a9fe:a9fe]':
+    // the dotted pattern alone let that URL through to the metadata service.
+    assert.equal(isBlockedAddress('::ffff:a9fe:a9fe'), true);
+    assert.equal(isBlockedAddress('[::ffff:6464:64c8]'), true); // 100.100.100.200
+    assert.equal(isBlockedAddress('::ffff:c0a8:10a'), false); // 192.168.1.10 stays allowed
+    refuses('http://[::ffff:169.254.169.254]/latest/meta-data/', 'blocked_host');
+    await assert.rejects(
+        () => assertAllowedUrl('http://[::ffff:100.100.100.200]/', { label: 'test' }),
+        (err) => err.code === 'blocked_host');
+});

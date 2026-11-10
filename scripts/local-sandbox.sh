@@ -73,7 +73,7 @@
 #
 # Env overrides:
 #   NC_VERSION=35      NC_PORT=8080  APP_ID=bee_flow
-#                      (info.xml supports 32–35. Pin to NC_VERSION=35.0.0 /
+#                      (info.xml supports 33–35. Pin to NC_VERSION=35.0.0 /
 #                       34.0.4 / etc. for reproducibility. Note "stable" on
 #                       Docker Hub still tracks 34.x, so it would pull the
 #                       worker back a major against a 35 volume.)

@@ -54,7 +54,7 @@ Full privacy policy: <https://beeflow.nl/privacy>.
 
 Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We support Bee Flow Cloud and can also help you get Bee Flow running on a self-managed or self-hosted Nextcloud.
         ]]></description>
-    <version>1.6.7</version>
+    <version>1.7.0</version>
     <licence>AGPL-3.0-or-later</licence>
     <author mail="tomkooy@beeflow.nl" homepage="https://beeflow.nl/">Bee Flow B.V.</author>
     <namespace>BeeFlow</namespace>
@@ -102,7 +102,7 @@ Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We su
              support we could not honour. 35 is the next major (ships
              2026-09-16); its external API froze on 2026-08-07, so it is
              testable now. -->
-        <nextcloud min-version="32" max-version="35"/>
+        <nextcloud min-version="33" max-version="35"/>
     </dependencies>
     <!--
         Push triggers (new file, tag assigned, calendar change, Forms
@@ -180,7 +180,10 @@ Questions, or want a hand getting set up? Email us at **info@beeflow.nl**. We su
               ^api/                           → SaaS-proxied REST/SSE endpoints
               ^auth/                          → SaaS-proxied auth + OAuth flows
               ^heartbeat, ^init, ^enabled     → AppAPI lifecycle hooks
-              ^webhook/nc-events              → NC events_listener forwarder
+              ^webhook/nc-events              → legacy user/group sync bridge (AppAPI's
+                                                events_listener API is gone; nothing
+                                                delivers here today)
+              ^hooks/nextcloud, ^hooks/talk   → webhook_listeners and Talk bot deliveries
               ^hooks/studio-menus             → Bee Flow push: "re-sync the app menu now" (HMAC)
               ^nc/                            → reverse proxy back to NC (HMAC)
         -->

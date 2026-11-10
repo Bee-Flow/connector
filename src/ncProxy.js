@@ -23,11 +23,19 @@
  * Anyone else hitting /nc/* gets 401. Without this, a malicious SPA could call
  * /nc/* directly and impersonate any NC user.
  *
- * The body hash is load-bearing, not decoration. Every write verb is tunnelled
- * over POST + X-HTTP-Method-Override (AppAPI's proxy rejects raw PROPFIND /
- * PUT / MOVE …), so a signature that covered only method+path would be a
- * five-minute licence to overwrite that exact file with arbitrary content. A
- * replay cache closes the matching hole for byte-identical retries.
+ * The body hash is load-bearing, not decoration. Every verb but GET and POST is
+ * tunnelled over POST + X-HTTP-Method-Override (AppAPI's PHP proxy only has
+ * routes for GET, POST, PUT and DELETE), so a signature that covered only
+ * method+path would be a licence, for as long as the skew window lasts, to
+ * overwrite that exact file with arbitrary content.
+ *
+ * Two limits of what is actually enforced, so nobody reads more into it:
+ *   - There is NO replay cache (see "On replay" above bodyHashOf). Inside the
+ *     skew window a captured request can be sent again byte for byte.
+ *   - verifyHmac still accepts the pre-body-hash "v1" message for an older
+ *     Bee Flow server. A captured v1 signature therefore does not bind the
+ *     body. No current server signs v1; the form goes once the removal
+ *     criterion in verifyHmac is met.
  *
  * Routes proxied (everything else returns 404):
  *   /nc/ocs/*               → /ocs/...                  (provisioning, capabilities, etc.)

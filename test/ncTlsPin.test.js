@@ -180,3 +180,25 @@ test('an unreadable pin file refuses every connection instead of pinning afresh'
     assert.equal(server.seen.length, 0);
     assert.ok(log.lines.some(([lvl]) => lvl === 'warn'));
 });
+
+// #453: the relaxed posture is also entered when Nextcloud was merely
+// unreachable while the boot helper decided. A certificate the public roots
+// trust is then never pinned, and it supersedes an older self-signed pin.
+test('a certificate Node itself authorizes is accepted without a pin, also over a different recorded pin', () => {
+    const log = quietLog();
+    const file = path.join(work, 'pins-authorized.json');
+    fs.writeFileSync(file, JSON.stringify({ pins: { 'nc.example:443': { spki: 'sha256/old-self-signed', since: '2026-01-01T00:00:00.000Z' } }, pending: {} }));
+    const store = createPinStore({ file, log });
+    const fakeChain = { raw: Buffer.from('not-read'), issuerCertificate: null };
+    const socket = { authorized: true, getPeerCertificate: () => fakeChain };
+
+    assert.equal(store.check('nc.example:443', socket), null, 'accepted');
+    assert.equal(store.check('nc.fresh:443', socket), null, 'accepted for a host without a pin');
+    const snap = store.snapshot();
+    assert.equal(snap.pins['nc.fresh:443'], undefined, 'nothing pinned for a publicly valid certificate');
+    assert.equal(snap.pins['nc.example:443'].spki, 'sha256/old-self-signed', 'the old pin is left alone, not rewritten');
+    assert.deepEqual(snap.pending, {}, 'nothing pending');
+    assert.equal(log.lines.filter(([, m]) => /not pinning/.test(m)).length, 2, 'one line per host');
+    store.check('nc.example:443', socket);
+    assert.equal(log.lines.filter(([, m]) => /not pinning/.test(m)).length, 2, 'logged once per host');
+});

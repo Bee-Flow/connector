@@ -28,6 +28,7 @@ const log = require('./log');
  */
 
 const fs = require('fs').promises;
+const { writeFileAtomic } = require('./atomicWrite');
 const path = require('path');
 const jwt = require('jsonwebtoken');
 const config = require('./config');
@@ -136,7 +137,7 @@ async function writeCache(data) {
     const cachePath = path.join(config.persistentStorage, CACHE_FILE);
     try {
         await fs.mkdir(config.persistentStorage, { recursive: true });
-        await fs.writeFile(cachePath, JSON.stringify(data, null, 2), { mode: 0o600 });
+        await writeFileAtomic(cachePath, JSON.stringify(data, null, 2));
     } catch (e) {
         log.warn(`[Bootstrap] Could not persist tenant key to ${cachePath}: ${errMessage(e)}`);
     }
@@ -162,7 +163,7 @@ async function writePendingFile(data) {
     const p = path.join(config.persistentStorage, PENDING_FILE);
     try {
         await fs.mkdir(config.persistentStorage, { recursive: true });
-        await fs.writeFile(p, JSON.stringify(data, null, 2), { mode: 0o600 });
+        await writeFileAtomic(p, JSON.stringify(data, null, 2));
     } catch (e) {
         log.warn(`[Bootstrap] Could not persist pending state to ${p}: ${errMessage(e)}`);
     }
@@ -195,12 +196,18 @@ async function fetchCapabilities() {
     let instanceId = data?.capabilities?.theming?.instanceid
         || data?.capabilities?.core?.instanceid;
     if (!instanceId) {
-        // No stable id from NC. Derive one from the public base URL host (the
-        // same value we send as X-Beeflow-NC-Base-Url and that the SaaS
-        // re-derives) so it doesn't change when NC is upgraded — which would
-        // otherwise create a duplicate org on the next re-bootstrap.
+        // This is the normal case, not an exception: Nextcloud 32-35 publishes
+        // no instance id in its capabilities (OC\OCS\CoreCapabilities has
+        // pollinterval, webdav-root, reference-api, reference-regex and
+        // mod-rewrite-working; the theming capabilities have none either), so
+        // the two reads above only ever match a server that adds one.
+        // Derive the id from the public base URL host (the same value we send
+        // as X-Beeflow-NC-Base-Url and that the SaaS re-derives) so it doesn't
+        // change when NC is upgraded — which would otherwise create a duplicate
+        // org on the next re-bootstrap. It DOES change when that host changes;
+        // the cached tenant key file keeps the id it was bootstrapped with.
         instanceId = stableInstanceIdFallback(config.nextcloudPublicUrl || config.nextcloudUrl, themingName);
-        log.warn(`[Bootstrap] NC exposes no theming/core instanceid; using stable host fallback '${instanceId}'`);
+        log.info(`[Bootstrap] Nextcloud publishes no instance id in its capabilities; using the host-derived id '${instanceId}'`);
     }
     return { instanceId, themingName, version: data?.version?.string || 'unknown' };
 }
@@ -440,7 +447,7 @@ async function writeErrorFile(data) {
     const p = path.join(config.persistentStorage, ERROR_FILE);
     try {
         await fs.mkdir(config.persistentStorage, { recursive: true });
-        await fs.writeFile(p, JSON.stringify(data, null, 2), { mode: 0o600 });
+        await writeFileAtomic(p, JSON.stringify(data, null, 2));
     } catch (e) {
         log.warn(`[Bootstrap] Could not persist error state to ${p}: ${errMessage(e)}`);
     }
@@ -465,6 +472,8 @@ const SAAS_CODE_TO_CATEGORY = {
     pending_admin_approval: 'awaiting_admin_approval',
     org_create_failed: 'saas_transient',
     pairing_required: 'pairing_required',
+    // An existing binding the connector can no longer prove: a pairing code rebinds it.
+    NC_REBIND_PROOF_REQUIRED: 'pairing_required',
 };
 
 // Categorise a thrown error into one of the well-known buckets that the
@@ -812,6 +821,31 @@ let _bootstrapInFlight = null;
 // answers, its result belongs to the abandoned target and is dropped instead
 // of overwriting the newer binding.
 let _provisionGeneration = 0;
+// The tenant key a re-bootstrap (invalidateAndRebootstrap) held before it
+// dropped its cache, with the server it belongs to. The server releases an
+// existing binding only to a bootstrap signed with that key (X-Beeflow-Sig);
+// it is used for that one server only and cleared when the re-bootstrap ends.
+/** @type {{ key: string, apiBaseUrl: string } | null} */
+let _rebindKey = null;
+
+const BOOTSTRAP_PATH = '/auth/connector/bootstrap';
+
+/** @param {string | null | undefined} url */
+const sameServer = (url) => String(url || '').replace(/\/+$/, '') === String(config.apiBaseUrl || '').replace(/\/+$/, '');
+
+/**
+ * X-Beeflow-Sig for a bootstrap body, the scheme every connector-to-server
+ * call uses: HMAC-SHA256 over `ts\nPOST\n<path>\n<body>` with the tenant key.
+ * Null when no key for the current server is held.
+ * @param {string} body
+ */
+function rebindSignature(body) {
+    if (!_rebindKey || !sameServer(_rebindKey.apiBaseUrl)) return null;
+    const ts = Math.floor(Date.now() / 1000);
+    const sig = require('crypto').createHmac('sha256', _rebindKey.key)
+        .update(`${ts}\nPOST\n${BOOTSTRAP_PATH}\n${body}`).digest('hex');
+    return `${ts}.${sig}`;
+}
 /**
  * @returns {Promise<void>}
  */
@@ -943,14 +977,18 @@ async function _provisionFlow() {
             headers['X-Beeflow-Pairing-Code'] = config.pairingCode;
             log.info(`[Bootstrap] Attaching pairing code ${config.pairingCode.slice(0, 4)}*** for redemption`);
         }
-        res = await fetch(`${config.apiBaseUrl}/auth/connector/bootstrap`, {
+        // ncAdmins carries EVERY NC admin (with email) so the SaaS can
+        // provision them all as org_admins. The X-Beeflow-NC-Admin-* headers
+        // above still carry the primary (admins[0]) for backward compat with
+        // SaaS versions that predate ncAdmins.
+        const body = JSON.stringify({ themingName: caps.themingName, version: caps.version, ncAdmins: admins });
+        // A re-bootstrap of an existing binding proves it with the key it held.
+        const sig = rebindSignature(body);
+        if (sig) headers['X-Beeflow-Sig'] = sig;
+        res = await fetch(`${config.apiBaseUrl}${BOOTSTRAP_PATH}`, {
             method: 'POST',
             headers,
-            // ncAdmins carries EVERY NC admin (with email) so the SaaS can
-            // provision them all as org_admins. The X-Beeflow-NC-Admin-* headers
-            // above still carry the primary (admins[0]) for backward compat with
-            // SaaS versions that predate ncAdmins.
-            body: JSON.stringify({ themingName: caps.themingName, version: caps.version, ncAdmins: admins }),
+            body,
             signal: AbortSignal.timeout(15_000),
         });
     } catch (err) {
@@ -1082,6 +1120,8 @@ async function invalidateAndRebootstrap({ pairingCode, apiBaseUrl } = {}) {
         cacheFile: null,
         pairingCode: config.pairingCode,
     };
+    const rebindKey = prev.tenantKey && prev.apiBaseUrl ? { key: prev.tenantKey, apiBaseUrl: prev.apiBaseUrl } : null;
+    _rebindKey = rebindKey;
     if (apiBaseUrl) config.apiBaseUrl = apiBaseUrl.replace(/\/+$/, '');
     const cachePath = path.join(config.persistentStorage, CACHE_FILE);
     try {
@@ -1131,9 +1171,11 @@ async function invalidateAndRebootstrap({ pairingCode, apiBaseUrl } = {}) {
         pendingState = null;
         await deletePendingFile();
         if (prev.cacheFile) {
-            await fs.writeFile(cachePath, prev.cacheFile, { mode: 0o600 }).catch(() => {});
+            await writeFileAtomic(cachePath, prev.cacheFile).catch(() => {});
         }
         throw err;
+    } finally {
+        if (_rebindKey === rebindKey) _rebindKey = null;
     }
 }
 

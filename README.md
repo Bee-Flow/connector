@@ -4,7 +4,7 @@
 
 ExApp / AppAPI connector that lets a Nextcloud instance host the Bee Flow workspace UI and forward authenticated requests to the Bee Flow SaaS.
 
-App ID: `bee_flow` · Compatible with Nextcloud 32–35 · Requires the AppAPI shipped with those releases.
+App ID: `bee_flow` · Compatible with Nextcloud 33–35 · Requires the AppAPI shipped with those releases.
 
 > AppAPI stopped publishing standalone versions after 3.2.0 and now versions in
 > lockstep with the Nextcloud major (32.0.0, 33.0.0, …), so "AppAPI ≥ 3.2" no

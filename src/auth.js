@@ -15,8 +15,8 @@
  *
  * userId is empty for service-level calls (no human in the loop) and a
  * Nextcloud uid otherwise. We mint a SaaS-bound JWT only for human-bound
- * calls; service-level calls don't reach the proxy here (they hit lifecycle
- * endpoints which are exempt).
+ * calls; service-level calls don't reach the proxy here (they hit /init,
+ * /enabled and /trigger, which need the secret but no user).
  */
 
 const crypto = require('crypto');
@@ -36,21 +36,32 @@ const HDR = {
     requestId: 'aa-request-id',
 };
 
-// AppAPI 5.x sends NO auth header on the lifecycle calls (test/lifecycle.test.js),
-// so these three are let through before a single header is parsed — the check
-// below never runs for them. That is not the same as "they are unauthenticated
-// by design": info.xml declares /init and /enabled ADMIN, and the connector binds
-// 0.0.0.0 on a docker network it shares with every other ExApp. Because the gate
-// cannot see them, each route carries its own check — see heartbeat.js
-// (isTrustedLifecycleCaller + untrustedLifecycleAllowed). Adding a lifecycle route
-// here without one leaves it open to every container on that network.
-const LIFECYCLE_PATHS = new Set(['/heartbeat', '/init', '/enabled']);
+// AppAPI sends NO auth header on /heartbeat (it polls it before the install has
+// got far enough for anything else), so that one path is let through before a
+// single header is parsed. heartbeat.js decides per caller how much it
+// discloses (isTrustedLifecycleCaller).
+const LIFECYCLE_PATHS = new Set(['/heartbeat']);
+
+// /init and /enabled are NOT in that set. AppAPI signs both with the shared
+// secret and an empty userId, base64(":" + APP_SECRET):
+//   - /init:    AppAPIService::dispatchExAppInitInternal posts with
+//               buildAppAPIAuthHeaders(null, null, $exApp)
+//   - /enabled: AppAPIService::enableExApp / disableExApp go through
+//               requestToExApp, which adds the same headers
+// Read in nextcloud/app_api on stable32, stable33, stable34 and stable35 (the
+// versions info.xml supports); HaRP forwards the header unchanged. An earlier
+// revision assumed AppAPI sent no header here and let both through
+// unauthenticated behind a rate budget; the connector binds 0.0.0.0 on a docker
+// network it shares with every other ExApp, so that left /init (about 42 OCS
+// writes into the customer's Nextcloud per call) reachable by any neighbour.
+// They pass once the secret is verified, whatever the userId part says.
+const SIGNED_LIFECYCLE_PATHS = new Set(['/init', '/enabled']);
 
 // Service-level AppAPI calls that carry the shared secret but NO user context.
 // AppAPI's Task Processing trigger (ITriggerableProvider) calls the ExApp at
 // POST /trigger?providerId=… via requestToExApp with a null userId, so the
 // header is base64(":"+APP_SECRET) — a valid secret, empty userId. These paths
-// must run rather than 401, but UNLIKE the lifecycle paths they still pass the
+// must run rather than 401, but UNLIKE /heartbeat they still pass the
 // constant-time secret check below (they are allow-listed in the empty-userId
 // branch, not in LIFECYCLE_PATHS which skips the secret entirely).
 // The /setup routes that still answer while Nextcloud's certificate is refused
@@ -144,6 +155,20 @@ const USER_CACHE_TTL_MS = 60_000;
 const USER_STALE_TTL_MS = 24 * 60 * 60 * 1000;
 const USER_LOOKUP_RETRY_DELAY_MS = 250;
 
+// One lookup per uid at a time (#454). A page load fires ten to thirty
+// requests for the same user at once; when the entry has just expired every
+// one of them used to make its own OCS call. On an install that reaches the
+// connector through Nextcloud's PHP proxy each browser request already holds
+// a PHP worker while it waits here, and each of these calls needs another
+// one, so a burst could occupy the whole pool and time every lookup out.
+/** @type {Map<string, Promise<NextcloudUser>>} */
+const _lookupsInFlight = new Map();
+// Nextcloud answers that are not a verdict on the user: a throttle or a
+// request timeout is retried like a network error, and the stale user may
+// stand in. Every other 4xx (unknown user, refused secret) stands.
+const TRANSIENT_4XX = /HTTP 4(08|29)\b/;
+let _lastRefreshWarnAt = 0;
+
 /**
  * One OCS call for the user, no caching.
  * @param {string} uid
@@ -184,6 +209,77 @@ async function lookupNextcloudUser(uid) {
 }
 
 /**
+ * @param {unknown} err
+ * @returns {boolean} true when Nextcloud answered with a verdict on the user (a 4xx other than a throttle or timeout)
+ */
+function isVerdict(err) {
+    const msg = errMessage(err);
+    return /HTTP 4\d\d/.test(msg) && !TRANSIENT_4XX.test(msg);
+}
+
+/**
+ * The lookup with its one retry, coalesced per uid. Resolves with the user
+ * and stores it; rejects with Nextcloud's verdict or the last transient error.
+ * @param {string} uid
+ * @returns {Promise<NextcloudUser>}
+ */
+function lookupCoalesced(uid) {
+    const running = _lookupsInFlight.get(uid);
+    if (running) return running;
+    const p = (async () => {
+        /** @type {NextcloudUser} */
+        let user;
+        try {
+            user = await lookupNextcloudUser(uid);
+        } catch (first) {
+            // A 4xx is Nextcloud's verdict (unknown user, refused secret) and
+            // stands; a timeout, a reset, a throttle or a 5xx gets one more try.
+            if (isVerdict(first)) throw first;
+            await new Promise((resolve) => setTimeout(resolve, USER_LOOKUP_RETRY_DELAY_MS));
+            user = await lookupNextcloudUser(uid);
+        }
+        const now = Date.now();
+        // Re-insert so the Map keeps insertion order as recency: the eviction
+        // below then drops the least recently refreshed user, not the first
+        // one ever seen.
+        _userCache.delete(uid);
+        _userCache.set(uid, { user, expiresAt: now + USER_CACHE_TTL_MS, staleUntil: now + USER_STALE_TTL_MS });
+        // Bound the cache so churn on a busy NC instance can't leak memory.
+        if (_userCache.size > 1000) {
+            const oldest = _userCache.keys().next().value;
+            if (oldest) _userCache.delete(oldest);
+        }
+        return user;
+    })().finally(() => _lookupsInFlight.delete(uid));
+    _lookupsInFlight.set(uid, p);
+    return p;
+}
+
+/**
+ * Refresh an expired entry without holding the request. A verdict drops the
+ * entry so the next request asks Nextcloud and gets that verdict itself; a
+ * transient failure keeps the stale user for up to a day.
+ * @param {string} uid
+ */
+function refreshInBackground(uid) {
+    if (_lookupsInFlight.has(uid)) return;
+    lookupCoalesced(uid).catch((err) => {
+        if (isVerdict(err)) {
+            _userCache.delete(uid);
+            return;
+        }
+        const now = Date.now();
+        if (now - _lastRefreshWarnAt < 60_000) return;
+        _lastRefreshWarnAt = now;
+        log.warn(`[Auth] Refreshing the Nextcloud user for ${log.ref(uid)} failed twice (${errMessage(err)}); the user from the last lookup stands in for up to a day`);
+    });
+}
+
+/**
+ * The user for a request. A fresh entry answers at once; an expired one
+ * answers at once too and is refreshed behind the request (the embedded app
+ * used to show its sign-in screen whenever the refresh of a busy user hit a
+ * blip); only a uid this process has never resolved waits for Nextcloud.
  * @param {string} uid
  * @returns {Promise<NextcloudUser>}
  */
@@ -191,34 +287,19 @@ async function fetchNextcloudUser(uid) {
     const now = Date.now();
     const cached = _userCache.get(uid);
     if (cached && cached.expiresAt > now) return cached.user;
+    if (cached && cached.staleUntil > now) {
+        refreshInBackground(uid);
+        return cached.user;
+    }
+    return lookupCoalesced(uid);
+}
 
-    /** @type {NextcloudUser} */
-    let user;
-    try {
-        user = await lookupNextcloudUser(uid);
-    } catch (first) {
-        // A 4xx is Nextcloud's verdict (unknown user, refused secret) and
-        // stands; a timeout, a reset or a 5xx gets one more try, and if that
-        // fails too the user the last lookup returned stands in.
-        if (/HTTP 4\d\d/.test(errMessage(first))) throw first;
-        await new Promise((resolve) => setTimeout(resolve, USER_LOOKUP_RETRY_DELAY_MS));
-        try {
-            user = await lookupNextcloudUser(uid);
-        } catch (second) {
-            if (cached && cached.staleUntil > now) {
-                log.warn(`[Auth] User lookup for ${log.ref(uid)} failed twice (${errMessage(second)}); using the user from ${Math.round((now - (cached.expiresAt - USER_CACHE_TTL_MS)) / 1000)} s ago`);
-                return cached.user;
-            }
-            throw second;
-        }
-    }
-    _userCache.set(uid, { user, expiresAt: now + USER_CACHE_TTL_MS, staleUntil: now + USER_STALE_TTL_MS });
-    // Bound the cache so churn on a busy NC instance can't leak memory.
-    if (_userCache.size > 1000) {
-        const oldest = _userCache.keys().next().value;
-        if (oldest) _userCache.delete(oldest);
-    }
-    return user;
+/**
+ * Test hook: settle every lookup in flight (the background refreshes included).
+ * @returns {Promise<void>}
+ */
+async function _settleLookupsForTests() {
+    await Promise.allSettled([..._lookupsInFlight.values()]);
 }
 
 /**
@@ -289,7 +370,7 @@ function warnSecretMismatch(userId) {
         + `AUTHORIZATION-APP-API shared secret does not match this container's APP_SECRET. `
         + `If this is not an attack, Nextcloud and the container hold different secrets — `
         + `re-register the ExApp (occ app_api:app:unregister ${config.appId} && `
-        + `occ app_api:app:register ${config.appId} --force-scopes) to mint a matching pair.`);
+        + `occ app_api:app:register ${config.appId}) to mint a matching pair.`);
 }
 
 /**
@@ -317,6 +398,9 @@ function appApiAuthMiddleware(req, res, next) {
     if (expectedAppId && expectedAppId !== config.appId) {
         return res.status(401).json({ error: 'EX-APP-ID mismatch' });
     }
+
+    // Lifecycle calls need the secret and nothing else: no user lookup, no JWT.
+    if (SIGNED_LIFECYCLE_PATHS.has(req.path)) return next();
 
     if (!decoded.userId) {
         // Service-level AppAPI calls (Task Processing trigger) carry the secret
@@ -393,7 +477,8 @@ function appApiAuthMiddleware(req, res, next) {
 
 module.exports = {
     appApiAuthMiddleware,
-    _resetUserCacheForTests: () => _userCache.clear(),
+    _resetUserCacheForTests: () => { _userCache.clear(); _lookupsInFlight.clear(); },
+    _settleLookupsForTests,
     isDocumentNavigation,
     decodeAuthHeader,
     secretMatches,

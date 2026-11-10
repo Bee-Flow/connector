@@ -1,16 +1,12 @@
-// POST /init is in auth.js's LIFECYCLE_PATHS, so it passes the AppAPI gate with
-// no header at all — it has to, AppAPI 5.x sends none on the lifecycle calls
-// (see lifecycle.test.js). The connector also binds 0.0.0.0 (config.js), so
-// "no header needed" means every container on the Nextcloud docker network can
-// call it, and each call fans out ~42 authenticated OCS writes into the
-// customer's Nextcloud, several behind withWarmupRetry budgets of 20-60s.
-// Measured before the guard: 20 headerless requests produced 841 outbound calls
-// with 380 in flight at the peak — one packet in, dozens of requests out,
-// repeatable without limit.
+// POST /init fans out about 42 authenticated OCS writes into the customer's
+// Nextcloud, several behind withWarmupRetry budgets of 20-60s, and the connector
+// binds 0.0.0.0 (config.js) on a docker network it shares with other containers.
+// Measured while the route was still open to headerless callers: 20 requests
+// produced 841 outbound calls with 380 in flight at the peak.
 //
-// A hard 401 is not available (it would break install wherever AppAPI omits the
-// header), so these pin the two bounds that replace it: a budget for callers
-// with no shared secret, and single-flight so runs cannot stack.
+// AppAPI signs /init and /enabled with the shared secret (stable32..stable35,
+// see auth.js), so a caller without it is refused outright and does nothing.
+// These pin that, plus single-flight so signed runs cannot stack either.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -44,19 +40,33 @@ global.fetch = async (url, opts = {}) => {
     };
 };
 
-const { registerLifecycle, INIT_UNTRUSTED_LIMIT } = require('../src/heartbeat');
+const { registerLifecycle } = require('../src/heartbeat');
 const rateLimit = require('../src/rateLimit');
 
 const SIGNED = { 'authorization-app-api': Buffer.from(':test-secret').toString('base64') };
 
-function initRoute() {
+function lifecycleRoutes() {
     const routes = {};
     registerLifecycle({
         get: (p, h) => { routes[`GET ${p}`] = h; },
         post: (p, h) => { routes[`POST ${p}`] = h; },
         put: (p, h) => { routes[`PUT ${p}`] = h; },
     });
-    return routes['POST /init'];
+    return routes;
+}
+
+function initRoute() {
+    return lifecycleRoutes()['POST /init'];
+}
+
+/** A response double that records what the route answered. */
+function recorder() {
+    const seen = { status: 200, bodies: [] };
+    const res = {
+        status: (code) => { seen.status = code; return res; },
+        json: (b) => { seen.bodies.push(b); return res; },
+    };
+    return { res, seen };
 }
 
 function reset() {
@@ -75,21 +85,54 @@ async function settle() {
     }
 }
 
-test('unauthenticated /init still answers 200 — AppAPI\'s contract is not negotiable', async () => {
+test('a headerless /init is refused and reaches Nextcloud with nothing', async () => {
     reset();
     const init = initRoute();
-    const bodies = [];
-    init({ headers: {}, query: {} }, { json: (b) => bodies.push(b) });
+    const { res, seen } = recorder();
+    init({ headers: {}, query: {} }, res);
     await settle();
-    assert.deepEqual(bodies, [{ status: 'ok' }]);
-    assert.ok(outbound > 0, 'and the first call really does register — this is not a blanket refusal');
+    assert.equal(seen.status, 401);
+    assert.equal(outbound, 0, `an unauthenticated /init drove ${outbound} calls into Nextcloud`);
 });
 
-test('a burst of headerless /init calls collapses into one registration run', async () => {
+test('an /init with the wrong secret is refused the same way', async () => {
+    reset();
+    const init = initRoute();
+    const { res, seen } = recorder();
+    const wrong = { 'authorization-app-api': Buffer.from(':not-the-secret').toString('base64') };
+    init({ headers: wrong, query: {} }, res);
+    await settle();
+    assert.equal(seen.status, 401);
+    assert.equal(outbound, 0);
+});
+
+test('a flood of headerless /init calls stays at zero outbound calls', async () => {
     reset();
     const init = initRoute();
     for (let i = 0; i < 25; i += 1) {
-        init({ headers: {}, query: {} }, { json: () => {} });
+        init({ headers: {}, query: {} }, recorder().res);
+    }
+    await settle();
+    assert.equal(outbound, 0);
+    assert.equal(completedRuns, 0);
+});
+
+test('a signed /init answers 200 at once and registers', async () => {
+    reset();
+    const init = initRoute();
+    const { res, seen } = recorder();
+    init({ headers: SIGNED, query: {} }, res);
+    assert.deepEqual(seen.bodies, [{ status: 'ok' }], 'the answer must not wait for the registration run');
+    await settle();
+    assert.equal(seen.status, 200);
+    assert.equal(completedRuns, 1);
+});
+
+test('a burst of signed /init calls collapses into one registration run', async () => {
+    reset();
+    const init = initRoute();
+    for (let i = 0; i < 25; i += 1) {
+        init({ headers: SIGNED, query: {} }, recorder().res);
     }
     await settle();
     assert.equal(completedRuns, 1,
@@ -98,37 +141,31 @@ test('a burst of headerless /init calls collapses into one registration run', as
         `single-flight must cap concurrency against Nextcloud, saw ${peakInFlight} in flight`);
 });
 
-test('a caller with no shared secret gets a budget, not an unlimited amplifier', async () => {
-    reset();
-    const init = initRoute();
-    // Sequential and awaited, so single-flight never coalesces them — each one
-    // is a fresh run until the budget is spent.
-    const CALLS = 12;
-    for (let i = 0; i < CALLS; i += 1) {
-        init({ headers: {}, query: {} }, { json: () => {} });
-        await settle();
-    }
-    assert.ok(completedRuns > 0,
-        'the first calls must still register — an install that omits the header cannot break');
-    assert.ok(completedRuns <= INIT_UNTRUSTED_LIMIT,
-        `${CALLS} unauthenticated calls drove ${completedRuns} registration runs into Nextcloud; `
-        + `the budget is ${INIT_UNTRUSTED_LIMIT}`);
-});
-
 test('a caller holding the AppAPI shared secret is never limited', async () => {
     reset();
     const init = initRoute();
-    // Spend the untrusted budget first…
     for (let i = 0; i < 8; i += 1) {
-        init({ headers: {}, query: {} }, { json: () => {} });
-        await settle();
+        init({ headers: {}, query: {} }, recorder().res);
     }
-    const spent = completedRuns;
-    // …then prove the real AppAPI still gets its work done.
+    await settle();
     for (let i = 0; i < 3; i += 1) {
-        init({ headers: SIGNED, query: {} }, { json: () => {} });
+        init({ headers: SIGNED, query: {} }, recorder().res);
         await settle();
     }
-    assert.equal(completedRuns - spent, 3,
-        'the shared secret is what separates AppAPI from a neighbouring container');
+    assert.equal(completedRuns, 3,
+        'refusing unsigned callers must not spend anything a signed caller needs');
+});
+
+test('PUT /enabled: refused without the secret, 200 with no `error` key with it', () => {
+    reset();
+    const enabled = lifecycleRoutes()['PUT /enabled'];
+    const anon = recorder();
+    enabled({ headers: {}, query: { enabled: '0' } }, anon.res);
+    assert.equal(anon.seen.status, 401);
+
+    // AppAPI fails the enable/disable when the body carries a non-empty `error`.
+    const signed = recorder();
+    enabled({ headers: SIGNED, query: { enabled: '1' } }, signed.res);
+    assert.equal(signed.seen.status, 200);
+    assert.deepEqual(signed.seen.bodies, [{ status: 'ok' }]);
 });

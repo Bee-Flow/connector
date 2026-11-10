@@ -89,4 +89,18 @@ EOF
     ) &
 fi
 
+# The steps above need root (the trust store, the frpc certificates HaRP
+# mounts). The connector itself does not: hand the persistent storage and the
+# TLS helper's output to the unprivileged user and run the app as that user.
+# frpc stays a root child; it only relays to the app's unix socket.
+RUN_AS="${BEEFLOW_RUN_AS:-node}"
+if [ "$(id -u)" = 0 ] && [ "$RUN_AS" != root ] && command -v su-exec >/dev/null 2>&1; then
+    _storage="${APP_PERSISTENT_STORAGE:-/data}"
+    mkdir -p "$_storage"
+    chown -R "$RUN_AS:$RUN_AS" "$_storage"
+    if [ -d /tmp/nc-trust ]; then chown -R "$RUN_AS:$RUN_AS" /tmp/nc-trust; fi
+    rm -f /tmp/exapp.sock
+    exec su-exec "$RUN_AS" "$@"
+fi
+
 exec "$@"

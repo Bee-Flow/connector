@@ -1,4 +1,8 @@
-// AppAPI 5.x calls /heartbeat /init /enabled WITHOUT auth headers.
+// AppAPI calls /heartbeat WITHOUT auth headers; /init and /enabled carry the
+// shared secret with an empty userId, base64(":" + secret) — AppAPIService.php
+// builds them with buildAppAPIAuthHeaders(null, null, $exApp) on stable32,
+// stable33, stable34 and stable35 alike (dispatchExAppInitInternal for /init,
+// requestToExApp for /enabled). So only /heartbeat skips the gate.
 // Asset paths /img/* /js/* must also be reachable for NC's chrome injection.
 
 const test = require('node:test');
@@ -14,7 +18,7 @@ function unsignedReq(path) {
     return { method: 'GET', path, url: path, originalUrl: path, headers: {}, rawBody: '' };
 }
 
-for (const path of ['/heartbeat', '/init', '/enabled', '/img/app.svg', '/js/embed', '/js/embed.js']) {
+for (const path of ['/heartbeat', '/img/app.svg', '/js/embed', '/js/embed.js']) {
     test(`unsigned ${path} bypasses auth`, (_, done) => {
         const req = unsignedReq(path);
         const res = { status: () => res, json: () => done(new Error(`${path} was rejected`)) };
@@ -22,6 +26,35 @@ for (const path of ['/heartbeat', '/init', '/enabled', '/img/app.svg', '/js/embe
             assert.ok(!err);
             done();
         });
+    });
+}
+
+for (const path of ['/init', '/enabled']) {
+    test(`unsigned ${path} is rejected — AppAPI signs its lifecycle calls`, (_, done) => {
+        const req = unsignedReq(path);
+        const res = {
+            status: (code) => { assert.equal(code, 401); return res; },
+            json: () => done(),
+        };
+        appApiAuthMiddleware(req, res, () => done(new Error(`${path} let through unsigned`)));
+    });
+
+    test(`${path} with a wrong secret is rejected`, (_, done) => {
+        const req = { ...unsignedReq(path),
+                      headers: { 'authorization-app-api': Buffer.from(':wrong-secret').toString('base64') } };
+        const res = {
+            status: (code) => { assert.equal(code, 401); return res; },
+            json: () => done(),
+        };
+        appApiAuthMiddleware(req, res, () => done(new Error(`${path} let through with a wrong secret`)));
+    });
+
+    test(`${path} signed with an empty userId passes — the shape AppAPI sends`, (_, done) => {
+        const req = { ...unsignedReq(path),
+                      headers: { 'authorization-app-api': Buffer.from(':test-secret').toString('base64'),
+                                 'ex-app-id': process.env.APP_ID || 'bee_flow' } };
+        const res = { status: () => res, json: () => done(new Error(`${path} was rejected despite a valid secret`)) };
+        appApiAuthMiddleware(req, res, (err) => { assert.ok(!err); done(); });
     });
 }
 

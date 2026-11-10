@@ -243,7 +243,9 @@ async function fetchNextTask(id) {
         headers: appApiHeaders(),
         signal: AbortSignal.timeout(10_000),
     });
-    if (res.status === 404) return null; // nothing queued
+    // Nothing queued is a 204 with no body (getNextScheduledTask). A 404 is
+    // read the same way, as this code always did.
+    if (res.status === 204 || res.status === 404) return null;
     if (!res.ok) throw new Error(`next task HTTP ${res.status}`);
     const body = /** @type {{ ocs?: { data?: { task?: NcTask } } } | null} */ (await res.json().catch(() => null));
     return body?.ocs?.data?.task || null;
@@ -252,20 +254,48 @@ async function fetchNextTask(id) {
 /**
  * @param {string | number} taskId
  * @param {{ output?: TaskOutput, errorMessage?: string, userFacingErrorMessage?: string }} result
+ * @param {{ retryDelaysMs?: number[] }} [options]
+ * @returns {Promise<boolean>} whether Nextcloud accepted the result
  */
-async function reportResult(taskId, { output, errorMessage, userFacingErrorMessage }) {
+async function reportResult(taskId, { output, errorMessage, userFacingErrorMessage }, { retryDelaysMs = RESULT_RETRY_DELAYS_MS } = {}) {
     /** @type {{ output?: TaskOutput, errorMessage?: string, userFacingErrorMessage?: string }} */
     const payload = {};
     if (output) payload.output = output;
     if (errorMessage) payload.errorMessage = errorMessage;
     if (userFacingErrorMessage) payload.userFacingErrorMessage = userFacingErrorMessage;
-    await fetch(`${config.nextcloudUrl}${TP_API}/tasks_provider/${encodeURIComponent(taskId)}/result`, {
-        method: 'POST',
-        headers: appApiHeaders(),
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(10_000),
-    }).catch(err => log.warn(`[TaskProcessing] could not report result for ${taskId}: ${errMessage(err)}`));
+    const url = `${config.nextcloudUrl}${TP_API}/tasks_provider/${encodeURIComponent(taskId)}/result`;
+    const body = JSON.stringify(payload);
+
+    // fetch() resolves for a 404 and a 500 alike, so the status has to be read:
+    // setResult answers 404 when the task is gone and 500 when storing failed.
+    // A result that does not land leaves the task RUNNING for good (Nextcloud
+    // never times it out), so a 5xx or a network error gets a second and third
+    // attempt; a 4xx will not change by asking again.
+    let failure = '';
+    for (let attempt = 0; ; attempt += 1) {
+        let retryable = true;
+        try {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: appApiHeaders(),
+                body,
+                signal: AbortSignal.timeout(10_000),
+            });
+            if (res.ok) return true;
+            failure = `HTTP ${res.status}`;
+            retryable = res.status >= 500;
+        } catch (err) {
+            failure = errMessage(err);
+        }
+        if (!retryable || attempt >= retryDelaysMs.length) break;
+        await new Promise((resolve) => { setTimeout(resolve, retryDelaysMs[attempt]); });
+    }
+    log.warn(`[TaskProcessing] could not report the result for task ${taskId}: ${failure}`);
+    return false;
 }
+
+// Waits before the second and third attempt at reporting a result.
+const RESULT_RETRY_DELAYS_MS = [1_000, 4_000];
 
 /**
  * How long we let one task run before giving up on it.
@@ -563,6 +593,7 @@ module.exports = {
     registerRoutes,
     drainProvider,
     _drainWith,
+    _reportResult: reportResult,
     providerId,
     providerDefinition,
     watchdogMsFor,

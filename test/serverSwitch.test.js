@@ -33,6 +33,10 @@ const setupRouter = require('../src/setup');
 const declarativeSettings = require('../src/declarativeSettings');
 
 setupConfig.init(storage);
+function readJsonOrNull(file) {
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+}
+
 const realFetch = globalThis.fetch;
 
 async function post(pathname, body) {
@@ -93,7 +97,11 @@ test('H3: a failed switch in /setup leaves the URL, the key and the saved choice
         const res = await post('/setup', { mode: 'self-hosted', apiBaseUrl: NEW });
         assert.equal(res.status, 200);
         await until(() => attempted && config.tenantKey === 'old-key');
-        await new Promise((r) => setTimeout(r, 30));
+        // The saved choice is restored by the setup route's catch handler, which runs
+        // only after the bootstrap rollback has also deleted the pending file and
+        // rewritten the key cache (atomic writes since #552): wait for that, not for
+        // a fixed number of milliseconds.
+        await until(() => setupConfig.get()?.apiBaseUrl === OLD);
         assert.equal(config.apiBaseUrl, OLD);
         assert.equal(config.tenantKey, 'old-key');
         assert.equal(setupConfig.get()?.apiBaseUrl, OLD, 'a restart must not move to the server that refused');
@@ -109,10 +117,11 @@ test('H3: a successful switch in /setup binds to the new server', async () => {
     });
     try {
         await post('/setup', { mode: 'self-hosted', apiBaseUrl: NEW });
-        await until(() => config.tenantKey === 'new-key' && fs.existsSync(path.join(storage, 'tenant-key.json')));
+        const cacheFile = path.join(storage, 'tenant-key.json');
+        await until(() => config.tenantKey === 'new-key' && readJsonOrNull(cacheFile)?.boundApiBaseUrl === NEW);
         assert.equal(config.apiBaseUrl, NEW);
         assert.equal(setupConfig.get()?.apiBaseUrl, NEW);
-        const cached = JSON.parse(fs.readFileSync(path.join(storage, 'tenant-key.json'), 'utf8'));
+        const cached = readJsonOrNull(cacheFile);
         assert.equal(cached.boundApiBaseUrl, NEW);
     } finally {
         world.restore();

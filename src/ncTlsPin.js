@@ -41,7 +41,9 @@ const PIN_MISMATCH = 'NC_TLS_PIN_MISMATCH';
  * @typedef {{ info: (msg: string) => void, warn: (msg: string) => void }} PinLog
  *
  * The part of a TLS socket this module reads (a tls.TLSSocket in practice).
- * @typedef {{ getPeerCertificate: (detailed: true) => import('tls').DetailedPeerCertificate }} PeerSocket
+ * `authorized` is Node's verdict against the bundled roots, which it still
+ * computes when the agent runs with rejectUnauthorized: false.
+ * @typedef {{ getPeerCertificate: (detailed: true) => import('tls').DetailedPeerCertificate, authorized?: boolean }} PeerSocket
  */
 
 /**
@@ -129,6 +131,19 @@ function createPinStore({ file, log, now = () => new Date() }) {
      * @returns {Error | null}
      */
     function check(hostKey, socket) {
+        // A certificate the public roots trust needs no pin, and must not get
+        // one: this mode is also entered when Nextcloud was merely unreachable
+        // while the boot helper decided the posture (#453), and a pin recorded
+        // then would refuse the next routine renewal. A valid certificate also
+        // supersedes an older self-signed pin (the admin moved to a real one).
+        if (socket.authorized === true) {
+            if (!reported.has(`${hostKey}|authorized`)) {
+                reported.add(`${hostKey}|authorized`);
+                log.info(`[ncTls] Nextcloud's certificate for ${hostKey} verifies against the public roots; not pinning it`
+                    + (state.pins[hostKey] ? ' (the recorded self-signed pin is no longer needed)' : ''));
+            }
+            return null;
+        }
         /** @type {string[]} */
         let chain;
         try {

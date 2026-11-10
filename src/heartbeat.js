@@ -4,17 +4,15 @@
  * Contract: https://docs.nextcloud.com/server/latest/developer_manual/exapp_development/tech_details/ExAppLifecycle.html
  *
  *   GET  /heartbeat     — unauthenticated, must respond within 10 min of start
- *   POST /init          — authenticated, MUST return HTTP 200 immediately. All
- *                         setup happens in the background; progress is reported
- *                         async via PUT /ocs/v2.php/apps/app_api/ex-app/status.
- *   PUT  /enabled?...   — MUST answer 200; carries no side effect beyond a log
- *                         line. It deliberately does NOT unregister anything:
- *                         AppAPI sends no auth header here either, so wiring
- *                         a teardown onto it would hand every container on the
- *                         docker network a teardown primitive for the
- *                         customer's Nextcloud registrations. Nothing tears down
- *                         on SIGTERM either (shutdown.js); AppAPI cleans up on
- *                         a real uninstall.
+ *   POST /init          — signed with the shared secret; MUST return HTTP 200
+ *                         immediately. All setup happens in the background;
+ *                         progress is reported async via
+ *                         PUT /ocs/v2.php/apps/app_api/ex-app/status.
+ *   PUT  /enabled?...   — signed with the shared secret; MUST answer 200 with
+ *                         no `error` in the body. Carries no side effect beyond
+ *                         a log line: it does NOT unregister anything. Nothing
+ *                         tears down on SIGTERM either (shutdown.js); AppAPI
+ *                         removes an ExApp's registrations on a real uninstall.
  *
  * Why /init returns immediately: AppAPI's `--wait-finish` polls the status
  * field and blocks until init=100 or an error appears. If /init does work
@@ -53,66 +51,45 @@ function isTrustedLifecycleCaller(req) {
 }
 
 /**
- * Budget for a lifecycle call that does NOT present the AppAPI shared secret.
+ * /init and /enabled answer only a caller that presents the AppAPI shared secret.
  *
- * `/init` is in auth.js's LIFECYCLE_PATHS, so it passes the AppAPI gate with no
- * header at all — it has to, AppAPI 5.x sends none on the lifecycle calls (see
- * test/lifecycle.test.js). The connector also binds 0.0.0.0 (config.js), so
- * "no header needed" means every container on the Nextcloud docker network can
- * call it, and each call fans out ~42 authenticated OCS writes into the
- * customer's Nextcloud (12 task-processing providers, 19 webhook upserts, the
- * menu/script/settings/Talk/files registrations, status reports), several behind
- * `withWarmupRetry` budgets of 20-60s. Measured before this guard: 20 headerless
- * requests produced 841 outbound calls with 380 in flight at the peak — a
- * one-packet-in, dozens-of-requests-out amplifier against the customer's server.
+ * AppAPI signs both (see SIGNED_LIFECYCLE_PATHS in auth.js for the source read),
+ * and auth.js's gate already refuses them without the secret. The check is
+ * repeated here because it is cheap and because the cost of the gate ever
+ * losing it is high: the connector binds 0.0.0.0 (config.js), and one /init
+ * fans out about 42 authenticated OCS writes into the customer's Nextcloud (12
+ * task-processing providers, 19 webhook upserts, the menu/script/settings/Talk/
+ * files registrations, status reports), several behind `withWarmupRetry`
+ * budgets of 20-60s. Measured while the route was still open: 20 headerless
+ * requests produced 841 outbound calls with 380 in flight at the peak.
  *
- * A hard 401 is not available (it would break install on any AppAPI that omits
- * the header), so the trade is: a caller holding the secret is never limited,
- * and a caller without one gets a budget sized for real install/upgrade traffic
- * — AppAPI calls each of these once per install and once per upgrade — and
- * nothing more. Losing the budget cannot brick an install: server.js re-runs the
- * whole registration pipeline on every container boot, and an install or upgrade
- * IS a fresh container.
- *
- * PUT /enabled needs the same bound for a smaller reason. Its only side effect is
- * a `console.log`, but it is reachable with no header at all, so a neighbour on
- * the docker network could emit one log line per request forever — the same
- * unbounded, caller-driven log growth that security.js's unknown-origin log was
- * just fixed for. Bounding it here keeps the two halves of this file consistent:
- * every lifecycle route either holds the secret or spends a budget before the
- * connector does anything on its behalf.
- *
- * Each route bills its own bucket, so flooding one cannot spend another's budget.
- */
-const INIT_UNTRUSTED_LIMIT = 3;
-const INIT_UNTRUSTED_WINDOW_MS = 15 * 60 * 1000;
-
-/**
+ * A refusal cannot brick an install: server.js re-runs the whole registration
+ * pipeline on every container boot, and a secret that does not match is
+ * reported to AppAPI as a failed init (it records the 401 as the init error)
+ * instead of a silent no-op.
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
  * @param {string} route
- * @param {string} why  completes the sentence in the one log line
- * @returns {boolean}
+ * @returns {boolean} true when the caller was refused (and answered)
  */
-function untrustedLifecycleAllowed(route, why) {
-    const verdict = rateLimit.consume(`lifecycle-${route}`, 'untrusted', {
-        limit: INIT_UNTRUSTED_LIMIT,
-        windowMs: INIT_UNTRUSTED_WINDOW_MS,
-    });
-    if (verdict.allowed) return true;
-    // One line per window, not one per dropped request — the flood is the point
+function refuseUntrustedLifecycle(req, res, route) {
+    if (isTrustedLifecycleCaller(req)) return false;
+    // One line per window, not one per refused request: a flood is the point
     // of the attack, and the log must not join in.
     const warn = rateLimit.consume(`lifecycle-${route}-warn`, 'untrusted', {
         limit: 1,
-        windowMs: INIT_UNTRUSTED_WINDOW_MS,
+        windowMs: UNTRUSTED_WARN_WINDOW_MS,
     });
     if (warn.allowed) {
-        log.warn(`[Lifecycle] ignoring /${route} from a caller with no AppAPI shared secret — `
-            + `more than ${INIT_UNTRUSTED_LIMIT} in ${INIT_UNTRUSTED_WINDOW_MS / 60_000} minutes. `
-            + `AppAPI calls it on install and upgrade only; a loop of unauthenticated calls is `
-            + `someone on this docker network ${why}. `
-            + 'Registration still re-runs on every container boot.');
+        log.warn(`[Lifecycle] refused /${route} from a caller without the AppAPI shared secret. `
+            + 'AppAPI signs this call; if this is AppAPI itself, Nextcloud and the container hold '
+            + 'different secrets and the ExApp must be re-registered.');
     }
-    return false;
+    res.status(401).json({ error: 'Invalid AppAPI shared secret' });
+    return true;
 }
+
+const UNTRUSTED_WARN_WINDOW_MS = 15 * 60 * 1000;
 
 /** @param {import('express').Express} app */
 function registerLifecycle(app) {
@@ -178,14 +155,10 @@ function registerLifecycle(app) {
     });
 
     app.post('/init', (req, res) => {
-        // Spec compliance: respond fast, run setup in the background. The
-        // response is identical whether or not the work runs — AppAPI's contract
-        // is a 200, and telling an unauthenticated caller whether they got the
-        // connector to act is free reconnaissance.
-        res.json({ status: 'ok' });
+        if (refuseUntrustedLifecycle(req, res, 'init')) return;
 
-        if (!isTrustedLifecycleCaller(req)
-            && !untrustedLifecycleAllowed('init', 'using the connector to hammer Nextcloud')) return;
+        // Spec compliance: respond fast, run setup in the background.
+        res.json({ status: 'ok' });
 
         setImmediate(() => {
             runInitInBackground().catch(err => {
@@ -198,17 +171,10 @@ function registerLifecycle(app) {
     });
 
     app.put('/enabled', (req, res) => {
-        // Same shape as /init, and for the same reason: `/enabled` is in auth.js's
-        // LIFECYCLE_PATHS, so appApiAuthMiddleware returns next() before it parses
-        // a single header and the only place a check can live is here. AppAPI's
-        // contract is a 200 either way, so the answer never varies — telling an
-        // unauthenticated caller whether it got the connector to act is free
-        // reconnaissance, and varying it would break `occ app_api:app:enable` on
-        // any AppAPI that omits the header.
-        res.json({ status: 'ok' });
+        if (refuseUntrustedLifecycle(req, res, 'enabled')) return;
 
-        if (!isTrustedLifecycleCaller(req)
-            && !untrustedLifecycleAllowed('enabled', 'filling the container log')) return;
+        // AppAPI reads the body: a non-empty `error` fails the enable/disable.
+        res.json({ status: 'ok' });
 
         log.info(`[Lifecycle] enabled=${req.query?.enabled === '1'}`);
     });
@@ -399,5 +365,4 @@ module.exports = {
     registerTenantKeyDependents,
     registerTopMenu,
     registerEmbedScript,
-    INIT_UNTRUSTED_LIMIT,
 };

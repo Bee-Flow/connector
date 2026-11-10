@@ -76,6 +76,16 @@ function isBlockedAddress(ip) {
         // ::ffff:169.254.169.254 — an IPv4-mapped address wearing a v6 coat.
         const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(bare);
         if (mapped) return isLinkLocalV4(mapped[1]) || METADATA_HOSTS.has(mapped[1]);
+        // The same address as `new URL` writes it: the hostname of
+        // http://[::ffff:169.254.169.254]/ is [::ffff:a9fe:a9fe], two hex
+        // groups, which the dotted pattern above never sees.
+        const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(bare);
+        if (hex) {
+            const high = parseInt(hex[1], 16);
+            const low = parseInt(hex[2], 16);
+            const dotted = `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
+            return isLinkLocalV4(dotted) || METADATA_HOSTS.has(dotted);
+        }
         return isLinkLocalV6(bare);
     }
     return false;
